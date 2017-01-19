@@ -18,12 +18,13 @@ type ColumnName = Name
 -- TODO:
 -- * location information
 -- * type information
+-- * more general GROUP BY (currently only groups by some subset of columns)
 
 data SelectQuery = SelectQuery {            -- select-query ::=
-    selColumns    :: [ResultColumn],        --   SELECT (e AS name)*
-    selFrom       :: [NamedTable],          --     FROM (name AS name')*
+    selColumns    :: [ResultColumn],        --   SELECT (e AS c)*
+    selFrom       :: [NamedTable],          --     FROM (t AS t')*
     selWhere      :: Maybe ScalarExpr,      --     WHERE e?
-    selGroupBy    :: [TableName]            --     GROUP BY name*
+    selGroupBy    :: [ColumnRef]            --     GROUP BY (t.c)*
   }
 
 data NamedTable
@@ -37,9 +38,11 @@ data ResultColumn
 
 type ScalarExpr = Expr
 
+data ColumnRef = ColumnRef TableName ColumnName
+
 data Expr
   = ExprLit LiteralValue
-  | ExprCol TableName ColumnName
+  | ExprCol ColumnRef
   | ExprUnary UnaryOp Expr
   | ExprBinary BinaryOp Expr Expr
   | ExprAggregate AggregateOp Expr

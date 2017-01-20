@@ -5,6 +5,31 @@ type TableName = Name
 
 type ColumnName = Name
 
+{-------------------
+ - Supported types -
+ -------------------}
+
+data SqlType
+  = SqlTypeBoolean
+  | SqlTypeInteger Integer
+  | SqlTypeReal
+  | SqlTypeBlob
+  | SqlTypeText
+
+{----------------------
+ - Column constraints -
+ ----------------------}
+
+data ColumnConstraint
+  = NotNull
+  | Unique
+
+type ColumnConstraints = [ColumnConstraint]
+
+{-----------------------------------------
+ - Simplified abstract syntax of queries -
+ -----------------------------------------}
+
 -- Note that this is not concrete syntax but simplified abstract syntax.
 -- We assume the following:
 -- * All columns names have to be qualified with the table name and
@@ -36,9 +61,9 @@ mkDefaultNamedTable t = NamedTable t t
 data ResultColumn
   = ResultColumn ScalarExpr ColumnName
 
-type ScalarExpr = Expr
-
 data ColumnRef = ColumnRef TableName ColumnName
+
+type ScalarExpr = Expr
 
 data Expr
   = ExprLit LiteralValue

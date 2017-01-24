@@ -1,26 +1,5 @@
+import Multiplicity
 import Control.Arrow (second)
-
-{--------------------------
- - Generic multiplicities -
- --------------------------}
-
--- Commutative semirings
--- We could use "algebra" library, but it's an overkill
-class Ord m => Multiplicity m where
-  mAdd :: m -> m -> m
-  mMul :: m -> m -> m
-  mZero :: m
-  mOne :: m
-
-  mFromInteger :: Integer -> m
-  mFromInteger 0 = mZero
-  mFromInteger 1 = mOne
-  mFromInteger n
-    | n < 0 = error "Negative multiplicity literal."
-    | even n = mTwo `mMul` mFromInteger (n `quot` 2)
-    | otherwise = mOne `mAdd` mFromInteger (n - 1)
-    where
-      mTwo = mOne `mAdd` mOne
 
 {-----------------------------
  - Generic multisets or bags -
@@ -31,8 +10,11 @@ class Ord m => Multiplicity m where
 -- 1. does not contain any elements with 0 multiplicity
 -- 2. sorted by first component
 -- 3. first components are unique
--- 4. finite length
+-- 4. finite support (length)
 type Bag m a = [(a, m)]
+
+bagSupport :: Bag m a -> [a]
+bagSupport = map fst
 
 bagIntersect :: (Ord m, Ord a) => Bag m a -> Bag m a -> Bag m a
 bagIntersect _ [] = []
@@ -69,3 +51,16 @@ bagElem x = bagSubset [(x, mOne)]
 
 bagSquash :: Multiplicity n => Bag m a -> Bag n a
 bagSquash = map (second (const mOne))
+
+{---------------------------
+ - Some concrete multisets -
+ ---------------------------}
+
+-- Regular set (named FlatSet to avoid collisions)
+type FlatSet a = Bag FlatM a
+
+-- Multiset with finite multiplicities
+type Multiset a = Bag FiniteM a
+
+-- Multiset with finite and (countably) infinite multiplicities
+type MSet a = Bag OmegaM a

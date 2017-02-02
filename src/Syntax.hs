@@ -46,11 +46,37 @@ type ColumnConstraints = [ColumnConstraint]
 -- * more general GROUP BY (currently only groups by some subset of columns)
 
 data SelectQuery = SelectQuery {            -- select-query ::=
-    selColumns    :: [ResultColumn],        --   SELECT (e AS c)*
+    selColumns    :: [NamedExpr],           --   SELECT (e AS c)*
     selFrom       :: [NamedTable],          --     FROM (t AS t')*
     selWhere      :: Maybe ScalarExpr,      --     WHERE e?
     selGroupBy    :: [ColumnRef]            --     GROUP BY (t.c)*
   }
+
+-- Small examples.
+--
+-- 1. sum the entire "value" column of "table"
+--
+-- SelectQuery
+--    [exprSum (mkCol "table" "value") `named` "sum"]
+--    [mkDefaultNamedTable "table"]
+--    Nothing
+--    []
+--
+-- 2. identity
+--
+-- SelectQuery
+--    [mkCol "table" "key" `named` "key", mkCol "table" "value" `named` "value"]
+--    [mkDefaultNamedTable "table"]
+--    Nothing
+--    []
+--
+-- 3. select distrinct values from key value table
+--
+-- SelectQuery
+--    [mkCol "table" "value" `named` "value"]
+--    [mkDefaultNamedTable "table"]
+--    Nothing
+--    ["table" `ColumnRef` "value"]
 
 data NamedTable
   = NamedTable TableName TableName
@@ -58,8 +84,11 @@ data NamedTable
 mkDefaultNamedTable :: TableName -> NamedTable
 mkDefaultNamedTable t = NamedTable t t
 
-data ResultColumn
-  = ResultColumn ScalarExpr ColumnName
+data NamedExpr
+  = NamedExpr ScalarExpr ColumnName
+
+named :: ScalarExpr -> ColumnName -> NamedExpr
+named = NamedExpr
 
 data ColumnRef = ColumnRef TableName ColumnName
 
@@ -71,6 +100,9 @@ data Expr
   | ExprUnary UnaryOp Expr
   | ExprBinary BinaryOp Expr Expr
   | ExprAggregate AggregateOp Expr
+
+exprSum :: Expr -> Expr
+exprSum = ExprAggregate SumOp
 
 data LiteralValue
   = LitNull

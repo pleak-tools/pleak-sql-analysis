@@ -12,6 +12,9 @@ class Ord m => Multiplicity m where
   mZero :: m
   mOne :: m
 
+  -- Truncated subtraction. May be partial defined.
+  mSub :: m -> m -> Maybe m
+
   mFromInteger :: Integer -> m
   mFromInteger 0 = mZero
   mFromInteger 1 = mOne
@@ -41,6 +44,9 @@ instance Multiplicity FlatM where
   mMul _ Empty = Empty
   mMul Singleton Singleton = Singleton
 
+  mSub x Empty = Just x
+  mSub _ Singleton = Just Empty
+
   mZero = Empty
   mOne = Singleton
 
@@ -54,11 +60,14 @@ map2FiniteM f (FiniteM m) (FiniteM n) = FiniteM (f m n)
 instance Multiplicity FiniteM where
   mAdd = map2FiniteM (+)
   mMul = map2FiniteM (*)
+
+  mSub (FiniteM x) (FiniteM y) = Just $ FiniteM $ max 0 (x - y)
+
   mZero = FiniteM 0
   mOne = FiniteM 1
 
 -- For multisets that may contain infinite duplicates
--- TODO: not very good name
+-- TODO: not a very good name
 data OmegaM
   = Finite Int
   | Infinite
@@ -69,11 +78,16 @@ instance Multiplicity OmegaM where
   mAdd _ Infinite = Infinite
   mAdd (Finite m) (Finite n) = Finite (m + n)
 
-  mMul (Finite 0) _ = Finite 0
-  mMul _ (Finite 0) = Finite 0
+  mMul (Finite 0) _ = mZero
+  mMul _ (Finite 0) = mZero
   mMul Infinite _ = Infinite
   mMul _ Infinite = Infinite
   mMul (Finite m) (Finite n) = Finite (m + n)
+
+  mSub Infinite Infinite = Nothing
+  mSub (Finite _) Infinite = Just mZero
+  mSub Infinite (Finite _) = Just Infinite
+  mSub (Finite x) (Finite y) = Just $ Finite $ max 0 (x - y)
 
   mZero = Finite 0
   mOne = Finite 1

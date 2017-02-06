@@ -1,0 +1,3 @@
+[submodule "submodules/hssqlppp"]
+	path = submodules/hssqlppp
+	url = https://github.com/JakeWheat/hssqlppp

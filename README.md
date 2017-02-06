@@ -2,7 +2,7 @@
 
 ## Building
 
-Building is most conventient with stack. Check the project out with git and in
+Building is most convenient with stack. Check the project out with git and in
 the root project directory:
 
 ```bash

@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 import Control.Monad
 import Data.Data
 import Data.Generics.Uniplate.Data
@@ -9,6 +11,7 @@ import Database.HsSqlPpp.Parse
 import Database.HsSqlPpp.Pretty
 import Database.HsSqlPpp.Syntax
 import Database.HsSqlPpp.TypeCheck
+import GHC.Stack (HasCallStack, withFrozenCallStack)
 import System.Environment
 import System.Exit
 import System.IO
@@ -16,6 +19,7 @@ import Text.Groom
 import Text.Printf
 
 import qualified Data.Text.Lazy.IO as T
+import Data.Text (Text, pack)
 
 import Catalog
 
@@ -61,6 +65,9 @@ fatal msg = die $ red $ "[FATAL] " ++ msg
 err :: String -> IO ()
 err msg = hPutStrLn stderr $ red $ "[ERROR] " ++ msg
 
+ice :: HasCallStack => String -> a
+ice msg = withFrozenCallStack error $ red $ "[ICE] " ++ msg
+
 -------------------
 -- Verify schema --
 -------------------
@@ -77,6 +84,31 @@ verifySchema fp = mapM_ go
       where
         ann = getAnnotation stmt
 
+------------------------------------
+-- Extract info from CREATE TABLE --
+------------------------------------
+
+nameToText :: Name -> Text
+nameToText (AntiName _) = ice "AntiName."
+nameToText (Name _ []) = ice "Empty name."
+nameToText (Name _ ns) = pack $ go ns
+  where
+    go [nc] = ncStr nc
+    go (nc : ncs) = ncStr nc ++ "." ++ go ncs
+
+typeNameToCatNameExtra :: TypeName -> CatNameExtra
+typeNameToCatNameExtra (SimpleTypeName _ n) = mkCatNameExtra (nameToText n)
+typeNameToCatNameExtra _ = ice "Unsupported TypeName."
+
+-- TODO: constraints are just ignored. extract them as well
+-- TODO: handle not-null!
+extractCatalogUpdates :: [Statement] -> [CatalogUpdate]
+extractCatalogUpdates stmts = concat [go name as | CreateTable _ name as _cs _ _ _ <- stmts]
+  where
+    go name as = [CatCreateTable ("public", nameToText name) [
+        (pack (ncStr name), typeNameToCatNameExtra ty) | AttributeDef _ name ty _expr _rcs <- as]
+      ]
+
 -- ^ Report all type errors and return True if any were found.
 -- Does so by extracting every field of type "Annotation"
 checkAndReportErrors :: Data a => a -> IO Bool
@@ -88,6 +120,10 @@ checkAndReportErrors x = do
       Just (fp, r, c) -> err $ printf "Type error at %s:%d:%d" fp r c
     mapM_ (err . ("  " ++) . show) $ anErrs ann
   return $ not $ null errorAnns
+
+-------------------
+-- Main function --
+-------------------
 
 main :: IO ()
 main = do
@@ -110,10 +146,19 @@ main = do
         Right stmts -> return stmts
 
       verifySchema schemaFile stmts
-      let (catalog', stmts') = typeCheckStatements typeCheckFlags catalog stmts
-      stmtErrs <- checkAndReportErrors stmts'
+      (catalog, stmts) <- return $ -- very much intentional for overshadowing
+        typeCheckStatements typeCheckFlags catalog stmts
+      stmtErrs <- checkAndReportErrors stmts
       when stmtErrs exitFailure
-      putStrLn (groom stmts')
+      let catUpdates = extractCatalogUpdates stmts
+
+      -- mapM_ (putStrLn . groom) $ catUpdates
+
+      catalog <- case updateCatalog catUpdates catalog of
+        Left e -> fatal $ show e
+        Right c -> return c
+
+      -- putStrLn (groom stmts')
       -- T.putStrLn (prettyStatements defaultPrettyFlags stmts')
 
       src <- T.readFile queryFile
@@ -122,11 +167,10 @@ main = do
         Right query@(Select { }) -> return query
         Right _ -> fatal "Unsupported query type. Expecting basic SELECT query."
 
-      mapM_ (putStrLn . groom) $ deconstructCatalog catalog'
-      let query' = typeCheckQueryExpr typeCheckFlags catalog' query
+      let query' = typeCheckQueryExpr typeCheckFlags catalog query
       queryErrs <- checkAndReportErrors query'
       when queryErrs exitFailure
 
-      -- T.putStrLn (prettyQueryExpr defaultPrettyFlags query')
-      putStrLn (groom query')
+      T.putStrLn (prettyQueryExpr defaultPrettyFlags query')
+      -- putStrLn (groom query')
     _ -> die "Invalid program arguments. Expecting a two files of which first contains schema and second the SQL query to analyze."

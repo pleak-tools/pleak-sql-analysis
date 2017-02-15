@@ -120,13 +120,24 @@ typeNameToCatNameExtra :: TypeName -> CatNameExtra
 typeNameToCatNameExtra (SimpleTypeName _ n) = mkCatNameExtra (nameToText n)
 typeNameToCatNameExtra _ = ice "Unsupported TypeName."
 
--- TODO: constraints are just ignored. extract them as well
--- TODO: handle not-null!
 extractCatalogUpdates :: [Statement] -> [CatalogUpdate]
 extractCatalogUpdates stmts = concat [go name as | CreateTable _ name as _cs _ _ _ <- stmts]
   where
-    go name as = [CatCreateTable ("public", nameToText name) [
-        (pack (ncStr name), typeNameToCatNameExtra ty) | AttributeDef _ name ty _expr _rcs <- as]
+    isNotNull (NotNullConstraint {}) = True
+    isNotNull (RowPrimaryKeyConstraint {}) = True
+    isNotNull _ = False
+
+    isNull (NullConstraint {}) = True
+    isNull _ = False
+
+    go name as = [CatCreateTable ("public", nameToText name)
+        [ (pack (ncStr name), catNameExtra) |
+          AttributeDef _ name ty rcs _ <- as,
+          let notNull = any isNotNull rcs && not (any isNull rcs),
+          let catNameExtra = (typeNameToCatNameExtra ty) {
+              catNullable = not notNull
+            }
+        ]
       ]
 
 -- ^ Report all type errors and return True if any were found.

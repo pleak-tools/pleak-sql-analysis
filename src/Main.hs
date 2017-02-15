@@ -12,6 +12,7 @@ import Database.HsSqlPpp.Pretty
 import Database.HsSqlPpp.Syntax
 import Database.HsSqlPpp.TypeCheck
 import GHC.Stack (HasCallStack, withFrozenCallStack)
+import Options.Applicative
 import System.Environment
 import System.Exit
 import System.IO
@@ -22,6 +23,25 @@ import qualified Data.Text.Lazy.IO as T
 import Data.Text (Text, pack)
 
 import Catalog
+
+---------------------
+-- Program options --
+---------------------
+
+data ProgramArgs
+  = ProgramArgs {
+    schemaFp          :: FilePath,
+    queryFp           :: FilePath,
+    debugPrintSchema  :: Bool,
+    debugPrintQuery   :: Bool
+  }
+
+programArgs :: Parser ProgramArgs
+programArgs = ProgramArgs
+  <$> strArgument (metavar "SCHEMA" <> help "File containing database schema")
+  <*> strArgument (metavar "QUERY" <> help "File containing SQL query")
+  <*> switch (long "debug-print-schema" <> hidden <> help "Print debug information about the database schema")
+  <*> switch (long "debug-print-query" <> hidden <> help "Print debug information about the SQL select query")
 
 ---------------------------------------------------
 -- Some dumb code to pretty print hssqlppp stuff --
@@ -127,7 +147,7 @@ checkAndReportErrors x = do
 
 main :: IO ()
 main = do
-  args <- getArgs
+  args <- execParser opts
   let
     dialect = postgresDialect
     parseFlags = defaultParseFlags { pfDialect = dialect }
@@ -138,39 +158,45 @@ main = do
       tcfExpandStars = True,
       tcfDialect = dialect
     }
-  case args of
-    [schemaFile, queryFile] -> do
-      schemaText <- T.readFile schemaFile
-      stmts <- case parseStatements parseFlags schemaFile Nothing schemaText of
-        Left err -> fatal (show err)
-        Right stmts -> return stmts
 
-      verifySchema schemaFile stmts
-      (catalog, stmts) <- return $ -- very much intentional for overshadowing
-        typeCheckStatements typeCheckFlags catalog stmts
-      stmtErrs <- checkAndReportErrors stmts
-      when stmtErrs exitFailure
-      let catUpdates = extractCatalogUpdates stmts
+  schemaText <- T.readFile (schemaFp args)
+  stmts <- case parseStatements parseFlags (schemaFp args) Nothing schemaText of
+    Left err -> fatal (show err)
+    Right stmts -> return stmts
 
-      -- mapM_ (putStrLn . groom) $ catUpdates
+  verifySchema (schemaFp args) stmts
+  (catalog, stmts) <- return $ -- very much intentional for overshadowing
+    typeCheckStatements typeCheckFlags catalog stmts
+  stmtErrs <- checkAndReportErrors stmts
+  when stmtErrs exitFailure
+  let catUpdates = extractCatalogUpdates stmts
 
-      catalog <- case updateCatalog catUpdates catalog of
-        Left e -> fatal $ show e
-        Right c -> return c
+  when (debugPrintSchema args) $
+    mapM_ (putStrLn . groom) $ catUpdates
 
-      -- putStrLn (groom stmts')
-      -- T.putStrLn (prettyStatements defaultPrettyFlags stmts')
+  catalog <- case updateCatalog catUpdates catalog of
+    Left e -> fatal $ show e
+    Right c -> return c
 
-      src <- T.readFile queryFile
-      query <- case parseQueryExpr parseFlags queryFile Nothing src of
-        Left err -> fatal (show err)
-        Right query@(Select { }) -> return query
-        Right _ -> fatal "Unsupported query type. Expecting basic SELECT query."
+  -- putStrLn (groom stmts')
+  -- T.putStrLn (prettyStatements defaultPrettyFlags stmts')
 
-      let query' = typeCheckQueryExpr typeCheckFlags catalog query
-      queryErrs <- checkAndReportErrors query'
-      when queryErrs exitFailure
+  src <- T.readFile (queryFp args)
+  query <- case parseQueryExpr parseFlags (queryFp args) Nothing src of
+    Left err -> fatal (show err)
+    Right query@(Select { }) -> return query
+    Right _ -> fatal "Unsupported query type. Expecting basic SELECT query."
 
-      T.putStrLn (prettyQueryExpr defaultPrettyFlags query')
-      -- putStrLn (groom query')
-    _ -> die "Invalid program arguments. Expecting a two files of which first contains schema and second the SQL query to analyze."
+  let query' = typeCheckQueryExpr typeCheckFlags catalog query
+  queryErrs <- checkAndReportErrors query'
+  when queryErrs exitFailure
+
+  when (debugPrintQuery args) $
+    T.putStrLn (prettyQueryExpr defaultPrettyFlags query')
+    -- putStrLn (groom query')
+  where
+    opts = info (programArgs <**> helper)
+      (fullDesc
+      <> progDesc "Performs static analysis of a SQL QUERY.\
+                  \ Database schema is described by SCHEMA."
+      <> header "sqla - static SQL sensitivily analyzer")

@@ -74,14 +74,10 @@ typeCheckSchema dialect fp catalog stmts = do
 verifySchema :: FilePath -> [Statement] -> IO ()
 verifySchema fp = mapM_ go
   where
-
     go CreateTable{} = return ()
     go stmt = case anSrc (getAnnotation stmt) of
       Nothing -> fatal (printf "Expecting only CREATE statements in scheme. Error in %s." fp)
       Just (_, r, c) -> fatal (printf "Expecting only CREATE statements in scheme. Error at %s:%d:%d." fp r c)
-      where
-        ann = getAnnotation stmt
-
 
 ------------------------------
 -- Extract info from schema --

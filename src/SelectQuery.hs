@@ -1,6 +1,7 @@
 module SelectQuery (parseSelectQuery, typeCheckSelectQuery) where
 
-import Control.Monad (when)
+import Control.Monad
+import Data.Maybe
 import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Dialect
 import Database.HsSqlPpp.Parse
@@ -22,11 +23,25 @@ parseSelectQuery dialect fp src =
   where
     parseFlags = defaultParseFlags { pfDialect = dialect }
 
+unsupportedFeatures :: QueryExpr -> [String]
+unsupportedFeatures query =
+  ["DISTINCT" | selDistinct query == Distinct] ++
+  ["GROUP BY" | not.null $ selGroupBy query] ++
+  ["LIMIT"    | isJust $ selLimit query] ++
+  ["OFFSET"   | isJust $ selOffset query] ++
+  ["HAVING"   | isJust $ selHaving query]
+
 typeCheckSelectQuery :: Dialect -> FilePath -> Catalog -> QueryExpr -> IO QueryExpr
 typeCheckSelectQuery dialect fp catalog query = do
   query <- return $ typeCheckQueryExpr typeCheckFlags catalog query
   queryErrs <- checkAndReportErrors query
   when queryErrs exitFailure
+  -- Because type checker may rewrite queries to a different form
+  -- we perform feature check late.
+  let unsupp = unsupportedFeatures query
+  forM_ unsupp $ \str ->
+    err $ str ++ " clause is not supported"
+  when (not $ null unsupp) exitFailure
   return query
   where
     typeCheckFlags = defaultTypeCheckFlags {

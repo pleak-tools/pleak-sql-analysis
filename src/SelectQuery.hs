@@ -23,8 +23,8 @@ parseSelectQuery dialect fp src =
   where
     parseFlags = defaultParseFlags { pfDialect = dialect }
 
-unsupportedFeatures :: QueryExpr -> [String]
-unsupportedFeatures query =
+unsupportedClauses :: QueryExpr -> [String]
+unsupportedClauses query =
   ["DISTINCT" | selDistinct query == Distinct] ++
   ["GROUP BY" | not.null $ selGroupBy query] ++
   ["LIMIT"    | isJust $ selLimit query] ++
@@ -38,7 +38,7 @@ typeCheckSelectQuery dialect fp catalog query = do
   when queryErrs exitFailure
   -- Because type checker may rewrite queries to a different form
   -- we perform feature check late.
-  let unsupp = unsupportedFeatures query
+  let unsupp = unsupportedClauses query
   forM_ unsupp $ \str ->
     err $ str ++ " clause is not supported"
   when (not $ null unsupp) exitFailure

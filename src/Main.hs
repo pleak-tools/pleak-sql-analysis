@@ -4,6 +4,7 @@ import Control.Monad
 import Data.Data
 import Data.Generics.Uniplate.Data
 import Data.List
+import Data.Maybe
 import Database.HsSqlPpp.Annotation
 import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Dialect
@@ -116,12 +117,51 @@ nameToText (Name _ ns) = pack $ go ns
     go [nc] = ncStr nc
     go (nc : ncs) = ncStr nc ++ "." ++ go ncs
 
+ncStrT :: NameComponent -> Text
+ncStrT = pack . ncStr
+
 typeNameToCatNameExtra :: TypeName -> CatNameExtra
 typeNameToCatNameExtra (SimpleTypeName _ n) = mkCatNameExtra (nameToText n)
 typeNameToCatNameExtra _ = ice "Unsupported TypeName."
 
-extractCatalogUpdates :: [Statement] -> [CatalogUpdate]
-extractCatalogUpdates stmts = concat [go name as | CreateTable _ name as _cs _ _ _ <- stmts]
+extractChecks :: Statement -> [ScalarExpr]
+extractChecks stmt
+  | CreateTable _ _ as cs _ _ _ <- stmt = concatMap goAttr as ++ mapMaybe goConstr cs
+  | otherwise = ice "Expecting a CREATE TABLE statement."
+  where
+
+    goAttr (AttributeDef _ _ _ rcs _) = mapMaybe goRow rcs
+
+    goRow (RowCheckConstraint _ _ e) = Just e
+    goRow _ = Nothing
+
+    goConstr (CheckConstraint _ _ e) = Just e
+    goConstr _ = Nothing
+
+extractUniques :: Statement -> [[NameComponent]]
+extractUniques stmt
+  | CreateTable _ _ as cs _ _ _ <- stmt = mapMaybe goAttr as ++ mapMaybe goConstr cs
+  | otherwise = ice "Expecting a CREATE TABLE statement."
+  where
+
+    isUniqueRow (RowPrimaryKeyConstraint {}) = True
+    isUniqueRow (RowUniqueConstraint {}) = True
+    isUniqueRow _ = False
+
+    goAttr (AttributeDef _ n _ rcs _)
+      | any isUniqueRow rcs = Just [n]
+      | otherwise = Nothing
+
+    goConstr (UniqueConstraint _ _ ns) = Just ns
+    goConstr (PrimaryKeyConstraint _ _ ns) = Just ns
+    goConstr _ = Nothing
+
+-- TODO: it's also possible that table constraint make column NOT NULL
+-- ^ Extract catalog updates from CREATE TABLE statements.
+extractCatalogUpdates :: Statement -> [CatalogUpdate]
+extractCatalogUpdates stmt
+  | CreateTable _ name as _cs _ _ _ <- stmt = go name as
+  | otherwise = ice "Expecting a CREATE TABLE statement."
   where
     isNotNull (NotNullConstraint {}) = True
     isNotNull (RowPrimaryKeyConstraint {}) = True
@@ -180,7 +220,12 @@ main = do
     typeCheckStatements typeCheckFlags catalog stmts
   stmtErrs <- checkAndReportErrors stmts
   when stmtErrs exitFailure
-  let catUpdates = extractCatalogUpdates stmts
+  let catUpdates = concatMap extractCatalogUpdates stmts
+
+  -- T.putStrLn (prettyStatements defaultPrettyFlags stmts)
+
+  -- forM_ stmts $ \stmt -> do
+  --   putStrLn $ groom $ extractUniques stmt
 
   when (debugPrintSchema args) $
     mapM_ (putStrLn . groom) $ catUpdates

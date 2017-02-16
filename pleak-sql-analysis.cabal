@@ -11,7 +11,7 @@ cabal-version:  >= 1.10
 executable sqla
   main-is:              Main.hs
   ghc-options:          -Wall -O0
-  build-depends:        base, hssqlppp, text, groom, uniplate, optparse-applicative
+  build-depends:        base >= 4.9, hssqlppp, text, groom, uniplate, optparse-applicative
   hs-source-dirs:       src
   other-modules:        Catalog
   default-language:     Haskell2010

@@ -77,7 +77,7 @@ main = do
   --   putStrLn $ groom $ extractUniques stmt
 
   when (debugPrintSchema args) $
-    mapM_ (putStrLn . groom) $ catUpdates
+    mapM_ (putStrLn . groom) catUpdates
 
   catalog <- case updateCatalog catUpdates catalog of
     Left e -> fatal $ show e

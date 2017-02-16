@@ -75,7 +75,7 @@ verifySchema :: FilePath -> [Statement] -> IO ()
 verifySchema fp = mapM_ go
   where
 
-    go (CreateTable { }) = return ()
+    go CreateTable{} = return ()
     go stmt = case anSrc (getAnnotation stmt) of
       Nothing -> fatal (printf "Expecting only CREATE statements in scheme. Error in %s." fp)
       Just (_, r, c) -> fatal (printf "Expecting only CREATE statements in scheme. Error at %s:%d:%d." fp r c)
@@ -125,8 +125,8 @@ extractUniques stmt
 
     normalize = nub . map sort
 
-    isUniqueRow (RowPrimaryKeyConstraint {}) = True
-    isUniqueRow (RowUniqueConstraint {}) = True
+    isUniqueRow RowPrimaryKeyConstraint{} = True
+    isUniqueRow RowUniqueConstraint{} = True
     isUniqueRow _ = False
 
     goAttr (AttributeDef _ n _ rcs _)
@@ -145,11 +145,11 @@ extractCatalogUpdates stmt
   | CreateTable _ name as _cs _ _ _ <- stmt = go name as
   | otherwise = ice "Expecting a CREATE TABLE statement."
   where
-    isNotNull (NotNullConstraint {}) = True
-    isNotNull (RowPrimaryKeyConstraint {}) = True
+    isNotNull NotNullConstraint{} = True
+    isNotNull RowPrimaryKeyConstraint{} = True
     isNotNull _ = False
 
-    isNull (NullConstraint {}) = True
+    isNull NullConstraint{} = True
     isNull _ = False
 
     go name as = [CatCreateTable ("public", nameToText name)

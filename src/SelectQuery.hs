@@ -17,7 +17,7 @@ parseSelectQuery :: Dialect -> FilePath -> T.Text -> IO QueryExpr
 parseSelectQuery dialect fp src =
   case parseQueryExpr parseFlags fp Nothing src of
     Left err -> fatal (show err)
-    Right query@(Select { }) -> return query
+    Right query@Select{} -> return query
     Right _ -> fatal "Unsupported query type. Expecting basic SELECT query."
   where
     parseFlags = defaultParseFlags { pfDialect = dialect }

@@ -109,17 +109,9 @@ removeChecks = transformBi (filter isntRowCheck) . transformBi (filter isntCheck
     isntCheck _ = True
 
 extractChecks :: Statement -> [ScalarExpr]
-extractChecks stmt
-  | CreateTable _ _ as cs _ _ _ <- stmt = concatMap goAttr as ++ mapMaybe goConstr cs
-  | otherwise = ice "Expecting a CREATE TABLE statement."
-  where
-    goAttr (AttributeDef _ _ _ rcs _) = mapMaybe goRow rcs
-
-    goRow (RowCheckConstraint _ _ e) = Just e
-    goRow _ = Nothing
-
-    goConstr (CheckConstraint _ _ e) = Just e
-    goConstr _ = Nothing
+extractChecks stmt =
+  [e | RowCheckConstraint _ _ e <- universeBi stmt] ++
+  [e | CheckConstraint _ _ e <- universeBi stmt]
 
 extractUniques :: Statement -> [[NameComponent]]
 extractUniques stmt
@@ -127,7 +119,6 @@ extractUniques stmt
       normalize $ mapMaybe goAttr as ++ mapMaybe goConstr cs
   | otherwise = ice "Expecting a CREATE TABLE statement."
   where
-
     normalize = nub . map sort
 
     isUniqueRow RowPrimaryKeyConstraint{} = True

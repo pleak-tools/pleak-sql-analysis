@@ -6,7 +6,8 @@ module Schema (
   typeCheckSchema,
   extractChecks,
   extractUniques,
-  extractCatalogUpdates
+  extractCatalogUpdates,
+  removeChecks,
   ) where
 
 import Control.Monad
@@ -98,12 +99,20 @@ typeNameToCatNameExtra :: TypeName -> CatNameExtra
 typeNameToCatNameExtra (SimpleTypeName _ n) = mkCatNameExtra (nameToText n)
 typeNameToCatNameExtra _ = ice "Unsupported TypeName."
 
+removeChecks :: Statement -> Statement
+removeChecks = transformBi (filter isntRowCheck) . transformBi (filter isntCheck)
+  where
+    isntRowCheck RowCheckConstraint{} = False
+    isntRowCheck _ = True
+
+    isntCheck CheckConstraint{} = False
+    isntCheck _ = True
+
 extractChecks :: Statement -> [ScalarExpr]
 extractChecks stmt
   | CreateTable _ _ as cs _ _ _ <- stmt = concatMap goAttr as ++ mapMaybe goConstr cs
   | otherwise = ice "Expecting a CREATE TABLE statement."
   where
-
     goAttr (AttributeDef _ _ _ rcs _) = mapMaybe goRow rcs
 
     goRow (RowCheckConstraint _ _ e) = Just e

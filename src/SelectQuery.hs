@@ -57,12 +57,14 @@ unsupportedFrom query =
     headToUpper [] = []
     headToUpper (x : xs) = toUpper x : xs
 
+-- ^ Get locations of unsupported expressions.
+-- ^ Both from WHERE clause and joins.
 unsupportedWhere :: QueryExpr -> [Loc]
 unsupportedWhere query =
   map (anSrc.getAnnotation) $
-  filter (not.isSupportedWhereExpr) es
-  where
-    es = universeBi (selWhere query)
+  filter (not.isSupportedWhereExpr) $
+  universeBi (selWhere query) ++
+  [e | JoinTref a _ _ _ _ _ (Just (JoinOn _ e)) <- universeBi query]
 
 isSupportedWhereExpr :: ScalarExpr -> Bool
 isSupportedWhereExpr = \case
@@ -89,7 +91,7 @@ typeCheckSelectQuery dialect fp catalog query = do
     err $ prettyLoc (printf "%s not supported in FROM clause." str) loc
   forM_ (unsupportedWhere query) $ \loc -> do
     bailRef `writeIORef` True
-    err $ prettyLoc "Unsupported expression in WHERE clause." loc
+    err $ prettyLoc "Unsupported expression in WHERE clause or join." loc
   bail <- readIORef bailRef
   when bail exitFailure
   return query

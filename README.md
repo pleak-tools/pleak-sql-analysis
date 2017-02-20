@@ -8,7 +8,7 @@ the root project directory:
 ```bash
 git submodule init
 git submodule update
-stack stack build
+stack build
 ```
 
 And follow the instructions that stack provides.

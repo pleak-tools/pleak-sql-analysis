@@ -1,6 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
 
-module SelectQuery (parseSelectQuery, typeCheckSelectQuery) where
+module SelectQuery (
+  parseSelectQuery,
+  typeCheckSelectQuery,
+  extractWhereExpr,
+  extractJoinTables)
+  where
 
 import Control.Monad
 import Database.HsSqlPpp.Annotation
@@ -12,6 +17,7 @@ import Database.HsSqlPpp.TypeCheck
 import Data.Char
 import Data.Generics.Uniplate.Data
 import Data.IORef
+import Data.List
 import Data.Maybe
 import System.Exit
 import Text.Printf
@@ -47,10 +53,11 @@ unsupportedClauses query =
 
 unsupportedFrom :: QueryExpr -> [(Loc, Reason)]
 unsupportedFrom query =
-  [(anSrc a, "Subquery") | SubTref a _ <- trefs] ++
-  [(anSrc a, "Function") | FunTref a _ <- trefs] ++
-  [(anSrc a, "???")      | OdbcTableRef a _ <- trefs] ++
-  [(anSrc a, showJoin j) | JoinTref a _ _ j _ _ _ <- trefs, j `notElem` [Inner, Cross]]
+  [(anSrc a, "Subquery")   | SubTref a _ <- trefs] ++
+  [(anSrc a, "Function")   | FunTref a _ <- trefs] ++
+  [(anSrc a, "???")        | OdbcTableRef a _ <- trefs] ++
+  [(anSrc a, showJoin j)   | JoinTref a _ _ j _ _ _ <- trefs, j `notElem` [Inner, Cross]] ++
+  [(anSrc a, "Full alias") | FullAlias a _ _ _ <- trefs] -- TODO: handle this properly
   where
     trefs = universeBi query
     showJoin j = headToUpper (map toLower (show j)) ++ " join"
@@ -59,21 +66,41 @@ unsupportedFrom query =
 
 -- ^ Get locations of unsupported expressions.
 -- ^ Both from WHERE clause and joins.
+-- TODO: Dont descend under already unsupported expressions?
 unsupportedWhere :: QueryExpr -> [Loc]
 unsupportedWhere query =
   map (anSrc.getAnnotation) $
   filter (not.isSupportedWhereExpr) $
-  universeBi (selWhere query) ++
-  [e | JoinTref a _ _ _ _ _ (Just (JoinOn _ e)) <- universeBi query]
+  universeBi (selWhere query) ++ universeBi (selTref query)
 
 isSupportedWhereExpr :: ScalarExpr -> Bool
 isSupportedWhereExpr = \case
-  NumberLit{}  -> True
-  StringLit{}  -> True
-  -- NullLit{} -> True
-  BooleanLit{} -> True
-  Identifier{} -> True
-  _            -> False
+  NumberLit{}      -> True
+  StringLit{}      -> True
+  -- NullLit{}     -> True
+  BooleanLit{}     -> True
+  Identifier{}     -> True
+  Parens{}         -> True
+  PrefixOp _ n _   -> nameToStr n `elem` ops
+  BinaryOp _ n _ _ -> nameToStr n `elem` ops
+  _                -> False
+  where
+    ops = ["=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/"]
+
+nameToStr :: Name -> String
+nameToStr (Name _ ns) = intercalate "." (map ncStr ns)
+nameToStr AntiName{} = ice "Unexpected AntiName."
+
+extractWhereExpr :: QueryExpr -> [ScalarExpr]
+extractWhereExpr query =
+  maybeToList (selWhere query) ++
+  [e | JoinTref a _ _ _ _ _ (Just (JoinOn _ e)) <- universeBi query]
+
+extractJoinTables :: QueryExpr -> [TableRef]
+extractJoinTables = concatMap go . selTref
+  where
+    go (JoinTref _ l _ _ _ r _) = go l ++ go r
+    go t = [t]
 
 typeCheckSelectQuery :: Dialect -> FilePath -> Catalog -> QueryExpr -> IO QueryExpr
 typeCheckSelectQuery dialect fp catalog query = do

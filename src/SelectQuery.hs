@@ -57,7 +57,8 @@ unsupportedFrom query =
   [(anSrc a, "Function")   | FunTref a _ <- trefs] ++
   [(anSrc a, "???")        | OdbcTableRef a _ <- trefs] ++
   [(anSrc a, showJoin j)   | JoinTref a _ _ j _ _ _ <- trefs, j `notElem` [Inner, Cross]] ++
-  [(anSrc a, "Full alias") | FullAlias a _ _ _ <- trefs] -- TODO: handle this properly
+  [(anSrc a, "Join USING") | JoinTref _ _ _ _ _ _ (Just (JoinUsing a _)) <- trefs] ++ -- TODO: handle these properly
+  [(anSrc a, "Full alias") | FullAlias a _ _ _ <- trefs] -- TODO: also handle this properly
   where
     trefs = universeBi query
     showJoin j = headToUpper (map toLower (show j)) ++ " join"

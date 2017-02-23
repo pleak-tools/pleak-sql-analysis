@@ -57,8 +57,7 @@ parseSchema dialect fp src =
 typeCheckSchema :: Dialect -> FilePath -> Catalog -> [Statement] -> IO (Catalog, [Statement])
 typeCheckSchema dialect fp catalog stmts = do
   verifySchema fp stmts
-  (catalog, stmts) <- return $
-    typeCheckStatements typeCheckFlags catalog stmts
+  (catalog, stmts) <- return $ typeCheckStatements typeCheckFlags catalog stmts
   anyErrors <- checkAndReportErrors stmts
   when anyErrors exitFailure
   return (catalog, stmts)
@@ -76,9 +75,10 @@ verifySchema :: FilePath -> [Statement] -> IO ()
 verifySchema fp = mapM_ go
   where
     go CreateTable{} = return ()
+    go CreateFunction{} = return ()
     go stmt = case anSrc (getAnnotation stmt) of
-      Nothing -> fatal (printf "Expecting only CREATE statements in scheme. Error in %s." fp)
-      Just (_, r, c) -> fatal (printf "Expecting only CREATE statements in scheme. Error at %s:%d:%d." fp r c)
+      Nothing -> fatal (printf "Expecting only CREATE statements in schema. Error in %s." fp)
+      Just (_, r, c) -> fatal (printf "Expecting only CREATE statements in schema. Error at %s:%d:%d." fp r c)
 
 ------------------------------
 -- Extract info from schema --
@@ -96,8 +96,11 @@ ncStrT :: NameComponent -> Text
 ncStrT = pack . ncStr
 
 typeNameToCatNameExtra :: TypeName -> CatNameExtra
-typeNameToCatNameExtra (SimpleTypeName _ n) = mkCatNameExtra (nameToText n)
-typeNameToCatNameExtra _ = ice "Unsupported TypeName."
+typeNameToCatNameExtra = mkCatNameExtra . typeNameToCatName
+
+typeNameToCatName :: TypeName -> CatName
+typeNameToCatName (SimpleTypeName _ n) = nameToText n
+typeNameToCatName _ = ice "Unsupported TypeName."
 
 removeChecks :: Statement -> Statement
 removeChecks = transformBi (filter isntRowCheck) . transformBi (filter isntCheck)
@@ -117,7 +120,8 @@ extractUniques :: Statement -> [[NameComponent]]
 extractUniques stmt
   | CreateTable _ _ as cs _ _ _ <- stmt =
       normalize $ mapMaybe goAttr as ++ mapMaybe goConstr cs
-  | otherwise = ice "Expecting a CREATE TABLE statement."
+  | CreateFunction{} <- stmt = []
+  | otherwise = ice "Expecting a CREATE TABLE or FUNCTION statement."
   where
     normalize = nub . map sort
 
@@ -138,8 +142,9 @@ extractUniques stmt
 -- ^ Extract catalog updates from CREATE TABLE statements.
 extractCatalogUpdates :: Statement -> [CatalogUpdate]
 extractCatalogUpdates stmt
-  | CreateTable _ name as _cs _ _ _ <- stmt = go name as
-  | otherwise = ice "Expecting a CREATE TABLE statement."
+  | CreateTable _ name as _cs _ _ _ <- stmt = doTable name as
+  | CreateFunction _ name ps retTy _  _ _ _ <- stmt = doFun name ps retTy
+  | otherwise = ice "Expecting a CREATE TABLE or FUNCTION statement."
   where
     isNotNull NotNullConstraint{} = True
     isNotNull RowPrimaryKeyConstraint{} = True
@@ -148,7 +153,10 @@ extractCatalogUpdates stmt
     isNull NullConstraint{} = True
     isNull _ = False
 
-    go name as = [CatCreateTable ("public", nameToText name)
+    paramDefTy (ParamDef _ _ t) = t
+    paramDefTy (ParamDefTp _ t) = t
+
+    doTable name as = [CatCreateTable ("public", nameToText name)
         [ (pack (ncStr name), catNameExtra) |
           AttributeDef _ name ty rcs _ <- as,
           let notNull = any isNotNull rcs && not (any isNull rcs),
@@ -157,3 +165,9 @@ extractCatalogUpdates stmt
             }
         ]
       ]
+
+    doFun name ps retTy = [CatCreateFunction name' ps' False retTy']
+      where
+        name' = nameToText name
+        retTy' = typeNameToCatName retTy
+        ps' = map (typeNameToCatName.paramDefTy) ps

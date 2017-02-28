@@ -94,28 +94,29 @@ dbUniqueInfoFromStatements = map go
 -- TODO: partial
 -- ^ Generate Z3 code to verify if query is <= 1 sensitive
 generateZ3 :: UniqueInfo         -- ^ uniques
-           -> [NameComponent]    -- ^ non-nulls
-           -> [ScalarExpr]       -- ^ checks
            -> DbSchema           -- ^ information about the database
            -> QueryExpr          -- ^ query
            -> ShowS
-generateZ3 us _ _ schema query =
+generateZ3 us s query =
   fcat $ map go uniqueJoinTables
   where
     joinTables = map (nameToCatName.getName) $ extractJoinTables query
 
     uniqueJoinTables = nub joinTables
 
+    -- XXX: does not consider nested queries!
+    schema = Map.filterWithKey (\k v -> k `elem` uniqueJoinTables) s
+
     uniqueAsserts fixedTable = fcat [genUnique schema fixedTable tbl cols | (tbl, colss) <- us, cols <- colss]
 
     getName (Tref _ n) = n
 
-    go fixedTable =
-      z3Push .
-      genDecls schema fixedTable .
-      uniqueAsserts fixedTable .
-      z3CheckSat .
-      z3Pop
+    go fixedTable = id
+      . z3Push
+      . genDecls schema fixedTable
+      . uniqueAsserts fixedTable
+      . z3CheckSat
+      . z3Pop
 
 nameComponentToCatName :: NameComponent -> CatName
 nameComponentToCatName n = pack $ genNameComponent n ""

@@ -15,6 +15,7 @@ import Catalog
 import Logging
 import SelectQuery
 import Schema
+import Z3Bridge
 
 ---------------------
 -- Program options --

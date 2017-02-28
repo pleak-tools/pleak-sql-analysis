@@ -2,6 +2,7 @@
 
 module Z3Bridge (
   dbFromCatalogUpdates,
+  dbUniqueInfoFromStatements,
   generateZ3)
   where
 
@@ -17,6 +18,7 @@ import Text.Printf
 import qualified Data.Map as Map
 
 import Logging
+import Schema
 import SelectQuery
 
 --------------------------------------
@@ -51,6 +53,15 @@ z3Isolate s = z3Push . s . z3Pop
 z3Assert :: ShowS -> ShowS
 z3Assert s = showP (showString "assert" . space . s) . nl
 
+z3Eq :: ShowS -> ShowS -> ShowS
+z3Eq e1 e2 = showP $ showChar '=' . space . e1 . space . e2
+
+z3And :: [ShowS] -> ShowS
+z3And es = showP (showString "and " . fcat (intersperse space es))
+
+z3Impl :: ShowS -> ShowS -> ShowS
+z3Impl e1 e2 = showP $ showString "=>" . space . e1 . space . e2
+
 z3DeclareConst :: ShowS -> ShowS -> ShowS
 z3DeclareConst var ty = showP (showString "declare-const" . space . var . space . ty) . nl
 
@@ -59,9 +70,11 @@ z3DeclareConst var ty = showP (showString "declare-const" . space . var . space 
 ------------------------------------
 
 -- TODO: move to Schema.hs
+-- clean up in general
 
 type TableInfo = [(CatName, CatName)]
 type DbSchema = Map CatName TableInfo
+type UniqueInfo = [(Name, [[NameComponent]])]
 
 dbTables :: DbSchema -> [CatName]
 dbTables = map fst . Map.toList
@@ -69,32 +82,43 @@ dbTables = map fst . Map.toList
 dbFromCatalogUpdates :: [CatalogUpdate] -> DbSchema
 dbFromCatalogUpdates us = Map.fromList [(n, map (second catName) cols) | CatCreateTable (_, n) cols <- us]
 
+dbUniqueInfoFromStatements :: [Statement] -> UniqueInfo
+dbUniqueInfoFromStatements = map go
+  where
+    go stmt = (extractName stmt, extractUniques stmt)
+
 ---------------------------
 -- Generate Z3 statement --
 ---------------------------
 
 -- TODO: partial
 -- ^ Generate Z3 code to verify if query is <= 1 sensitive
-generateZ3 :: [[NameComponent]]  -- ^ uniques
+generateZ3 :: UniqueInfo         -- ^ uniques
            -> [NameComponent]    -- ^ non-nulls
            -> [ScalarExpr]       -- ^ checks
            -> DbSchema           -- ^ information about the database
            -> QueryExpr          -- ^ query
            -> ShowS
-generateZ3 _ _ _ schema query =
+generateZ3 us _ _ schema query =
   fcat $ map go uniqueJoinTables
   where
     joinTables = map (nameToCatName.getName) $ extractJoinTables query
 
     uniqueJoinTables = nub joinTables
 
+    uniqueAsserts fixedTable = fcat [genUnique schema fixedTable tbl cols | (tbl, colss) <- us, cols <- colss]
+
     getName (Tref _ n) = n
 
     go fixedTable =
       z3Push .
       genDecls schema fixedTable .
+      uniqueAsserts fixedTable .
       z3CheckSat .
       z3Pop
+
+nameComponentToCatName :: NameComponent -> CatName
+nameComponentToCatName n = pack $ genNameComponent n ""
 
 nameToCatName :: Name -> CatName
 nameToCatName n = pack $ genName n ""
@@ -136,8 +160,8 @@ genNameComponent (AntiNameComponent s) = showString s
 genCatName :: CatName -> ShowS
 genCatName = showString . unpack
 
-genColNamePrefix :: CatName -> (CatName, CatName) -> ShowS
-genColNamePrefix tbl (row, _) = genCatName tbl . showChar '-' . genCatName row
+genColNamePrefix :: CatName -> CatName -> ShowS
+genColNamePrefix tbl row = genCatName tbl . showChar '-' . genCatName row
 
 genDecls :: DbSchema -> CatName -> ShowS
 genDecls schema fixed = fcat $ concatMap go $ Map.toList schema
@@ -147,19 +171,39 @@ genDecls schema fixed = fcat $ concatMap go $ Map.toList schema
       | otherwise = map (goVariable tbl) cols
 
     goFixed tbl col = let
-        name = genColNamePrefix tbl col
+        name = genColNamePrefix tbl (fst col)
       in z3DeclareConst name (genType (snd col))
 
     goVariable tbl col = let
-        prefix = genColNamePrefix tbl col
+        prefix = genColNamePrefix tbl (fst col)
         name1 = prefix . showString "-1"
         name2 = prefix . showString "-2"
         decl1 = z3DeclareConst name1 (genType (snd col))
         decl2 = z3DeclareConst name2 (genType (snd col))
       in decl1 . decl2
 
-genUnique :: DbSchema -> Name -> [NameComponent] -> ShowS
-genUnique schema tbl us = undefined
+-- ^ Assumes that "tbl" is not the one that is fixed!
+genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> ShowS
+genUnique schema fixedTable tbl us
+  | tblName == fixedTable = id
+  | null otherColNames = id
+  | otherwise = z3Assert (precond `z3Impl` postcond)
+  where
+    tblName = nameToCatName tbl
+    usNames = map nameComponentToCatName us
+    uniqueColNames = map (genColNamePrefix tblName) usNames
+    mk1 x = x . showString "-1"
+    mk2 x = x . showString "-2"
+    mkEq name = z3Eq (mk1 name) (mk2 name)
+    precond = z3And $ map mkEq uniqueColNames
+    postcond = z3And $ map mkEq otherColNames
+
+    -- TODO: only own table?
+    otherColNames = [genColNamePrefix tbl' col |
+        (tbl', cols) <- Map.toList schema,
+        fixedTable /= tbl',
+        (col, _) <- cols
+      ]
 
 -- TODO: function calls
 genScalarExpr :: ScalarExpr -> ShowS

@@ -7,6 +7,7 @@ module Schema (
   extractChecks,
   extractUniques,
   extractCatalogUpdates,
+  extractName,
   removeChecks,
   ) where
 
@@ -116,6 +117,11 @@ extractChecks stmt =
   [e | RowCheckConstraint _ _ e <- universeBi stmt] ++
   [e | CheckConstraint _ _ e <- universeBi stmt]
 
+extractName :: Statement -> Name
+extractName (CreateTable _ n _ _ _ _ _) = n
+extractName (CreateFunction _ n _ _ _ _ _ _) = n
+extractName _ = ice "Expecting a CREATE TABLE or FUNCTION statement."
+
 extractUniques :: Statement -> [[NameComponent]]
 extractUniques stmt
   | CreateTable _ _ as cs _ _ _ <- stmt =
@@ -123,7 +129,7 @@ extractUniques stmt
   | CreateFunction{} <- stmt = []
   | otherwise = ice "Expecting a CREATE TABLE or FUNCTION statement."
   where
-    normalize = nub . map sort
+    normalize = nub . map sort -- TODO: O(n^2)
 
     isUniqueRow RowPrimaryKeyConstraint{} = True
     isUniqueRow RowUniqueConstraint{} = True

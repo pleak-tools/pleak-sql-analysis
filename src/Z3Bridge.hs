@@ -3,24 +3,32 @@
 module Z3Bridge (
   dbFromCatalogUpdates,
   dbUniqueInfoFromStatements,
-  generateZ3)
+  generateZ3,
+  performAnalysis)
   where
 
 import Control.Arrow
+import Control.Concurrent
+import Control.Concurrent.Async
+import Control.Monad
 import Data.Char
 import Data.Data
 import Data.List
 import Data.Map (Map)
+import Data.Maybe
 import Data.Text (unpack, pack)
 import Database.HsSqlPpp.Annotation
 import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Syntax
 import Database.HsSqlPpp.Types
 import Text.Printf
+import System.IO
+import System.Process
 
 import qualified Data.Map as Map
 
 import Logging
+import ProgramOptions
 import Schema
 import SelectQuery
 
@@ -55,9 +63,6 @@ z3Pop = showString "(pop)\n"
 
 z3CheckSat :: ShowS
 z3CheckSat = showString "(check-sat)\n"
-
-z3Isolate :: ShowS -> ShowS
-z3Isolate s = z3Push . s . z3Pop
 
 z3Assert :: ShowS -> ShowS
 z3Assert s = showP (showString "assert" `spaced` s) . nl
@@ -95,9 +100,6 @@ type TableInfo = [(CatName, CatName)]
 type DbSchema = Map CatName TableInfo
 type UniqueInfo = [(Name, [[NameComponent]])]
 
-dbTables :: DbSchema -> [CatName]
-dbTables = map fst . Map.toList
-
 dbFromCatalogUpdates :: [CatalogUpdate] -> DbSchema
 dbFromCatalogUpdates us = Map.fromList [(n, map (second catName) cols) | CatCreateTable (_, n) cols <- us]
 
@@ -130,13 +132,28 @@ getSelects query = do
     Just t -> return t
   return (t, e)
 
+performAnalysis :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO ()
+performAnalysis opts us s q = do
+  result <- sendToZ3 (z3Path opts) tables (doc "")
+  results <- case result of
+    Nothing -> fatal "Z3 timed out."
+    Just rs -> return rs
+  forM_ (zip tables results) $ \(t, r) ->
+    putStrLn $ case r of
+      Sat     -> green  $ printf ">  1 sensitive over table \"%s\"" (unpack t)
+      UnSat   -> green  $ printf "<= 1 sensitive over table \"%s\"" (unpack t)
+      UnKnown -> yellow $ printf "sensitivity not known over table \"%s\"" (unpack t)
+      Bad str -> red $ printf "on table \"%s\" Z3 failed on with: %s" (unpack t) str
+  where
+    (tables, doc) = second fcat $ unzip $ generateZ3 us s q
+
 -- TODO: partial
 -- ^ Generate Z3 code to verify if query is <= 1 sensitive
 generateZ3 :: UniqueInfo         -- ^ uniques
            -> DbSchema           -- ^ information about the database
            -> QueryExpr          -- ^ query
-           -> ShowS
-generateZ3 us s query = fcat $ map go uniqueJoinTables
+           -> [(CatName, ShowS)]
+generateZ3 us s query = map (\t -> (t, go t)) uniqueJoinTables
   where
     joinTables = map (nameToCatName.getName) $ extractJoinTables query
     selects = getSelects query
@@ -152,7 +169,8 @@ generateZ3 us s query = fcat $ map go uniqueJoinTables
     funDecl = z3DeclareFun mkTuple (map (genType.fst) selects) (showString "Int")
     distinctAsserts fixedTable = let
         (e1s, e2s) = unzip [(e1, e2) | (_, e) <- selects, let e1 : e2 : _ = genScalarExpr' fixedTable e]
-      in z3Assert $ z3Distinct [showP $ mkTuple `spaced` sepBySpace e1s, showP $ mkTuple `spaced` sepBySpace e2s]
+      in z3Assert $ z3Distinct [showP $ mkTuple `spaced` sepBySpace e1s,
+                                showP $ mkTuple `spaced` sepBySpace e2s]
 
     getName (Tref _ n) = n -- TODO: obviously...
 
@@ -288,3 +306,49 @@ genScalarExpr showIdent = go
       PrefixOp _ op e -> showP $ genOp op `spaced` go e
       BinaryOp _ op e1 e2 -> showP $ genOp op `spaced` go e1 `spaced` go e2
       _ -> ice "Invalid scalar expression." -- TODO: location
+
+-------------------------
+-- Interaction with Z3 --
+-------------------------
+
+data SatResult
+  = UnSat
+  | Sat
+  | UnKnown
+  | Bad String
+
+readSatResultZ3 :: String -> SatResult
+readSatResultZ3 = \case
+  "unsat"  -> UnSat
+  "sat"    -> Sat
+  "unkown" -> UnKnown
+  str      -> Bad str
+
+withTimeout :: Int -> IO a -> IO (Maybe a)
+withTimeout timeout act  = either Just (const Nothing) <$> race act (threadDelay timeout)
+
+sendToZ3 :: Maybe FilePath -> [CatName] -> String -> IO (Maybe [SatResult])
+sendToZ3 z3Path tbls msg = do
+  let z3Command = fromMaybe "z3" z3Path
+  let cmdArgs = ["-smt2", "-in", "-T:15", "-t:5000"]
+  (Just hin, Just hout, _, procHandle) <- createProcess (proc z3Command cmdArgs) {
+    std_in  = CreatePipe,
+    std_out = CreatePipe
+  }
+
+  hPutStrLn hin msg
+  hFlush hin
+
+  result <- withTimeout 15000000 $ do
+    rs <- forM tbls $ \_ ->
+      readSatResultZ3 <$> hGetLine hout
+    hClose hin
+    hClose hout
+    return rs
+
+  exitCode <- getProcessExitCode procHandle
+  case exitCode of
+    Nothing -> terminateProcess procHandle
+    Just _ -> return ()
+
+  return result

@@ -6,7 +6,6 @@ import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Dialect
 import Database.HsSqlPpp.Pretty
 import Database.HsSqlPpp.Syntax
-import Options.Applicative
 import Text.Groom
 
 import qualified Data.Text.Lazy.IO as T
@@ -16,25 +15,7 @@ import Logging
 import SelectQuery
 import Schema
 import Z3Bridge
-
----------------------
--- Program options --
----------------------
-
-data ProgramArgs
-  = ProgramArgs {
-    schemaFp          :: FilePath,
-    queryFp           :: FilePath,
-    debugPrintSchema  :: Bool,
-    debugPrintQuery   :: Bool
-  }
-
-programArgs :: Parser ProgramArgs
-programArgs = ProgramArgs
-  <$> strArgument (metavar "SCHEMA" <> help "File containing database schema")
-  <*> strArgument (metavar "QUERY" <> help "File containing SQL query")
-  <*> switch (long "debug-print-schema" <> hidden <> help "Print debug information about the database schema")
-  <*> switch (long "debug-print-query" <> hidden <> help "Print debug information about the SQL select query")
+import ProgramOptions
 
 ---------------------------------------------------
 -- Some dumb code to pretty print hssqlppp stuff --
@@ -65,7 +46,7 @@ stripAnnotations str@(c : cs)
 
 main :: IO ()
 main = do
-  args <- execParser opts
+  args <- getProgramOptions
   let dialect = postgresDialect
   schemaText <- T.readFile (schemaFp args)
   stmts <- parseSchema dialect (schemaFp args) schemaText
@@ -92,11 +73,14 @@ main = do
   query <- typeCheckSelectQuery dialect (queryFp args) catalog query
 
   when (debugPrintQuery args) $
-    T.putStrLn (prettyQueryExpr defaultPrettyFlags query)
-    -- putStrLn (groom query')
-  where
-    opts = info (programArgs <**> helper)
-      (fullDesc
-      <> progDesc "Performs static analysis of a SQL QUERY.\
-                  \ Database schema is described by SCHEMA."
-      <> header "sqla - static SQL sensitivily analyzer")
+    if debugVerbose args
+      then putStrLn (groom query)
+      else T.putStrLn (prettyQueryExpr defaultPrettyFlags query)
+  -- putStrLn $ groomStripped $ extractJoinTables query
+  -- forM_ stmts $ \stmt -> do
+  --   putStrLn $ show $ extractName stmt
+  --   putStrLn $ groomStripped $ extractUniques stmt
+  performAnalysis args
+                  (dbUniqueInfoFromStatements stmts)
+                  (dbFromCatalogUpdates catUpdates)
+                  query

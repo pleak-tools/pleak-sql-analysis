@@ -45,7 +45,7 @@ prettyLoc msg (Just (fp, r, c)) = printf "%s. Error at %s:%d:%d" msg fp r c
 
 unsupportedClauses :: QueryExpr -> [Reason]
 unsupportedClauses query =
-  ["DISTINCT" | selDistinct query == Distinct] ++
+  ["ALL"      | selDistinct query == All] ++
   ["GROUP BY" | not.null $ selGroupBy query] ++
   ["LIMIT"    | isJust $ selLimit query] ++
   ["OFFSET"   | isJust $ selOffset query] ++

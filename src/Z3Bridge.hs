@@ -81,6 +81,9 @@ z3DeclareFun name args ret =
          showP (sepBySpace args) `spaced`
          ret) . nl
 
+z3Distinct :: [ShowS] -> ShowS
+z3Distinct as = showP (sepBySpace (showString "distinct" : as))
+
 ------------------------------------
 -- Information about the database --
 ------------------------------------
@@ -145,7 +148,11 @@ generateZ3 us s query = fcat $ map go uniqueJoinTables
 
     uniqueAsserts fixedTable = fcat [genUnique schema fixedTable tbl cols | (tbl, colss) <- us, cols <- colss]
     whereAsserts fixedTable = fcat $ map (genWhere schema fixedTable) $ extractWhereExpr query
-    funDecl = z3DeclareFun (showString "mk-tuple") (map (genType.fst) selects) (showString "Int")
+    mkTuple = showString "mk-tuple"
+    funDecl = z3DeclareFun mkTuple (map (genType.fst) selects) (showString "Int")
+    distinctAsserts fixedTable = let
+        (e1s, e2s) = unzip [(e1, e2) | (_, e) <- selects, let e1 : e2 : _ = genScalarExpr' fixedTable e]
+      in z3Assert $ z3Distinct [showP $ mkTuple `spaced` sepBySpace e1s, showP $ mkTuple `spaced` sepBySpace e2s]
 
     getName (Tref _ n) = n -- TODO: obviously...
 
@@ -155,6 +162,7 @@ generateZ3 us s query = fcat $ map go uniqueJoinTables
       . uniqueAsserts fixedTable
       . whereAsserts fixedTable
       . funDecl
+      . distinctAsserts fixedTable
       . z3CheckSat
       . z3Pop
 
@@ -212,16 +220,8 @@ genColName tbl row suffix = genColNamePrefix tbl row . suffix
 
 -- TODO: get rid of duplicates
 genWhere :: DbSchema -> CatName -> ScalarExpr -> ShowS
-genWhere schema fixed e =
-  z3Assert (genScalarExpr (showIdent "-1") e) .
-  z3Assert (genScalarExpr (showIdent "-2") e)
-  where
-    showIdent s (Name _ [q, n])
-      | q' == fixed = genColName q' n' id
-      | otherwise = genColName q' n' (showString s)
-      where
-        q' = nameComponentToCatName q
-        n' = nameComponentToCatName n
+genWhere schema fixed e = z3Assert e1 . z3Assert e2
+  where e1 : e2 : _ = genScalarExpr' fixed e
 
 genDecls :: DbSchema -> CatName -> ShowS
 genDecls schema fixed = fcat $ concatMap go $ Map.toList schema
@@ -263,6 +263,17 @@ genUnique schema fixedTable tbl us
         fixedTable /= tbl',
         (col, _) <- cols
       ]
+
+-- TODO: quite inefficient
+genScalarExpr' :: CatName -> ScalarExpr -> [ShowS]
+genScalarExpr' fixed e = [genScalarExpr (showIdent i) e | i <- [1 ..]]
+  where
+    showIdent i (Name _ [q, n])
+      | q' == fixed = genColName q' n' id
+      | otherwise = genColName q' n' (showChar '-' . shows i)
+      where
+        q' = nameComponentToCatName q
+        n' = nameComponentToCatName n
 
 -- TODO: function calls
 genScalarExpr :: (Name -> ShowS) -> ScalarExpr -> ShowS

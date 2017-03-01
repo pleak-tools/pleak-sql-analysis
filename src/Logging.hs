@@ -1,4 +1,4 @@
-module Logging (warn, fatal, err, ice) where
+module Logging (red, green, yellow, warn, fatal, err, ice) where
 
 import GHC.Stack (HasCallStack, withFrozenCallStack)
 import System.Exit
@@ -6,6 +6,9 @@ import System.IO
 
 red :: String -> String
 red s = "\x1b[31m" ++ s ++ "\x1b[0m"
+
+green :: String -> String
+green s = "\x1b[32m" ++ s ++ "\x1b[0m"
 
 yellow :: String -> String
 yellow s = "\x1b[33m" ++ s ++ "\x1b[0m"

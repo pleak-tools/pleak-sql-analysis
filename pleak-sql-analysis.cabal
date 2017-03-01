@@ -11,7 +11,10 @@ cabal-version:  >= 1.10
 executable sqla
   main-is:              Main.hs
   ghc-options:          -Wall -Wno-name-shadowing -O0
-  build-depends:        base >= 4.9, hssqlppp, text, groom, uniplate, optparse-applicative, containers
+  build-depends:        base >= 4.9,
+                        hssqlppp, text, groom,
+                        uniplate, optparse-applicative,
+                        containers, process, async
   hs-source-dirs:       src
-  other-modules:        Catalog, Schema, Logging, SelectQuery, Z3Bridge
+  other-modules:        Catalog, Schema, Logging, SelectQuery, Z3Bridge, ProgramOptions
   default-language:     Haskell2010

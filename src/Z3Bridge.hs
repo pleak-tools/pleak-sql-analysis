@@ -8,11 +8,14 @@ module Z3Bridge (
 
 import Control.Arrow
 import Data.Char
+import Data.Data
 import Data.List
 import Data.Map (Map)
 import Data.Text (unpack, pack)
+import Database.HsSqlPpp.Annotation
 import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Syntax
+import Database.HsSqlPpp.Types
 import Text.Printf
 
 import qualified Data.Map as Map
@@ -35,6 +38,12 @@ showP s = showChar '(' . s . showChar ')'
 space :: ShowS
 space = showChar ' '
 
+spaced :: ShowS -> ShowS -> ShowS
+spaced x y = x . space . y
+
+sepBySpace :: [ShowS] -> ShowS
+sepBySpace = fcat . intersperse space
+
 nl :: ShowS
 nl = showChar '\n'
 
@@ -51,19 +60,26 @@ z3Isolate :: ShowS -> ShowS
 z3Isolate s = z3Push . s . z3Pop
 
 z3Assert :: ShowS -> ShowS
-z3Assert s = showP (showString "assert" . space . s) . nl
+z3Assert s = showP (showString "assert" `spaced` s) . nl
 
 z3Eq :: ShowS -> ShowS -> ShowS
-z3Eq e1 e2 = showP $ showChar '=' . space . e1 . space . e2
+z3Eq e1 e2 = showP $ showChar '=' `spaced` e1 `spaced` e2
 
 z3And :: [ShowS] -> ShowS
-z3And es = showP (showString "and " . fcat (intersperse space es))
+z3And es = showP (showString "and" `spaced` sepBySpace es)
 
 z3Impl :: ShowS -> ShowS -> ShowS
-z3Impl e1 e2 = showP $ showString "=>" . space . e1 . space . e2
+z3Impl e1 e2 = showP $ showString "=>" `spaced` e1 `spaced` e2
 
 z3DeclareConst :: ShowS -> ShowS -> ShowS
-z3DeclareConst var ty = showP (showString "declare-const" . space . var . space . ty) . nl
+z3DeclareConst var ty = showP (showString "declare-const" `spaced` var `spaced` ty) . nl
+
+z3DeclareFun :: ShowS -> [ShowS] -> ShowS -> ShowS
+z3DeclareFun name args ret =
+  showP (showString "declare-fun" `spaced`
+         name `spaced`
+         showP (sepBySpace args) `spaced`
+         ret) . nl
 
 ------------------------------------
 -- Information about the database --
@@ -91,16 +107,36 @@ dbUniqueInfoFromStatements = map go
 -- Generate Z3 statement --
 ---------------------------
 
+exprFromSelectItem :: SelectItem -> ScalarExpr
+exprFromSelectItem (SelExp _ e) = e
+exprFromSelectItem (SelectItem _ e _) = e
+
+getScalarTypeFromAnn :: Data a => a -> Maybe CatName
+getScalarTypeFromAnn x = (getScalarType . teType) <$> anType (getAnnotation x)
+  where
+    getScalarType = \case
+      ScalarType t -> t
+      _ -> ice "Invalid type."
+
+getSelects :: QueryExpr -> [(CatName, ScalarExpr)]
+getSelects query = do
+  let SelectList _ ss = selSelectList query
+  e <- exprFromSelectItem <$> ss
+  t <- case getScalarTypeFromAnn e of
+    Nothing -> ice "Expecting type annotation here."
+    Just t -> return t
+  return (t, e)
+
 -- TODO: partial
 -- ^ Generate Z3 code to verify if query is <= 1 sensitive
 generateZ3 :: UniqueInfo         -- ^ uniques
            -> DbSchema           -- ^ information about the database
            -> QueryExpr          -- ^ query
            -> ShowS
-generateZ3 us s query =
-  fcat $ map go uniqueJoinTables
+generateZ3 us s query = fcat $ map go uniqueJoinTables
   where
     joinTables = map (nameToCatName.getName) $ extractJoinTables query
+    selects = getSelects query
 
     uniqueJoinTables = nub joinTables
 
@@ -108,13 +144,17 @@ generateZ3 us s query =
     schema = Map.filterWithKey (\k v -> k `elem` uniqueJoinTables) s
 
     uniqueAsserts fixedTable = fcat [genUnique schema fixedTable tbl cols | (tbl, colss) <- us, cols <- colss]
+    whereAsserts fixedTable = fcat $ map (genWhere schema fixedTable) $ extractWhereExpr query
+    funDecl = z3DeclareFun (showString "mk-tuple") (map (genType.fst) selects) (showString "Int")
 
-    getName (Tref _ n) = n
+    getName (Tref _ n) = n -- TODO: obviously...
 
     go fixedTable = id
       . z3Push
       . genDecls schema fixedTable
       . uniqueAsserts fixedTable
+      . whereAsserts fixedTable
+      . funDecl
       . z3CheckSat
       . z3Pop
 
@@ -129,19 +169,22 @@ genName (AntiName n) = showString n
 genName (Name _ ns) = fcat $ intersperse (showString "-") $ map genNameComponent ns
 
 -- TODO: "IS" and "IS NOT" dont work the same way as "=" and "!="
+--       unless we assume that everything is NOT NULL (which we do)
 genOp :: Name -> ShowS
-genOp n = maybe id (ice errMsg) $ lookup n' ops
+genOp n = maybe (ice errMsg) id $ lookup n' ops
   where
     n' = map toLower (genName n "")
     errMsg  = printf "Undefined operator \"%s\"" n'
     ops = map (second showString) [
         ("not", "not"),
-        ("||", "or"), ("or", "or"),
-        ("&&", "and"), ("and", "and"),
+        ("or", "or"),
+        ("and", "and"),
         ("<>", "distinct"), ("!=", "distinct"), ("is not", "distinct"),
-        ("*", "*"), ("+", "+"), ("-", "-"), ("/", "/"), ("%", "%")
+        ("*", "*"), ("+", "+"), ("-", "-"), ("/", "/"), ("%", "%"),
+        ("=", "="), ("<", "<"), ("<=", "<="), (">", ">"), (">=", ">=")
       ]
 
+-- TODO: variables of those types have extra constraints!
 genType :: CatName -> ShowS
 genType n = showString $ case unpack n of
   "int2"    -> "Int"
@@ -164,6 +207,22 @@ genCatName = showString . unpack
 genColNamePrefix :: CatName -> CatName -> ShowS
 genColNamePrefix tbl row = genCatName tbl . showChar '-' . genCatName row
 
+genColName :: CatName -> CatName -> ShowS -> ShowS
+genColName tbl row suffix = genColNamePrefix tbl row . suffix
+
+-- TODO: get rid of duplicates
+genWhere :: DbSchema -> CatName -> ScalarExpr -> ShowS
+genWhere schema fixed e =
+  z3Assert (genScalarExpr (showIdent "-1") e) .
+  z3Assert (genScalarExpr (showIdent "-2") e)
+  where
+    showIdent s (Name _ [q, n])
+      | q' == fixed = genColName q' n' id
+      | otherwise = genColName q' n' (showString s)
+      where
+        q' = nameComponentToCatName q
+        n' = nameComponentToCatName n
+
 genDecls :: DbSchema -> CatName -> ShowS
 genDecls schema fixed = fcat $ concatMap go $ Map.toList schema
   where
@@ -176,9 +235,8 @@ genDecls schema fixed = fcat $ concatMap go $ Map.toList schema
       in z3DeclareConst name (genType (snd col))
 
     goVariable tbl col = let
-        prefix = genColNamePrefix tbl (fst col)
-        name1 = prefix . showString "-1"
-        name2 = prefix . showString "-2"
+        name1 = genColName tbl (fst col) (showString "-1")
+        name2 = genColName tbl (fst col) (showString "-2")
         decl1 = z3DeclareConst name1 (genType (snd col))
         decl2 = z3DeclareConst name2 (genType (snd col))
       in decl1 . decl2
@@ -207,23 +265,15 @@ genUnique schema fixedTable tbl us
       ]
 
 -- TODO: function calls
-genScalarExpr :: ScalarExpr -> ShowS
-genScalarExpr = \case
-  Identifier _ n -> genName n
-  NumberLit _ s -> showString s
-  BooleanLit _ b -> shows b
-  StringLit _ s -> shows s
-  Parens _ e -> genScalarExpr e
-  PrefixOp _ op e ->
-    showP            $
-    genOp op         .
-    space            .
-    genScalarExpr e
-  BinaryOp _ op e1 e2 ->
-    showP            $
-    genOp op         .
-    space            .
-    genScalarExpr e1 .
-    space            .
-    genScalarExpr e2
-  _ -> ice "Invalid scalar expression." -- TODO: location
+genScalarExpr :: (Name -> ShowS) -> ScalarExpr -> ShowS
+genScalarExpr showIdent = go
+  where
+    go = \case
+      Identifier _ n -> showIdent n
+      NumberLit _ s -> showString s
+      BooleanLit _ b -> shows b
+      StringLit _ s -> shows s -- TODO: relying on how haskell shows strings
+      Parens _ e -> go e
+      PrefixOp _ op e -> showP $ genOp op `spaced` go e
+      BinaryOp _ op e1 e2 -> showP $ genOp op `spaced` go e1 `spaced` go e2
+      _ -> ice "Invalid scalar expression." -- TODO: location

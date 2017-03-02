@@ -140,10 +140,10 @@ performAnalysis opts us s q = do
     Just rs -> return rs
   forM_ (zip tables results) $ \(t, r) ->
     putStrLn $ case r of
-      Sat     -> green  $ printf ">  1 sensitive over table \"%s\"" (unpack t)
-      UnSat   -> green  $ printf "<= 1 sensitive over table \"%s\"" (unpack t)
-      UnKnown -> yellow $ printf "sensitivity not known over table \"%s\"" (unpack t)
-      Bad str -> red $ printf "on table \"%s\" Z3 failed on with: %s" (unpack t) str
+      Sat     -> printf ">  1 sensitive over %s" (unpack t)
+      Unsat   -> printf "<= 1 sensitive over %s" (unpack t)
+      Unknown -> yellow $ printf "sensitivity not known over %s" (unpack t)
+      Bad str -> red $ printf "on table %s Z3 failed on with: %s" (unpack t) str
   where
     (tables, doc) = second fcat $ unzip $ generateZ3 us s q
 
@@ -312,16 +312,16 @@ genScalarExpr showIdent = go
 -------------------------
 
 data SatResult
-  = UnSat
+  = Unsat
   | Sat
-  | UnKnown
+  | Unknown
   | Bad String
 
 readSatResultZ3 :: String -> SatResult
 readSatResultZ3 = \case
-  "unsat"  -> UnSat
+  "unsat"  -> Unsat
   "sat"    -> Sat
-  "unkown" -> UnKnown
+  "unkown" -> Unknown
   str      -> Bad str
 
 withTimeout :: Int -> IO a -> IO (Maybe a)

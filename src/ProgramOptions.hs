@@ -8,6 +8,7 @@ data ProgramOptions
   = ProgramOptions {
     schemaFp          :: FilePath,
     queryFp           :: FilePath,
+    sensitivity       :: Int,
     z3Path            :: Maybe FilePath,
     debugPrintSchema  :: Bool,
     debugPrintQuery   :: Bool,
@@ -21,6 +22,8 @@ programArgs :: Parser ProgramOptions
 programArgs = ProgramOptions
   <$> strArgument (metavar "SCHEMA" <> help "File containing database schema")
   <*> strArgument (metavar "QUERY" <> help "File containing SQL query")
+  <*> option auto (short 's' <> long "sensitivity" <> metavar "INT" <> value 1 <>
+        help "Specify sensitivity to check (default is 1)")
   <*> maybeStrOption (long "z3-path" <> metavar "PATH" <> help "Z3 path.")
   <*> switch (long "debug-print-schema" <> hidden <> help "Print debug information about the database schema")
   <*> switch (long "debug-print-query" <> hidden <> help "Print debug information about the SQL select query")

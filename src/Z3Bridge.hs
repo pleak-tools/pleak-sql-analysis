@@ -67,8 +67,11 @@ z3CheckSat = showString "(check-sat)\n"
 z3Assert :: ShowS -> ShowS
 z3Assert s = showP (showString "assert" `spaced` s) . nl
 
-z3Eq :: ShowS -> ShowS -> ShowS
-z3Eq e1 e2 = showP $ showChar '=' `spaced` e1 `spaced` e2
+z3Eq :: [ShowS] -> ShowS
+z3Eq as = showP $ sepBySpace $ showString "=" : as
+
+z3Distinct :: [ShowS] -> ShowS
+z3Distinct as = showP $ sepBySpace $ showString "distinct" : as
 
 z3And :: [ShowS] -> ShowS
 z3And es = showP (showString "and" `spaced` sepBySpace es)
@@ -85,9 +88,6 @@ z3DeclareFun name args ret =
          name `spaced`
          showP (sepBySpace args) `spaced`
          ret) . nl
-
-z3Distinct :: [ShowS] -> ShowS
-z3Distinct as = showP (sepBySpace (showString "distinct" : as))
 
 ------------------------------------
 -- Information about the database --
@@ -140,20 +140,21 @@ performAnalysis opts us s q = do
     Just rs -> return rs
   forM_ (zip tables results) $ \(t, r) ->
     putStrLn $ case r of
-      Sat     -> printf ">  1 sensitive over %s" (unpack t)
-      Unsat   -> printf "<= 1 sensitive over %s" (unpack t)
-      Unknown -> yellow $ printf "sensitivity not known over %s" (unpack t)
+      Sat     -> printf ">  %d sensitive over %s" (sensitivity opts) (unpack t)
+      Unsat   -> printf "<= %d sensitive over %s" (sensitivity opts) (unpack t)
+      Unknown -> yellow $ printf "sensitivity not known over %s (Z3 yielded unknown)" (unpack t)
       Bad str -> red $ printf "on table %s Z3 failed on with: %s" (unpack t) str
   where
-    (tables, doc) = second fcat $ unzip $ generateZ3 us s q
+    (tables, doc) = second fcat $ unzip $ generateZ3 us s q (sensitivity opts)
 
 -- TODO: partial
 -- ^ Generate Z3 code to verify if query is <= 1 sensitive
 generateZ3 :: UniqueInfo         -- ^ uniques
            -> DbSchema           -- ^ information about the database
            -> QueryExpr          -- ^ query
+           -> Int                -- ^ sensitivity
            -> [(CatName, ShowS)]
-generateZ3 us s query = map (\t -> (t, go t)) uniqueJoinTables
+generateZ3 us s query n = map (\t -> (t, go t)) uniqueJoinTables
   where
     joinTables = map (nameToCatName.getName) $ extractJoinTables query
     selects = getSelects query
@@ -163,20 +164,20 @@ generateZ3 us s query = map (\t -> (t, go t)) uniqueJoinTables
     -- XXX: does not consider nested queries!
     schema = Map.filterWithKey (\k v -> k `elem` uniqueJoinTables) s
 
-    uniqueAsserts fixedTable = fcat [genUnique schema fixedTable tbl cols | (tbl, colss) <- us, cols <- colss]
+    uniqueAsserts fixedTable = fcat [genUnique schema fixedTable tbl cols n | (tbl, colss) <- us, cols <- colss]
     whereAsserts fixedTable = fcat $ map (genWhere schema fixedTable) $ extractWhereExpr query
     mkTuple = showString "mk-tuple"
     funDecl = z3DeclareFun mkTuple (map (genType.fst) selects) (showString "Int")
+
     distinctAsserts fixedTable = let
-        (e1s, e2s) = unzip [(e1, e2) | (_, e) <- selects, let e1 : e2 : _ = genScalarExpr' fixedTable e]
-      in z3Assert $ z3Distinct [showP $ mkTuple `spaced` sepBySpace e1s,
-                                showP $ mkTuple `spaced` sepBySpace e2s]
+        ess = transpose [take (n + 1) $ genScalarExpr' fixedTable e | (_, e) <- selects]
+      in z3Assert $ z3Distinct $ map (\es -> showP $ mkTuple `spaced` sepBySpace es) ess
 
     getName (Tref _ n) = n -- TODO: obviously...
 
     go fixedTable = id
       . z3Push
-      . genDecls schema fixedTable
+      . genDecls schema fixedTable n
       . uniqueAsserts fixedTable
       . whereAsserts fixedTable
       . funDecl
@@ -241,8 +242,8 @@ genWhere :: DbSchema -> CatName -> ScalarExpr -> ShowS
 genWhere schema fixed e = z3Assert e1 . z3Assert e2
   where e1 : e2 : _ = genScalarExpr' fixed e
 
-genDecls :: DbSchema -> CatName -> ShowS
-genDecls schema fixed = fcat $ concatMap go $ Map.toList schema
+genDecls :: DbSchema -> CatName -> Int -> ShowS
+genDecls schema fixed n = fcat $ concatMap go $ Map.toList schema
   where
     go (tbl, cols)
       | tbl == fixed = map (goFixed tbl) cols
@@ -253,15 +254,14 @@ genDecls schema fixed = fcat $ concatMap go $ Map.toList schema
       in z3DeclareConst name (genType (snd col))
 
     goVariable tbl col = let
-        name1 = genColName tbl (fst col) (showString "-1")
-        name2 = genColName tbl (fst col) (showString "-2")
-        decl1 = z3DeclareConst name1 (genType (snd col))
-        decl2 = z3DeclareConst name2 (genType (snd col))
-      in decl1 . decl2
+        ty = genType (snd col)
+        name i = genColName tbl (fst col) (showString "-" . shows i)
+        decl i = z3DeclareConst (name i) ty
+      in fcat [decl i | i <- [1 .. n + 1]]
 
 -- ^ Assumes that "tbl" is not the one that is fixed!
-genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> ShowS
-genUnique schema fixedTable tbl us
+genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS
+genUnique schema fixedTable tbl us n
   | tblName == fixedTable = id
   | null otherColNames = id
   | otherwise = z3Assert (precond `z3Impl` postcond)
@@ -269,9 +269,8 @@ genUnique schema fixedTable tbl us
     tblName = nameToCatName tbl
     usNames = map nameComponentToCatName us
     uniqueColNames = map (genColNamePrefix tblName) usNames
-    mk1 x = x . showString "-1"
-    mk2 x = x . showString "-2"
-    mkEq name = z3Eq (mk1 name) (mk2 name)
+    mk i x = x . showString "-" . shows i
+    mkEq name = z3Eq [mk i name | i <- [1 .. n + 1]]
     precond = z3And $ map mkEq uniqueColNames
     postcond = z3And $ map mkEq otherColNames
 

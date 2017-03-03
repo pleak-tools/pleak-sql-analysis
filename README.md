@@ -13,10 +13,12 @@ stack build
 
 And follow the instructions that stack provides.
 
+## Using
+
+You will need Z3 to be in the PATH. Z3 location can can also be specified with  `--z3-path` flag. See `--help` for more usage information.
 
 ## TODO
 
-- [ ] Write `README.md`
-- [ ] SQL abstract syntax (simplified language)
-- [ ] Basic analysis support
-- [ ] Concrete syntax
+- [x] Write `README.md`
+- [x] Very basic analysis support
+- [ ] Support ALL queries (currently only DISTINCT is supported)

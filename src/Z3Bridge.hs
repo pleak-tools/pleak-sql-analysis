@@ -134,7 +134,9 @@ getSelects query = do
 
 performAnalysis :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO ()
 performAnalysis opts us s q = do
-  result <- sendToZ3 (z3Path opts) tables (doc "")
+  when (debugPrintZ3 opts) $
+    hPutStrLn stderr z3Input
+  result <- sendToZ3 (z3Path opts) tables z3Input
   results <- case result of
     Nothing -> fatal "Z3 timed out."
     Just rs -> return rs
@@ -146,6 +148,7 @@ performAnalysis opts us s q = do
       Bad str -> red $ printf "on table %s Z3 failed on with: %s" (unpack t) str
   where
     (tables, doc) = second fcat $ unzip $ generateZ3 us s q (sensitivity opts)
+    z3Input = doc ""
 
 -- TODO: partial
 -- ^ Generate Z3 code to verify if query is <= 1 sensitive

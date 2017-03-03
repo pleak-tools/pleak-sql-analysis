@@ -142,8 +142,8 @@ performAnalysis opts us s q = do
     Just rs -> return rs
   forM_ (zip tables results) $ \(t, r) ->
     putStrLn $ case r of
-      Sat     -> printf ">  %d sensitive over %s" (sensitivity opts) (unpack t)
-      Unsat   -> printf "<= %d sensitive over %s" (sensitivity opts) (unpack t)
+      Sat -> printf "> %d sensitive over %s" (sensitivity opts) (unpack t)
+      Unsat -> printf "<= %d sensitive over %s" (sensitivity opts) (unpack t)
       Unknown -> yellow $ printf "sensitivity not known over %s (Z3 yielded unknown)" (unpack t)
       Bad str -> red $ printf "on table %s Z3 failed on with: %s" (unpack t) str
   where
@@ -267,14 +267,20 @@ genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS
 genUnique schema fixedTable tbl us n
   | tblName == fixedTable = id
   | null otherColNames = id
-  | otherwise = z3Assert (precond `z3Impl` postcond)
+  | otherwise = fcat [z3Assert (precond `z3Impl` postcond) | precond <- preconds]
   where
     tblName = nameToCatName tbl
     usNames = map nameComponentToCatName us
     uniqueColNames = map (genColNamePrefix tblName) usNames
     mk i x = x . showString "-" . shows i
+
+    preconds = do
+      name <- uniqueColNames
+      i <- [1 .. n + 1]
+      j <- [i + 1 .. n + 1]
+      return $ z3Eq [mk i name, mk j name]
+
     mkEq name = z3Eq [mk i name | i <- [1 .. n + 1]]
-    precond = z3And $ map mkEq uniqueColNames
     postcond = z3And $ map mkEq otherColNames
 
     -- TODO: only own table?

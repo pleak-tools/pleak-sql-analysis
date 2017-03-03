@@ -73,6 +73,9 @@ z3Eq as = showP $ sepBySpace $ showString "=" : as
 z3Distinct :: [ShowS] -> ShowS
 z3Distinct as = showP $ sepBySpace $ showString "distinct" : as
 
+z3Or :: [ShowS] -> ShowS
+z3Or es = showP (showString "or" `spaced` sepBySpace es)
+
 z3And :: [ShowS] -> ShowS
 z3And es = showP (showString "and" `spaced` sepBySpace es)
 
@@ -142,9 +145,9 @@ performAnalysis opts us s q = do
     Just rs -> return rs
   forM_ (zip tables results) $ \(t, r) ->
     putStrLn $ case r of
-      Sat -> printf "> %d sensitive over %s" (sensitivity opts) (unpack t)
-      Unsat -> printf "<= %d sensitive over %s" (sensitivity opts) (unpack t)
-      Unknown -> yellow $ printf "sensitivity not known over %s (Z3 yielded unknown)" (unpack t)
+      Sat -> printf "> %d sensitive on %s" (sensitivity opts) (unpack t)
+      Unsat -> printf "<= %d sensitive on %s" (sensitivity opts) (unpack t)
+      Unknown -> yellow $ printf "sensitivity not known on %s (Z3 yielded unknown)" (unpack t)
       Bad str -> red $ printf "on table %s Z3 failed on with: %s" (unpack t) str
   where
     (tables, doc) = second fcat $ unzip $ generateZ3 us s q (sensitivity opts)
@@ -267,14 +270,14 @@ genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS
 genUnique schema fixedTable tbl us n
   | tblName == fixedTable = id
   | null otherColNames = id
-  | otherwise = fcat [z3Assert (precond `z3Impl` postcond) | precond <- preconds]
+  | otherwise = z3Assert (precond `z3Impl` postcond)
   where
     tblName = nameToCatName tbl
     usNames = map nameComponentToCatName us
     uniqueColNames = map (genColNamePrefix tblName) usNames
     mk i x = x . showString "-" . shows i
 
-    preconds = do
+    precond = z3Or $ do
       name <- uniqueColNames
       i <- [1 .. n + 1]
       j <- [i + 1 .. n + 1]
@@ -284,11 +287,11 @@ genUnique schema fixedTable tbl us n
     postcond = z3And $ map mkEq otherColNames
 
     -- TODO: only own table?
-    otherColNames = [genColNamePrefix tbl' col |
-        (tbl', cols) <- Map.toList schema,
-        fixedTable /= tbl',
-        (col, _) <- cols
-      ]
+    otherColNames = do
+      (tbl', cols) <- Map.toList schema
+      guard $ fixedTable /= tbl'
+      (col, _) <- cols
+      return $ genColNamePrefix tbl' col
 
 -- TODO: quite inefficient
 genScalarExpr' :: CatName -> ScalarExpr -> [ShowS]

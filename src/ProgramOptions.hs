@@ -10,6 +10,7 @@ data ProgramOptions
     queryFp           :: FilePath,
     sensitivity       :: Int,
     z3Path            :: Maybe FilePath,
+    local             :: Bool,
     debugPrintZ3      :: Bool,
     debugPrintSchema  :: Bool,
     debugPrintQuery   :: Bool,
@@ -26,6 +27,7 @@ programArgs = ProgramOptions
   <*> option auto (short 's' <> long "sensitivity" <> metavar "INT" <> value 1 <>
         help "Specify sensitivity to check (default is 1)")
   <*> maybeStrOption (long "z3-path" <> metavar "PATH" <> help "Z3 path.")
+  <*> switch (short 'l' <> long "local" <> help "Use local sensitivity analysis")
   <*> switch (long "debug-print-z3" <> hidden <> help "Print generated Z3 input")
   <*> switch (long "debug-print-schema" <> hidden <> help "Print debug information about the database schema")
   <*> switch (long "debug-print-query" <> hidden <> help "Print debug information about the SQL select query")

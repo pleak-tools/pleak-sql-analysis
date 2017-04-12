@@ -15,6 +15,7 @@ import Logging
 import SelectQuery
 import Schema
 import Z3Bridge
+import LocalSensitivity
 import ProgramOptions
 
 ---------------------------------------------------
@@ -80,7 +81,13 @@ main = do
   -- forM_ stmts $ \stmt -> do
   --   putStrLn $ show $ extractName stmt
   --   putStrLn $ groomStripped $ extractUniques stmt
-  performAnalysis args
-                  (dbUniqueInfoFromStatements stmts)
-                  (dbFromCatalogUpdates catUpdates)
-                  query
+  if local args
+    then
+      performLocalSensitivityAnalysis
+                      (dbFromCatalogUpdates catUpdates)
+                      query
+    else
+      performAnalysis args
+                      (dbUniqueInfoFromStatements stmts)
+                      (dbFromCatalogUpdates catUpdates)
+                      query

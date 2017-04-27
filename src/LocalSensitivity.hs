@@ -10,6 +10,8 @@ import Data.Array.MArray
 import Data.Array.IO
 import Data.IORef
 import Data.Char
+import Data.List
+import Debug.Trace
 import Text.Printf
 import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Syntax
@@ -48,13 +50,6 @@ noise_epsilon = 1.0
 noise_b2 = 0.5 -- must be in the interval (0,1)
 noise_b1 = 1 - noise_b2
 
-
-createDb :: [(String, Table)] -> (Database, Map String Int, Map Int String)
-createDb dbt =
-  let
-    (tableNames, tables) = unzip dbt
-  in
-    (tables, Map.fromList (zip tableNames [0..]), Map.fromList (zip [0..] tableNames))
 
 prefixSum = f 0 where
   f s [] = [s]
@@ -179,44 +174,66 @@ compileScalarExpr nta = f where
           in
             BoolExpr $ BoolOp2 (&&) be1 be2
 
--- (db, tableId) = createDb dbTables
-
 performLocalSensitivityAnalysis :: Map CatName [(CatName, CatName)] -> QueryExpr -> IO ()
 performLocalSensitivityAnalysis schema query = do
   let wheres = extractWhereExpr query
   putStrLn "performLocalSensitivityAnalysis"
-  -- putStrLn "Trefs:"
-  tables <- forM (selTref query) $ \ tr ->
+  putStrLn "Processing the schema"
+  (origColIdList, origNumColsList) <- fmap unzip $ fmap concat $ forM (Map.toList schema) $ \ (n1,ns) -> do
+    let tblName = T.unpack n1
+    --let colId = (Map.fromList (zip (map (T.unpack . fst) ns) (zip (repeat tblId) [0..])) Map.!)
+    let colId = (Map.fromList (zip (map (T.unpack . fst) ns) [0..]) Map.!)
+    putStr "n1 = "
+    print n1
+    putStr "ns = "
+    print ns
+    return [((tblName, colId), (tblName, length ns))]
+  let origColId = (Map.fromList origColIdList Map.!)
+  let origNumCols = (Map.fromList origNumColsList Map.!)
+
+  let
+    createDb :: [(String, Table)] -> (Database, Map String Int, Map Int String)
+    createDb dbt =
+      let
+        (tableNames, origTableNames) = unzip dbt
+        tables = map (dbTables Map.!) tableNames
+      in
+        (tables, Map.fromList (zip tableNames [0..]), Map.fromList (zip [0..] tableNames))
+
+  putStrLn "Processing FROM clause"
+  origTableNameList <- forM (selTref query) $ \ tr -> do
     case tr of
       Tref _ n -> do
         let tblName = head (nmcs n)
         -- putStr "tblName = "
         -- print tblName
-        return (tblName, dbTables Map.! tblName)
-  let numTables = length tables
-  let (db, tableId, tableName) = createDb tables
-  putStrLn "Schema:"
-  (tblColIdList, numColsList) <- fmap unzip $ fmap concat $ forM (Map.toList schema) $ \ (n1,ns) -> do
-    let tblName = T.unpack n1
-    case Map.lookup tblName tableId of
-      Just tblId -> do
-        let colId = (Map.fromList (zip (map (T.unpack . fst) ns) (zip (repeat tblId) [0..])) Map.!)
-        putStr "n1 = "
-        print n1
-        putStr "ns = "
-        print ns
-        return [((tblName, colId), (tblId, length ns))]
-      Nothing -> return []
-  let tblColId = (Map.fromList tblColIdList Map.!)
-  let numCols = (Map.fromList numColsList Map.!)
-  let nmcsToColId [tn,cn] = tblColId tn cn
+        return (tblName, tblName)
+      TableAlias _ (Nmc newTblName) (Tref _ n) -> do
+        let origTblName = head (nmcs n)
+        printf "%s -> %s\n" origTblName newTblName
+        return (newTblName, origTblName)
+  let (tableNames, origTableNames) = unzip origTableNameList
+  let origTableName = (Map.fromList origTableNameList Map.!)
+  let numTables = length tableNames
+  let db = map (dbTables Map.!) origTableNames
+  let tableId = (Map.fromList (zip tableNames [0..]) Map.!)
+  let tableName = (Map.fromList (zip [0..] tableNames) Map.!)
+  let newTableIdsMap = Map.fromList $ map (\ xs -> (fst (head xs), map (tableId . snd) xs)) $ groupBy (\ x y -> fst x == fst y) $ sort $ zip origTableNames tableNames
+  let newTableIds = (newTableIdsMap Map.!)
+  let origTables = Map.keys newTableIdsMap
+  print origTables
+  let newTableCount = length . newTableIds
+  let colId = origColId . origTableName
+  let numCols = origNumCols . origTableName . tableName
+  let nmcsToColId [tn,cn] = (tableId tn, colId tn cn)
   let tblAddr = listArray (0,numTables) (prefixSum (map numCols [0..numTables-1])) :: UArray Int Int
   let nmcsToAddr ns = let (ti,ci) = nmcsToColId ns in (tblAddr ! ti) + ci
   let totalNumCols = tblAddr ! numTables
   colEq <- newArray ((0,0), (totalNumCols-1,totalNumCols-1)) False :: IO (IOUArray (Int,Int) Bool)
   putStr "tblAddr = "
   print tblAddr
-  putStrLn "SelectList:"
+
+  putStrLn "Processing SELECT clause"
   let
     sumExpr =
       case selSelectList query of
@@ -224,7 +241,8 @@ performLocalSensitivityAnalysis schema query = do
           case aggrOp ns of
             "count" -> IntExpr (IntLit 1)
             "sum" -> compileScalarExpr (nmcsToAddr . nmcs) e1
-  putStrLn "Wheres:"
+
+  putStrLn "Processing WHERE clause"
   wheresForAddrArr <- newArray (0, totalNumCols-1) [] :: IO (IOArray Int [ScalExpr])
   let
     processWhere w =
@@ -279,12 +297,12 @@ performLocalSensitivityAnalysis schema query = do
     -- dtables must be in ascending order
     findDerivatives dtables = do
       putStr "Finding derivatives w.r.t. tables "
-      print (map (tableName Map.!) dtables)
+      print (map tableName dtables)
       let numdtables = length dtables
       let
         nlm :: Double
         nlm = if numdtables == 0 then 0 else noise_C2 / noise_b2 * (noise_C1 / noise_b1)^(numdtables - 1) / noise_epsilon^numdtables
-      printf "Noise level multiplier = %0.3f\n" nlm
+      --printf "Noise level multiplier = %0.3f\n" nlm
       row <- newArray (0, totalNumCols-1) 0 :: IO (IOUArray Int Int)
       isdtableArr <- newArray (0, totalNumCols-1) False :: IO (IOUArray Int Bool)
       forM_ dtables $ \ ti ->
@@ -398,15 +416,154 @@ performLocalSensitivityAnalysis schema query = do
 
       recurse 0 db
       ders <- readIORef derivatives
-      fmap maximum $ forM (Map.assocs ders) $ \ (els,d) -> do
+      let
+        ncs = map numCols dtables
+        groupEls els = f els ncs where
+          f [] [] = []
+          f els (nc:ncs1) =
+            let
+              (els0,els1) = splitAt nc els
+            in
+              els0 : f els1 ncs1
+      -- fmap maximum $ forM (Map.assocs ders) $ \ (els,d) -> do
+      forM (Map.assocs ders) $ \ (els,d) -> do
         let nl = nlm * fromIntegral d
-        printf "%s -> %d -> noise level %0.3f\n" (show els) d nl
-        return $ if numdtables == 0 then fromIntegral d else nl
+        let gels = groupEls els
+        --printf "%s -> %d -> noise level %0.3f\n" (show gels) d nl
+        printf "%s -> %d\n" (show gels) d
+        -- return $ if numdtables == 0 then fromIntegral d else nl
+        return (gels,d)
+
+    crossProd [] = [[]]
+    crossProd (xs:yss) = [x : ys | x <- xs, ys <- crossProd yss]
+
+    combins k xs = f (length xs) k xs where
+      f _ 0 _ = [[]]
+      f n k ~(x : xs)
+        | n >= k    = f (n-1) k xs ++ (map (x :) $ f (n-1) (k-1) xs)
+        | otherwise = []
 
     subsets [] = [[]]
     subsets (x : xs) = let ss = subsets xs in ss ++ (map (x :) ss)
 
-  queryResult <- findDerivatives []
-  noiseLevel <- maximum <$> mapM findDerivatives (tail $ subsets [0..numTables-1])
+    -- A pattern is either the null pattern or a list of nonnegative integers where 0 matches any positive integer
+    -- e.g. [2,0,3,0] matches all lists [2,i,3,j] where i and j are any positive integers
+    -- The null pattern does not match anything
+    -- The zero pattern is a list whose all elements are 0, i.e. it matches everything
+    -- We define the partial order on patterns as the subset relation on the sets they match,
+    -- i.e. the null pattern is the smallest and the zero pattern is the largest
+    -- The intersection of a set of patterns P matches the lists matched by all patterns in P
+    -- A closed pattern set is a set of patterns P such that P+{null pattern} is closed under intersection and P contains the zero pattern
+    -- A closed pattern map is mapping from a closed pattern set to integers
+    -- We merge two closed pattern maps cpm1 and cpm2 to get a new closed pattern map cpm such that
+    -- if p is the intersection of a pattern mapped by cpm1 and a pattern mapped by cpm2 then
+    -- cpm(p) = cpm1(p1) + cpm2(p2) | p <= p1 & p <= p2}
+    -- where p1 is the intersection of all patterns p1 mapped by cpm1 such that p <= p1
+    --       (i.e. the smallest pattern p1 mapped by cpm1 such that p <= p1)
+    -- and   p2 is the intersection of all patterns p2 mapped by cpm2 such that p <= p2
+    --       (i.e. the smallest pattern p2 mapped by cpm2 such that p <= p2)
+    -- The arguments to mergeCpms are given as sorted association lists
+    mergeCpms [] cpm = cpm
+    mergeCpms cpm [] = cpm
+    mergeCpms [([],n1)] [([],n2)] = [([], n1+n2)]
+    mergeCpms cpm1 cpm2 = -- trace (printf "mergeCpms %s %s" (show cpm1) (show cpm2)) $
+      let
+        mgb = map (\ xs -> (head (fst (head xs)), map (\ (ys,n) -> (tail ys, n)) xs)) . groupBy (\ x y -> head (fst x) == head (fst y))
+        mgb1 = mgb cpm1
+        mgb2 = mgb cpm2
+        (c10,m1) =
+          case mgb1 of
+            (0,cpm):mgb -> (cpm, mgb)
+            _ -> ([], mgb1)
+        (c20,m2) =
+          case mgb2 of
+            (0,cpm):mgb -> (cpm, mgb)
+            _ -> ([], mgb2)
+        mapfun (ys,n) = (0:ys, n)
+        cpm0 = map mapfun $ mergeCpms c10 c20
+        f [] [] = []
+        f [] ((x,cpm2):m2) =
+          let
+            mapfun (ys,n) = (x:ys, n)
+          in
+            map mapfun (mergeCpms c10 cpm2) ++ f [] m2
+        f ((x,cpm1):m1) [] =
+          let
+            mapfun (ys,n) = (x:ys, n)
+          in
+            map mapfun (mergeCpms cpm1 c20) ++ f m1 []
+        f m1f@((x1,cpm1):m1) m2f@((x2,cpm2):m2) =
+          let
+            x = min x1 x2
+            mapfun (ys,n) = (x:ys, n)
+          in
+            case compare x1 x2 of
+              EQ -> map mapfun (mergeCpms cpm1 cpm2) ++ f m1 m2
+              LT -> map mapfun (mergeCpms cpm1 c20) ++ f m1 m2f
+              GT -> map mapfun (mergeCpms c10 cpm2) ++ f m1f m2
+      in
+        cpm0 ++ f m1 m2
+
+    mergeManyCpms [] = []
+    mergeManyCpms [cpm] = cpm
+    mergeManyCpms cpms =
+      let
+        (cpms1,cpms2) = splitAt (length cpms `div` 2) cpms
+      in
+        mergeCpms (mergeManyCpms cpms1) (mergeManyCpms cpms2)
+
+    permuts xs = f (length xs) xs where
+      insert x 0 ys = x : ys
+      insert x k (y:ys) = y : insert x (k-1) ys
+      f 0 [] = [[]]
+      f n (x:xs) = [insert x k p | p <- f (n-1) xs, k <- [0..n-1]]
+
+    -- dtncs contains a list of pairs of a table and the number of times to differentiate w.r.t. that table
+    findDerivativesWrtOrigTables dtncs = do
+      putStr "Finding derivatives w.r.t. original tables "
+      print dtncs
+      let numdtables = sum (map snd dtncs)
+      let
+        nlm :: Double
+        nlm = if numdtables == 0 then 0 else noise_C2 / noise_b2 * (noise_C1 / noise_b1)^(numdtables - 1) / noise_epsilon^numdtables
+      printf "Noise level multiplier = %0.3f\n" nlm
+      -- print $ map (\ (tn,c) -> combins c (newTableIds tn)) dtncs
+      ders3 <- fmap concat $ forM (crossProd $ map (\ (tn,c) -> combins c (newTableIds tn)) dtncs) $ \ tableIdss -> do
+        --print tableIdss
+        let tableIds = concat tableIdss
+        --print tableIds
+        let sti = sort tableIds
+        ders <- findDerivatives sti
+        ders2 <- fmap concat $ forM ders $ \ (gels,d) -> do
+          let tels = (Map.fromList (zip sti gels) Map.!)
+          let oels = map (map tels) tableIdss
+          let poelss = crossProd (map permuts oels)
+          forM poelss $ \ poels -> do
+            --printf "%s -> %d\n" (show poels) d
+            return (concat (concat poels), d)
+        return ders2
+      --print ders3
+      let ders4 = mergeManyCpms (map (:[]) ders3)
+      putStrLn "Combined derivatives:"
+      fmap maximum $ forM ders4 $ \ (els,d) -> do
+        let nl = nlm * fromIntegral d
+        printf "%s -> %d -> noise level %0.3f\n" (show els) d nl
+        return $ if numdtables == 0 then fromIntegral d else nl
+
+    findAllDerivativesWrtOrigTables =
+      let
+        f dtncs [] = (:[]) <$> findDerivativesWrtOrigTables dtncs
+        f dtncs ((tn,ntc) : tncs) =
+          fmap concat $ forM [0..ntc] $ \ i ->
+            f ((tn,i) : dtncs) tncs
+      in
+        f [] (zip origTables (map newTableCount origTables))
+
+  --queryResult <- findDerivatives []
+  --noiseLevel <- maximum <$> mapM findDerivatives (tail $ subsets [0..numTables-1])
+  queryResult : noiseLevels <- findAllDerivativesWrtOrigTables
+  let noiseLevel = maximum noiseLevels
   printf "query result = %0.3f\n" queryResult
   printf "noise level to add = %0.3f\n" noiseLevel
+  -- findAllDerivativesWrtOrigTables
+  -- print $ mergeManyCpms [[([0,1],1),([0,2],2)], [([1,0],10),([2,0],20)]]

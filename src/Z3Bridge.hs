@@ -226,7 +226,9 @@ genType n = showString $ case unpack n of
   "integer" -> "Int"
   "int"     -> "Int"
   "bool"    -> "Bool"
-  "text"    -> "String"
+--  "text"    -> "String"
+  "text"    -> "(Seq (_ BitVec 8))"
+  "double precision" -> "Real"
   n'        -> ice $ printf "Invalid type \"%s\"." n'
 
 genNameComponent :: NameComponent -> ShowS

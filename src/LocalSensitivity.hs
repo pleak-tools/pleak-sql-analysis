@@ -235,12 +235,18 @@ performLocalSensitivityAnalysis schema query = do
 
   putStrLn "Processing SELECT clause"
   let
-    sumExpr =
+    cse = compileScalarExpr (nmcsToAddr . nmcs)
+    (sumExpr,groupExprs) =
       case selSelectList query of
-        SelectList _ [SelectItem _ (App _ ns [e1]) _] ->
-          case aggrOp ns of
-            "count" -> IntExpr (IntLit 1)
-            "sum" -> compileScalarExpr (nmcsToAddr . nmcs) e1
+        SelectList _ (SelectItem _ (App _ ns [e1]) _ : groupItems) ->
+          (
+            case aggrOp ns of
+              "count" -> IntExpr (IntLit 1)
+              "sum" -> cse e1
+          ,
+            map (\ (SelectItem _ e1 _) -> cse e1) groupItems
+          )
+    numGroupExprs = length groupExprs
 
   putStrLn "Processing WHERE clause"
   wheresForAddrArr <- newArray (0, totalNumCols-1) [] :: IO (IOArray Int [ScalExpr])
@@ -318,7 +324,7 @@ performLocalSensitivityAnalysis schema query = do
           Just a2 -> readArray areAllPrevEqsDaddrsArr a2 >>= writeArray areAllPrevEqsDaddrsArr a
       isdaddr <- freeze isdaddrArr :: IO (UArray Int Bool)
       areAllPrevEqsDaddrs <- freeze areAllPrevEqsDaddrsArr :: IO (UArray Int Bool)
-      derivatives <- newIORef Map.empty :: IO (IORef (Map [Int] Int))
+      derivatives <- newIORef Map.empty :: IO (IORef (Map ([Int],[Int]) Int))
       let
         evalScalExpr :: ScalExpr -> IO (Maybe (Either Bool Int))
         evalScalExpr (BoolExpr e) =
@@ -383,10 +389,17 @@ performLocalSensitivityAnalysis schema query = do
               case v0 of
                 Nothing -> sumExprBound
                 Just (Right v1) -> abs v1
+          vs0 <- mapM evalScalExpr groupExprs
+          let
+            vs = flip map vs0 $ \ v0 ->
+              case v0 of
+                Nothing -> 0
+                Just (Right v1) -> v1
           -- els <- getElems row
           els <- mapM (readArray row) daddrs
           -- print els
-          modifyIORef derivatives $ Map.alter (\ x -> case x of Nothing -> Just v; Just n -> Just (n+v)) els
+          printf "  %s -> %s -> %d\n" (show els) (show vs) v
+          modifyIORef derivatives $ Map.alter (\ x -> case x of Nothing -> Just v; Just n -> Just (n+v)) (els,vs)
         recurse ti (currTable : ts) = do
           let ta = tblAddr ! ti
           if isdtable ! ti then do
@@ -426,13 +439,13 @@ performLocalSensitivityAnalysis schema query = do
             in
               els0 : f els1 ncs1
       -- fmap maximum $ forM (Map.assocs ders) $ \ (els,d) -> do
-      forM (Map.assocs ders) $ \ (els,d) -> do
+      forM (Map.assocs ders) $ \ ((els,vs),d) -> do
         let nl = nlm * fromIntegral d
         let gels = groupEls els
         --printf "%s -> %d -> noise level %0.3f\n" (show gels) d nl
-        printf "%s -> %d\n" (show gels) d
+        printf "%s -> %s -> %d\n" (show gels) (show vs) d
         -- return $ if numdtables == 0 then fromIntegral d else nl
-        return (gels,d)
+        return (gels,vs,d)
 
     crossProd [] = [[]]
     crossProd (xs:yss) = [x : ys | x <- xs, ys <- crossProd yss]
@@ -534,20 +547,21 @@ performLocalSensitivityAnalysis schema query = do
         --print tableIds
         let sti = sort tableIds
         ders <- findDerivatives sti
-        ders2 <- fmap concat $ forM ders $ \ (gels,d) -> do
+        ders2 <- fmap concat $ forM ders $ \ (gels,vs,d) -> do
           let tels = (Map.fromList (zip sti gels) Map.!)
           let oels = map (map tels) tableIdss
           let poelss = crossProd (map permuts oels)
           forM poelss $ \ poels -> do
             --printf "%s -> %d\n" (show poels) d
-            return (concat (concat poels), d)
+            return (concat (concat poels) ++ vs, d)
         return ders2
       --print ders3
       let ders4 = mergeManyCpms (map (:[]) ders3)
       putStrLn "Combined derivatives:"
       fmap maximum $ forM ders4 $ \ (els,d) -> do
         let nl = nlm * fromIntegral d
-        printf "%s -> %d -> noise level %0.3f\n" (show els) d nl
+        let (els',vs) = splitAt (length els - numGroupExprs) els
+        printf "%s -> %s -> %d -> noise level %0.3f\n" (show els') (show vs) d nl
         return $ if numdtables == 0 then fromIntegral d else nl
 
     findAllDerivativesWrtOrigTables =

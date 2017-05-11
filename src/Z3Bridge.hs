@@ -292,6 +292,8 @@ genUnique schema fixedTable tbl us n
     otherColNames = do
       (tbl', cols) <- Map.toList schema
       guard $ fixedTable /= tbl'
+      -- only own table
+      guard $ tbl' == tblName
       (col, _) <- cols
       return $ genColNamePrefix tbl' col
 

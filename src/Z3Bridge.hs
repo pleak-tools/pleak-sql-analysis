@@ -4,7 +4,10 @@ module Z3Bridge (
   dbFromCatalogUpdates,
   dbUniqueInfoFromStatements,
   generateZ3,
-  performAnalysis)
+  performAnalysis,
+  printAnalysisResults,
+  alternativeAnalysisResults,
+  extractTableNames)
   where
 
 import Control.Arrow
@@ -135,7 +138,7 @@ getSelects query = do
     Just t -> return t
   return (t, e)
 
-performAnalysis :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO ()
+performAnalysis :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO ([CatName], [SatResult])
 performAnalysis opts us s q = do
   when (debugPrintZ3 opts) $
     hPutStrLn stderr z3Input
@@ -143,15 +146,38 @@ performAnalysis opts us s q = do
   results <- case result of
     Nothing -> fatal "Z3 timed out."
     Just rs -> return rs
+  return (tables, results)
+  where
+    (tables, doc) = second fcat $ unzip $ generateZ3 us s q (sensitivity opts)
+    z3Input = doc ""
+
+printAnalysisResults :: ProgramOptions -> ([CatName], [SatResult]) -> IO ()
+printAnalysisResults opts (tables, results) =
   forM_ (zip tables results) $ \(t, r) ->
     putStrLn $ case r of
       Sat -> printf "> %d sensitive on %s" (sensitivity opts) (unpack t)
       Unsat -> printf "<= %d sensitive on %s" (sensitivity opts) (unpack t)
       Unknown -> yellow $ printf "sensitivity not known on %s (Z3 yielded unknown)" (unpack t)
       Bad str -> red $ printf "on table %s Z3 failed on with: %s" (unpack t) str
+
+alternativeAnalysisResults :: [[CatName]] -> ([CatName], [SatResult]) -> [Int]
+alternativeAnalysisResults tableNamess (tables, results) =
+  map (combineResInts . map (flip (Map.findWithDefault 0) (Map.fromList (zip tables (map resultToInt results))))) tableNamess
   where
-    (tables, doc) = second fcat $ unzip $ generateZ3 us s q (sensitivity opts)
-    z3Input = doc ""
+    resultToInt Sat = -1
+    resultToInt Unsat = 1
+    resultToInt _ = -1
+    combineResInts [] = 0
+    combineResInts (x : xs) | x < 0 || cr < 0 = min x cr
+                            | otherwise       = max x cr
+      where
+        cr = combineResInts xs
+
+extractTableNames :: [Statement] -> [CatName]
+extractTableNames = concatMap extractTableName
+  where
+    extractTableName (CreateTable _ n _ _ _ _ _) = [nameToCatName n]
+    extractTableName _ = []
 
 -- TODO: partial
 -- ^ Generate Z3 code to verify if query is <= 1 sensitive

@@ -2,12 +2,14 @@
 
 import Control.Monad
 import Data.List
+import Data.Char
 import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Dialect
 import Database.HsSqlPpp.Pretty
 import Database.HsSqlPpp.Syntax
 import Text.Groom
 
+import qualified Data.Text.Lazy as T
 import qualified Data.Text.Lazy.IO as T
 
 import Catalog
@@ -17,6 +19,9 @@ import Schema
 import Z3Bridge
 import LocalSensitivity
 import ProgramOptions
+
+unitSeparator :: T.Text
+unitSeparator = T.pack [chr 31]
 
 ---------------------------------------------------
 -- Some dumb code to pretty print hssqlppp stuff --
@@ -41,6 +46,12 @@ stripAnnotations str@(c : cs)
      | n == 0 = c : go n cs
      | otherwise = go n cs
 
+zipFromOneList [] = []
+zipFromOneList (x1 : x2 : xs) = (x1,x2) : zipFromOneList xs
+
+unzipToOneList [] = []
+unzipToOneList ((x1,x2) : xs) = x1 : x2 : unzipToOneList xs
+
 -------------------
 -- Main function --
 -------------------
@@ -50,7 +61,17 @@ main = do
   args <- getProgramOptions
   let dialect = postgresDialect
   schemaText <- T.readFile (schemaFp args)
-  stmts <- parseSchema dialect (schemaFp args) schemaText
+  (tableIds, tableNames, stmts) <-
+    if alternative args
+      then do
+        let (tableIds, schemaTexts) = unzip $ zipFromOneList $ T.splitOn unitSeparator schemaText
+        let sFp = schemaFp args
+        stmtss <- zipWithM (parseSchema dialect) (map ((sFp ++) . ('(' :) . (++ ")") . show) [1..]) schemaTexts
+        let tableNamess = map extractTableNames stmtss
+        return (tableIds, tableNamess, concat stmtss)
+      else do
+        stmts <- parseSchema dialect (schemaFp args) schemaText
+        return (undefined, undefined, stmts)
   (catalog, stmts) <- typeCheckSchema dialect (schemaFp args) catalog stmts
   let catUpdates = concatMap extractCatalogUpdates stmts
 
@@ -86,8 +107,13 @@ main = do
       performLocalSensitivityAnalysis
                       (dbFromCatalogUpdates catUpdates)
                       query
-    else
-      performAnalysis args
-                      (dbUniqueInfoFromStatements stmts)
-                      (dbFromCatalogUpdates catUpdates)
-                      query
+    else do
+      res <- performAnalysis args
+                             (dbUniqueInfoFromStatements stmts)
+                             (dbFromCatalogUpdates catUpdates)
+                             query
+      if alternative args
+        then
+          T.putStr $ T.intercalate unitSeparator $ unzipToOneList $ zip tableIds (map (T.pack . show) (alternativeAnalysisResults tableNames res))
+        else
+          printAnalysisResults args res

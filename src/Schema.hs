@@ -79,7 +79,8 @@ verifySchema fp = mapM_ go
     go CreateFunction{} = return ()
     go stmt = case anSrc (getAnnotation stmt) of
       Nothing -> fatal (printf "Expecting only CREATE statements in schema. Error in %s." fp)
-      Just (_, r, c) -> fatal (printf "Expecting only CREATE statements in schema. Error at %s:%d:%d." fp r c)
+      Just (fp, r, c) -> fatal (printf "Expecting only CREATE statements in schema. Error at %s:%d:%d." fp r c)
+      --Just (_, r, c) -> fatal (printf "Expecting only CREATE statements in schema. Error at %s:%d:%d." fp r c)
 
 ------------------------------
 -- Extract info from schema --

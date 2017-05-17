@@ -92,7 +92,7 @@ main = do
 
   src <- T.readFile (queryFp args)
   query <- parseSelectQuery dialect (queryFp args) src
-  query <- typeCheckSelectQuery dialect (queryFp args) catalog query
+  query <- typeCheckSelectQuery dialect (local args) (queryFp args) catalog query
 
   when (debugPrintQuery args) $
     if debugVerbose args

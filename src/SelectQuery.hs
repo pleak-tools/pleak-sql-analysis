@@ -43,10 +43,14 @@ prettyLoc :: String -> Loc -> String
 prettyLoc msg Nothing = msg
 prettyLoc msg (Just (fp, r, c)) = printf "%s. Error at %s:%d:%d" msg fp r c
 
-unsupportedClauses :: QueryExpr -> [Reason]
-unsupportedClauses query =
+unsupportedClauses :: Bool -> QueryExpr -> [Reason]
+unsupportedClauses False query =
   ["ALL"      | selDistinct query == All] ++
   ["GROUP BY" | not.null $ selGroupBy query] ++
+  ["LIMIT"    | isJust $ selLimit query] ++
+  ["OFFSET"   | isJust $ selOffset query] ++
+  ["HAVING"   | isJust $ selHaving query]
+unsupportedClauses True query =
   ["LIMIT"    | isJust $ selLimit query] ++
   ["OFFSET"   | isJust $ selOffset query] ++
   ["HAVING"   | isJust $ selHaving query]
@@ -103,15 +107,15 @@ extractJoinTables = concatMap go . selTref
     go (JoinTref _ l _ _ _ r _) = go l ++ go r
     go t = [t]
 
-typeCheckSelectQuery :: Dialect -> FilePath -> Catalog -> QueryExpr -> IO QueryExpr
-typeCheckSelectQuery dialect fp catalog query = do
+typeCheckSelectQuery :: Dialect -> Bool -> FilePath -> Catalog -> QueryExpr -> IO QueryExpr
+typeCheckSelectQuery dialect local fp catalog query = do
   query <- return $ typeCheckQueryExpr typeCheckFlags catalog query
   queryErrs <- checkAndReportErrors query
   when queryErrs exitFailure -- dont bail?
   -- Because type checker may rewrite queries to a different form
   -- we perform feature check late.
   bailRef <- newIORef False
-  forM_ (unsupportedClauses query) $ \str -> do
+  forM_ (unsupportedClauses local query) $ \str -> do
     bailRef `writeIORef` True
     err $ str ++ " clause is not supported"
   forM_ (unsupportedFrom query) $ \ (loc, str) -> do

@@ -10,6 +10,7 @@ import Data.Array.MArray
 import Data.Array.IO
 import Data.IORef
 import Data.Char
+import Data.Either
 import Data.List
 import Debug.Trace
 import Text.Printf
@@ -236,16 +237,28 @@ performLocalSensitivityAnalysis schema query = do
   putStrLn "Processing SELECT clause"
   let
     cse = compileScalarExpr (nmcsToAddr . nmcs)
-    (sumExpr,groupExprs) =
-      case selSelectList query of
-        SelectList _ (SelectItem _ (App _ ns [e1]) _ : groupItems) ->
-          (
-            case aggrOp ns of
-              "count" -> IntExpr (IntLit 1)
-              "sum" -> cse e1
-          ,
-            map (\ (SelectItem _ e1 _) -> cse e1) groupItems
-          )
+    (sumExprs0,groupExprs) =
+      partitionEithers $
+        case selSelectList query of
+          SelectList _ sis ->
+            flip map sis $ \ si ->
+              case si of
+                SelectItem _ (App _ ns [e1]) _ ->
+                  Left $
+                    case aggrOp ns of
+                      "count" -> IntExpr (IntLit 1)
+                      "sum" -> cse e1
+                SelectItem _ e1 _ ->
+                  Right $
+                    cse e1
+    sumExprs =
+      if null sumExprs0
+        then
+          if selDistinct query == All
+            then [IntExpr (IntLit 1)]
+            else []
+        else
+          sumExprs0
     numGroupExprs = length groupExprs
 
   putStrLn "Processing WHERE clause"
@@ -324,7 +337,7 @@ performLocalSensitivityAnalysis schema query = do
           Just a2 -> readArray areAllPrevEqsDaddrsArr a2 >>= writeArray areAllPrevEqsDaddrsArr a
       isdaddr <- freeze isdaddrArr :: IO (UArray Int Bool)
       areAllPrevEqsDaddrs <- freeze areAllPrevEqsDaddrsArr :: IO (UArray Int Bool)
-      derivatives <- newIORef Map.empty :: IO (IORef (Map ([Int],[Int]) Int))
+      derivatives <- newIORef Map.empty :: IO (IORef (Map ([Int],[Int]) [Int]))
       let
         evalScalExpr :: ScalExpr -> IO (Maybe (Either Bool Int))
         evalScalExpr (BoolExpr e) =
@@ -383,10 +396,10 @@ performLocalSensitivityAnalysis schema query = do
             Just a2 -> writePrevEqs a2 v
 
         recurse _ [] = do
-          v0 <- evalScalExpr sumExpr
+          svs0 <- mapM evalScalExpr sumExprs
           let
-            v =
-              case v0 of
+            svs = flip map svs0 $ \ sv0 ->
+              case sv0 of
                 Nothing -> sumExprBound
                 Just (Right v1) -> abs v1
           vs0 <- mapM evalScalExpr groupExprs
@@ -398,8 +411,8 @@ performLocalSensitivityAnalysis schema query = do
           -- els <- getElems row
           els <- mapM (readArray row) daddrs
           -- print els
-          printf "  %s -> %s -> %d\n" (show els) (show vs) v
-          modifyIORef derivatives $ Map.alter (\ x -> case x of Nothing -> Just v; Just n -> Just (n+v)) (els,vs)
+          printf "  %s -> %s -> %s\n" (show els) (show vs) (show svs)
+          modifyIORef derivatives $ Map.alter (\ x -> case x of Nothing -> Just svs; Just ns -> Just (zipWith (+) ns svs)) (els,vs)
         recurse ti (currTable : ts) = do
           let ta = tblAddr ! ti
           if isdtable ! ti then do
@@ -440,10 +453,10 @@ performLocalSensitivityAnalysis schema query = do
               els0 : f els1 ncs1
       -- fmap maximum $ forM (Map.assocs ders) $ \ (els,d) -> do
       forM (Map.assocs ders) $ \ ((els,vs),d) -> do
-        let nl = nlm * fromIntegral d
+        --let nl = nlm * fromIntegral d
         let gels = groupEls els
         --printf "%s -> %d -> noise level %0.3f\n" (show gels) d nl
-        printf "%s -> %s -> %d\n" (show gels) (show vs) d
+        printf "%s -> %s -> %s\n" (show gels) (show vs) (show d)
         -- return $ if numdtables == 0 then fromIntegral d else nl
         return (gels,vs,d)
 
@@ -478,7 +491,7 @@ performLocalSensitivityAnalysis schema query = do
     -- The arguments to mergeCpms are given as sorted association lists
     mergeCpms [] cpm = cpm
     mergeCpms cpm [] = cpm
-    mergeCpms [([],n1)] [([],n2)] = [([], n1+n2)]
+    mergeCpms [([],n1)] [([],n2)] = [([], zipWith (+) n1 n2)]
     mergeCpms cpm1 cpm2 = -- trace (printf "mergeCpms %s %s" (show cpm1) (show cpm2)) $
       let
         mgb = map (\ xs -> (head (fst (head xs)), map (\ (ys,n) -> (tail ys, n)) xs)) . groupBy (\ x y -> head (fst x) == head (fst y))
@@ -559,10 +572,11 @@ performLocalSensitivityAnalysis schema query = do
       let ders4 = mergeManyCpms (map (:[]) ders3)
       putStrLn "Combined derivatives:"
       fmap maximum $ forM ders4 $ \ (els,d) -> do
-        let nl = nlm * fromIntegral d
+        let d1 = if null d then 1 else head d
+        let nl = nlm * fromIntegral d1
         let (els',vs) = splitAt (length els - numGroupExprs) els
-        printf "%s -> %s -> %d -> noise level %0.3f\n" (show els') (show vs) d nl
-        return $ if numdtables == 0 then fromIntegral d else nl
+        printf "%s -> %s -> %s -> noise level %0.3f\n" (show els') (show vs) (show d) nl
+        return $ if numdtables == 0 then fromIntegral d1 else nl
 
     findAllDerivativesWrtOrigTables =
       let

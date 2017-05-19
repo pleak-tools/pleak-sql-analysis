@@ -55,9 +55,9 @@ unsupportedClauses True query =
   ["OFFSET"   | isJust $ selOffset query] ++
   ["HAVING"   | isJust $ selHaving query]
 
-unsupportedFrom :: QueryExpr -> [(Loc, Reason)]
-unsupportedFrom query =
-  [(anSrc a, "Subquery")   | SubTref a _ <- trefs] ++
+unsupportedFrom :: Bool -> QueryExpr -> [(Loc, Reason)]
+unsupportedFrom local query =
+  [(anSrc a, "Subquery")   | not local, SubTref a _ <- trefs] ++
   [(anSrc a, "Function")   | FunTref a _ <- trefs] ++
   [(anSrc a, "???")        | OdbcTableRef a _ <- trefs] ++
   [(anSrc a, showJoin j)   | JoinTref a _ _ j _ _ _ <- trefs, j `notElem` [Inner, Cross]] ++
@@ -72,11 +72,13 @@ unsupportedFrom query =
 -- ^ Get locations of unsupported expressions.
 -- ^ Both from WHERE clause and joins.
 -- TODO: Dont descend under already unsupported expressions?
-unsupportedWhere :: QueryExpr -> [Loc]
-unsupportedWhere query =
+unsupportedWhere :: Bool -> QueryExpr -> [Loc]
+unsupportedWhere local query =
   map (anSrc.getAnnotation) $
   filter (not.isSupportedWhereExpr) $
-  universeBi (selWhere query) ++ universeBi (selTref query)
+  if local
+    then universeBi (selWhere query)
+    else universeBi (selWhere query) ++ universeBi (selTref query)
 
 isSupportedWhereExpr :: ScalarExpr -> Bool
 isSupportedWhereExpr = \case
@@ -118,10 +120,10 @@ typeCheckSelectQuery dialect local fp catalog query = do
   forM_ (unsupportedClauses local query) $ \str -> do
     bailRef `writeIORef` True
     err $ str ++ " clause is not supported"
-  forM_ (unsupportedFrom query) $ \ (loc, str) -> do
+  forM_ (unsupportedFrom local query) $ \ (loc, str) -> do
     bailRef `writeIORef` True
     err $ prettyLoc (printf "%s not supported in FROM clause." str) loc
-  forM_ (unsupportedWhere query) $ \loc -> do
+  forM_ (unsupportedWhere local query) $ \loc -> do
     bailRef `writeIORef` True
     err $ prettyLoc "Unsupported expression in WHERE clause or join." loc
   bail <- readIORef bailRef

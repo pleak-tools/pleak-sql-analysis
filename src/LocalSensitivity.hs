@@ -11,6 +11,7 @@ import Data.Array.IO
 import Data.IORef
 import Data.Char
 import Data.Either
+import Data.Maybe
 import Data.List
 import Debug.Trace
 import Text.Printf
@@ -175,42 +176,55 @@ compileScalarExpr nta = f where
           in
             BoolExpr $ BoolOp2 (&&) be1 be2
 
-performLocalSensitivityAnalysis :: Map CatName [(CatName, CatName)] -> QueryExpr -> IO ()
-performLocalSensitivityAnalysis schema query = do
+performLocalSensitivityAnalysis :: Bool -> Map CatName [(CatName, CatName)] -> QueryExpr -> IO ()
+performLocalSensitivityAnalysis debug schema query = do
   putStrLn "performLocalSensitivityAnalysis"
   putStrLn "Processing the schema"
   origTableCols <- fmap Map.fromList $ forM (Map.toList schema) $ \ (n1,ns) -> do
     let tblName = T.unpack n1
     let cols = map (T.unpack . fst) ns
     return (tblName, cols)
-  _ <- performLocalSensitivityAnalysis' origTableCols query
+  _ <- performLocalSensitivityAnalysis' debug origTableCols query
   return ()
 
-performLocalSensitivityAnalysis' :: Map String [String] -> QueryExpr -> IO ([String], Table)
-performLocalSensitivityAnalysis' origTableCols query = do
+performLocalSensitivityAnalysis' :: Bool -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [Int])])])
+performLocalSensitivityAnalysis' debug origTableCols query = do
   let wheres = extractWhereExpr query
   putStrLn "performLocalSensitivityAnalysis'"
 
   putStrLn "Processing FROM clause"
   let tmpTableName = ('$' :)
-  (tableNames, origTableNames, colNamess, db) <- fmap unzip4 $ forM (selTref query) $ \ tr -> do
+  (tableNames, origTableNames, colNamess, db, derss) <- fmap unzip5 $ forM (selTref query) $ \ tr -> do
     case tr of
       Tref _ n -> do
         let tblName = head (nmcs n)
         printf "%s -> %s\n" tblName tblName
-        return (tblName, tblName, origTableCols Map.! tblName, dbTables Map.! tblName)
+        return (tblName, tblName, origTableCols Map.! tblName, dbTables Map.! tblName, Nothing)
       TableAlias _ (Nmc newTblName) (Tref _ n) -> do
         let origTblName = head (nmcs n)
         printf "%s -> %s\n" origTblName newTblName
-        return (newTblName, origTblName, origTableCols Map.! origTblName, dbTables Map.! origTblName)
+        return (newTblName, origTblName, origTableCols Map.! origTblName, dbTables Map.! origTblName, Nothing)
       TableAlias _ (Nmc newTblName) (SubTref _ subquery) -> do
         putStrLn "Processing subquery"
         putStrLn "==================="
-        (subColNames, res) <- performLocalSensitivityAnalysis' origTableCols subquery
+        (subColNames, res, ders) <- performLocalSensitivityAnalysis' debug origTableCols subquery
         putStrLn "============================"
         putStrLn "Finished processing subquery"
         printf "-> %s\n" newTblName
-        return (newTblName, tmpTableName newTblName, subColNames, res)
+        return (newTblName, tmpTableName newTblName, subColNames, res, Just ders)
+  --let subQueryDers = Map.fromList $ map (\ (x, Just y) -> (x,y)) $ filter (isJust . snd) $ zip origTableNames derss
+  -- add identity subquery derivatives for those tables that are not actually results of subqueries
+  let hasSubQueries = any isJust derss
+  let
+    allSubQueryDers = Map.fromList $ zip origTableNames $
+      zipWith3
+        (\ origTblName numCols ders ->
+          case ders of
+            Just ders -> ders
+            Nothing -> let zs = replicate numCols 0 in [([(origTblName,1)],[(zs,zs,[1])])])
+        origTableNames
+        (map length colNamess)
+        derss
   let origTableName = (Map.fromList (zip tableNames origTableNames) Map.!)
   let numTables = length tableNames
   let tableId = (Map.fromList (zip tableNames [0..]) Map.!)
@@ -310,8 +324,8 @@ performLocalSensitivityAnalysis' origTableCols query = do
   let
     -- dtables must be in ascending order
     findDerivatives dtables = do
-      putStr "Finding derivatives w.r.t. tables "
-      print (map tableName dtables)
+      when debug $ putStr "Finding derivatives w.r.t. tables "
+      when debug $ print (map tableName dtables)
       let numdtables = length dtables
       row <- newArray (0, totalNumCols-1) 0 :: IO (IOUArray Int Int)
       isdtableArr <- newArray (0, totalNumCols-1) False :: IO (IOUArray Int Bool)
@@ -464,6 +478,7 @@ performLocalSensitivityAnalysis' origTableCols query = do
     -- We define the partial order on patterns as the subset relation on the sets they match,
     -- i.e. the null pattern is the smallest and the zero pattern is the largest
     -- The intersection of a set of patterns P matches the lists matched by all patterns in P
+    -- A pattern map is mapping from a set of patterns to integers
     -- A closed pattern set is a set of patterns P such that P+{null pattern} is closed under intersection and P contains the zero pattern
     -- A closed pattern map is mapping from a closed pattern set to integers
     -- We merge two closed pattern maps cpm1 and cpm2 to get a new closed pattern map cpm such that
@@ -523,16 +538,36 @@ performLocalSensitivityAnalysis' origTableCols query = do
       in
         mergeCpms (mergeManyCpms cpms1) (mergeManyCpms cpms2)
 
+    patternIntersection :: Maybe [Int] -> Maybe [Int] -> Maybe [Int]
+    patternIntersection Nothing _ = Nothing
+    patternIntersection _ Nothing = Nothing
+    patternIntersection (Just p1) (Just p2) = patternIntersection' p1 p2
+
+    patternIntersection' :: [Int] -> [Int] -> Maybe [Int]
+    patternIntersection' [] [] = Just []
+    patternIntersection' (0 : xs) (y : ys) = (y :) <$> patternIntersection' xs ys
+    patternIntersection' (x : xs) (0 : ys) = (x :) <$> patternIntersection' xs ys
+    patternIntersection' (x : xs) (y : ys) | x == y    = (x :) <$> patternIntersection' xs ys
+                                           | otherwise = Nothing
+
+    derMapCrossProd [dm] = dm
+    derMapCrossProd (dm : dms) = [(e1 ++ e2, v1 ++ v2, [d1 * d2]) | let dmcp = derMapCrossProd dms, (e1,v1,[d1]) <- dm, (e2,v2,[d2]) <- dmcp]
+
     permuts xs = f (length xs) xs where
       insert x 0 ys = x : ys
       insert x k (y:ys) = y : insert x (k-1) ys
       f 0 [] = [[]]
       f n (x:xs) = [insert x k p | p <- f (n-1) xs, k <- [0..n-1]]
 
+    splitElsVs (els,d) = (els',vs,d) where
+      (els',vs) = splitAt (length els - numGroupExprs) els
+
+    unsplitElsVs (els,vs,d) = (els ++ vs, d)
+
     -- dtncs contains a list of pairs of a table and the number of times to differentiate w.r.t. that table
     findDerivativesWrtOrigTables dtncs = do
-      putStr "Finding derivatives w.r.t. original tables "
-      print dtncs
+      when debug $ putStr "Finding derivatives w.r.t. original tables "
+      when debug $ print dtncs
       ders3 <- fmap concat $ forM (crossProd $ map (\ (tn,c) -> combins c (newTableIds tn)) dtncs) $ \ tableIdss -> do
         let tableIds = concat tableIdss
         let sti = sort tableIds
@@ -544,12 +579,14 @@ performLocalSensitivityAnalysis' origTableCols query = do
           forM poelss $ \ poels -> do
             return (concat (concat poels) ++ vs, d)
         return ders2
-      let ders4 = mergeManyCpms (map (:[]) ders3)
       --putStrLn "Combined derivatives:"
+      let ders5 = map splitElsVs ders3
+      {-
       ders5 <- forM ders4 $ \ (els,d) -> do
         let (els',vs) = splitAt (length els - numGroupExprs) els
         --printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
         return (els',vs,d)
+      -}
       return ders5
 
     findAllDerivativesWrtOrigTables =
@@ -567,15 +604,54 @@ performLocalSensitivityAnalysis' origTableCols query = do
     queryResult = concat $ zipWith assembleResult ds vss
       where (_,vss,ds) = unzip3 queryResult0
   let canComputeNoiseLevel = numGroupExprs == 0 && numSumExprs == 1
-  noiseLevel <- fmap maximum $ forM derivatives $ \ (dtncs,ders) -> do
-    putStr "Derivatives w.r.t. original tables "
+  let
+    combineSubQueryDers =
+      fmap concat $ forM derivatives $ \ (dtncs,ders) -> do
+      when debug $ putStr "Derivatives w.r.t. original tables "
+      when debug $ print dtncs
+      let
+        printDerivatives' tn dtncs ders = when debug $ do
+          printf "  Derivatives of table %s w.r.t. tables %s\n" tn (show dtncs) :: IO ()
+          printDerivatives ders
+        printDerivatives ders = when debug $ do
+          forM_ ders $ \ (els',vs,d) ->
+            printf "    %s -> %s -> %s\n" (show els') (show vs) (show d) :: IO ()
+        findAllDers = f [] where
+          f rs [] = do
+              when debug $ print newdtnc
+              forM_ rs' $ \ (tn,tncs',ders) -> printDerivatives' tn tncs' ders
+              let cpDers = derMapCrossProd derss
+              when debug $ putStrLn "  Cross product:"
+              printDerivatives cpDers
+              when debug $ printf "  Derivatives of result table w.r.t. tables %s\n" (show dtncs)
+              printDerivatives ders
+              let ders2 = [(e1,v2,map (d1 *) d2s) | (e1,v1,[d1]) <- cpDers, (e2,v2,d2s) <- ders, let v1e2 = patternIntersection' v1 e2, isJust v1e2]
+              when debug $ printf "  Derivatives of result table w.r.t. tables %s\n" (show newdtnc)
+              printDerivatives ders2
+              return [(newdtnc,ders2)]
+            where
+              rs' = reverse rs
+              (tns,newdtncs0,derss) = unzip3 rs'
+              newdtnc = concat newdtncs0
+          f rs (tnc@(tn,ntc) : tncs) =
+            if ntc >= 1
+              then
+                fmap concat $ forM (allSubQueryDers Map.! tn) $ \ (tncs',ders) -> do
+                  f ((tn,tncs',ders) : rs) tncs
+              else
+                f rs tncs
+      findAllDers dtncs
+  ders3 <- if hasSubQueries then combineSubQueryDers else return derivatives
+  noiseLevel <- fmap maximum $ forM ders3 $ \ (dtncs,ders) -> do
+    putStr "Combined derivatives w.r.t. original tables "
     print dtncs
+    let ders4 = map splitElsVs $ mergeManyCpms (map ((:[]) . unsplitElsVs) ders)
     let numdtables = sum (map snd dtncs)
     let
       nlm :: Double
       nlm = if numdtables == 0 then 0 else noise_C2 / noise_b2 * (noise_C1 / noise_b1)^(numdtables - 1) / noise_epsilon^numdtables
     when canComputeNoiseLevel $ printf "Noise level multiplier = %0.3f\n" nlm
-    nl <- fmap maximum $ forM ders $ \ (els',vs,d) -> do
+    nl <- fmap maximum $ forM ders4 $ \ (els',vs,d) -> do
       let d1 = if null d then 1 else head d
       let nl = nlm * fromIntegral d1
       if canComputeNoiseLevel
@@ -591,4 +667,4 @@ performLocalSensitivityAnalysis' origTableCols query = do
     else do
       putStrLn "query result:"
       mapM_ print queryResult
-  return (selectedColNames, queryResult)
+  return (selectedColNames, queryResult, derivatives)

@@ -105,6 +105,7 @@ main = do
   if local args
     then
       performLocalSensitivityAnalysis
+                      (debugVerbose args)
                       (dbFromCatalogUpdates catUpdates)
                       query
     else do

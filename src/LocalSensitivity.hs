@@ -269,20 +269,21 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
     (sumExprs0,groupExprs) =
       partitionEithers eithers
     -- assemble a query result row from the values of sumExprs and groupExprs
-    assembleResult0 ss gs = [f eithers ss gs] where
+    assembleResult0 ss gs = f eithers ss gs where
       f [] [] [] = []
       f (Left _ : es) (s : ss) gs = s : f es ss gs
       f (Right _ : es) ss (g : gs) = g : f es ss gs
-    (sumExprs,assembleResult) =
+    (sumExprs,assembleResult,assembleDer) =
       if null sumExprs0
         then
           if selDistinct query == All
-            then ([IntExpr (IntLit 1)], \ [s] gs -> replicate s gs)
-            else ([], \ [] gs -> [gs])
+            then ([IntExpr (IntLit 1)], id, id)
+            else ([], \ ([],vs,[]) -> ([],vs,[1]), \ (els,vs,[]) -> (els,vs,[1]))
         else
-          (sumExprs0, assembleResult0)
+          (sumExprs0, \ ([],vs,d) -> ([],assembleResult0 d vs,[1]), \ (els,vs,d) -> (els,assembleResult0 (map (const 0) d) vs,[2]))
     numSumExprs = length sumExprs
     numGroupExprs = length groupExprs
+    numExprs = length sumExprs0 + numGroupExprs
   printf "Selected column names: %s\n" (show selectedColNames)
 
   putStrLn "Processing WHERE clause"
@@ -322,6 +323,10 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
     return $ if null eqs then Nothing else Just (maximum eqs)
 
   let
+    printDerivatives ders = when debug $ do
+      forM_ ders $ \ (els',vs,d) ->
+        printf "    %s -> %s -> %s\n" (show els') (show vs) (show d) :: IO ()
+
     -- dtables must be in ascending order
     findDerivatives dtables = do
       when debug $ putStr "Finding derivatives w.r.t. tables "
@@ -559,8 +564,11 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
       f 0 [] = [[]]
       f n (x:xs) = [insert x k p | p <- f (n-1) xs, k <- [0..n-1]]
 
-    splitElsVs (els,d) = (els',vs,d) where
+    splitUnassembledElsVs (els,d) = (els',vs,d) where
       (els',vs) = splitAt (length els - numGroupExprs) els
+
+    splitElsVs (els,d) = (els',vs,d) where
+      (els',vs) = splitAt (length els - numExprs) els
 
     unsplitElsVs (els,vs,d) = (els ++ vs, d)
 
@@ -579,14 +587,12 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
           forM poelss $ \ poels -> do
             return (concat (concat poels) ++ vs, d)
         return ders2
-      --putStrLn "Combined derivatives:"
-      let ders5 = map splitElsVs ders3
-      {-
-      ders5 <- forM ders4 $ \ (els,d) -> do
-        let (els',vs) = splitAt (length els - numGroupExprs) els
-        --printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
-        return (els',vs,d)
-      -}
+      let ders4 = map splitUnassembledElsVs ders3
+      --when debug $ putStrLn "ders4:"
+      --printDerivatives ders4
+      let ders5 = map (if null dtncs then assembleResult else assembleDer) ders4
+      --when debug $ putStrLn "ders5:"
+      --printDerivatives ders5
       return ders5
 
     findAllDerivativesWrtOrigTables =
@@ -594,15 +600,17 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
         f dtncs [] = (\ x -> [(dtncs,x)]) <$> findDerivativesWrtOrigTables dtncs
         f dtncs ((tn,ntc) : tncs) =
           fmap concat $ forM [0..ntc] $ \ i ->
-            f ((tn,i) : dtncs) tncs
+            f (if i == 0 then dtncs else (tn,i) : dtncs) tncs
       in
         f [] (zip origTables (map newTableCount origTables))
 
   -- print $ mergeManyCpms [[([0,1],1),([0,2],2)], [([1,0],10),([2,0],20)]]
   (_,queryResult0) : derivatives <- findAllDerivativesWrtOrigTables
   let
-    queryResult = concat $ zipWith assembleResult ds vss
-      where (_,vss,ds) = unzip3 queryResult0
+    --queryResult = concat $ zipWith assembleResult ds vss
+      --where (_,vss,ds) = unzip3 queryResult0
+    queryResult = concatMap getResult queryResult0
+      where getResult ([],vs,[d]) = replicate d vs
   let canComputeNoiseLevel = numGroupExprs == 0 && numSumExprs == 1
   let
     combineSubQueryDers =
@@ -613,9 +621,6 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
         printDerivatives' tn dtncs ders = when debug $ do
           printf "  Derivatives of table %s w.r.t. tables %s\n" tn (show dtncs) :: IO ()
           printDerivatives ders
-        printDerivatives ders = when debug $ do
-          forM_ ders $ \ (els',vs,d) ->
-            printf "    %s -> %s -> %s\n" (show els') (show vs) (show d) :: IO ()
         findAllDers = f [] where
           f rs [] = do
               when debug $ print newdtnc

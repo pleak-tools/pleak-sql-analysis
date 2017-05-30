@@ -28,12 +28,12 @@ CREATE TABLE berth (
 );
 
 CREATE TABLE reachable_ports (
-  port_id int4,
+  port_id int4 PRIMARY KEY,
   arrival int4
 );
 
 CREATE TABLE feasible_ports (
-  port_id int4
+  port_id int4 PRIMARY KEY
 );
 
 CREATE TABLE available_slots (

@@ -305,7 +305,7 @@ genUnique schema fixedTable tbl us n
     uniqueColNames = map (genColNamePrefix tblName) usNames
     mk i x = x . showString "-" . shows i
 
-    precond = z3Or $ do
+    precond = z3And $ do
       name <- uniqueColNames
       i <- [1 .. n + 1]
       j <- [i + 1 .. n + 1]

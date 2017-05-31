@@ -58,7 +58,7 @@ prefixSum = f 0 where
   f s (x : xs) = s : f (s + x) xs
 
 nmcs :: Name -> [String]
-nmcs (Name _ ncs) = map (\ (Nmc s) -> s) ncs
+nmcs (Name _ ncs) = map ncStr ncs
 
 aggrOp :: Name -> String
 aggrOp = map toLower . head . nmcs
@@ -200,11 +200,13 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
         let tblName = head (nmcs n)
         printf "%s -> %s\n" tblName tblName
         return (tblName, tblName, origTableCols Map.! tblName, dbTables Map.! tblName, Nothing)
-      TableAlias _ (Nmc newTblName) (Tref _ n) -> do
+      TableAlias _ newTblName0 (Tref _ n) -> do
+        let newTblName = ncStr newTblName0
         let origTblName = head (nmcs n)
         printf "%s -> %s\n" origTblName newTblName
         return (newTblName, origTblName, origTableCols Map.! origTblName, dbTables Map.! origTblName, Nothing)
-      TableAlias _ (Nmc newTblName) (SubTref _ subquery) -> do
+      TableAlias _ newTblName0 (SubTref _ subquery) -> do
+        let newTblName = ncStr newTblName0
         putStrLn "Processing subquery"
         putStrLn "==================="
         (subColNames, res, ders) <- performLocalSensitivityAnalysis' debug origTableCols subquery
@@ -254,7 +256,7 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
           flip map sis $ \ si ->
             (
               case si of
-                SelectItem _ _ (Nmc n) -> n
+                SelectItem _ _ nc -> ncStr nc
             ,
               case si of
                 SelectItem _ (App _ ns [e1]) _ ->

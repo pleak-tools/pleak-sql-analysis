@@ -258,9 +258,10 @@ genType n = showString $ case unpack n of
   n'        -> ice $ printf "Invalid type \"%s\"." n'
 
 genNameComponent :: NameComponent -> ShowS
-genNameComponent (Nmc s) = showString s
-genNameComponent (QNmc s) = showString s
-genNameComponent (AntiNameComponent s) = showString s
+genNameComponent = showString . ncStr
+--genNameComponent (Nmc s) = showString s
+--genNameComponent (QNmc s) = showString s
+--genNameComponent (AntiNameComponent s) = showString s
 
 genCatName :: CatName -> ShowS
 genCatName = showString . unpack

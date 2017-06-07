@@ -45,9 +45,15 @@ dbTables = Map.fromList [
 
 sumExprBound = 1000
 
-noise_gamma = 2.0
-noise_C1 = 1 + noise_gamma
-noise_C2 = 1 + noise_gamma
+noise_Cauchy_gamma = 2.0
+noise_Cauchy_C1 = 1 + noise_Cauchy_gamma
+noise_Cauchy_C2 = 1 + noise_Cauchy_gamma
+
+noise_Laplace_delta = 1.0e-5
+noise_Laplace_k = - log noise_Laplace_delta
+noise_Laplace_C1 = noise_Laplace_k - 1
+noise_Laplace_C2 = 1.0
+
 noise_epsilon = 1.0
 noise_b2 = 0.5 -- must be in the interval (0,1)
 noise_b1 = 1 - noise_b2
@@ -275,17 +281,19 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
       f [] [] [] = []
       f (Left _ : es) (s : ss) gs = s : f es ss gs
       f (Right _ : es) ss (g : gs) = g : f es ss gs
-    (sumExprs,assembleResult,assembleDer) =
+    numGroupExprs = length groupExprs
+    numExprs = length sumExprs0 + numGroupExprs
+    (sumExprs,assembleResult,assembleDer,numAssembledVs) =
       if null sumExprs0
         then
           if selDistinct query == All
-            then ([IntExpr (IntLit 1)], id, id)
-            else ([], \ ([],vs,[]) -> ([],vs,[1]), \ (els,vs,[]) -> (els,vs,[1]))
+            then ([IntExpr (IntLit 1)], id, id, numGroupExprs)
+            else ([], \ ([],vs,[]) -> ([],vs,[1]), \ (els,vs,[]) -> (els,vs,[1]), numGroupExprs)
         else
-          (sumExprs0, \ ([],vs,d) -> ([],assembleResult0 d vs,[1]), \ (els,vs,d) -> (els,assembleResult0 (map (const 0) d) vs,[2]))
+          if null groupExprs
+            then (sumExprs0, \ ([],vs,d) -> ([],assembleResult0 d vs,[1]), id, numGroupExprs)
+            else (sumExprs0, \ ([],vs,d) -> ([],assembleResult0 d vs,[1]), \ (els,vs,d) -> (els,assembleResult0 (map (const 0) d) vs,[2]), numExprs)
     numSumExprs = length sumExprs
-    numGroupExprs = length groupExprs
-    numExprs = length sumExprs0 + numGroupExprs
   printf "Selected column names: %s\n" (show selectedColNames)
 
   putStrLn "Processing WHERE clause"
@@ -570,7 +578,7 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
       (els',vs) = splitAt (length els - numGroupExprs) els
 
     splitElsVs (els,d) = (els',vs,d) where
-      (els',vs) = splitAt (length els - numExprs) els
+      (els',vs) = splitAt (length els - numAssembledVs) els
 
     unsplitElsVs (els,vs,d) = (els ++ vs, d)
 
@@ -649,28 +657,45 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
                 f rs tncs
       findAllDers dtncs
   ders3 <- if hasSubQueries then combineSubQueryDers else return derivatives
-  noiseLevel <- fmap maximum $ forM ders3 $ \ (dtncs,ders) -> do
+  (nlsC,nlsL) <- fmap unzip $ forM ders3 $ \ (dtncs,ders) -> do
     putStr "Combined derivatives w.r.t. original tables "
     print dtncs
     let ders4 = map splitElsVs $ mergeManyCpms (map ((:[]) . unsplitElsVs) ders)
     let numdtables = sum (map snd dtncs)
     let
-      nlm :: Double
-      nlm = if numdtables == 0 then 0 else noise_C2 / noise_b2 * (noise_C1 / noise_b1)^(numdtables - 1) / noise_epsilon^numdtables
-    when canComputeNoiseLevel $ printf "Noise level multiplier = %0.3f\n" nlm
-    nl <- fmap maximum $ forM ders4 $ \ (els',vs,d) -> do
+      nlm :: Double -> Double -> Double
+      nlm noise_C1 noise_C2 = if numdtables == 0 then 0 else noise_C2 / noise_b2 * (noise_C1 / noise_b1)^(numdtables - 1) / noise_epsilon^numdtables
+      nlmC = nlm noise_Cauchy_C1 noise_Cauchy_C2
+      nlmL = nlm noise_Laplace_C1 noise_Laplace_C2
+    when canComputeNoiseLevel $ printf "Noise level multiplier = %0.3f | %0.3f\n" nlmC nlmL
+    maxd <- fmap maximum $ forM ders4 $ \ (els',vs,d) -> do
       let d1 = if null d then 1 else head d
-      let nl = nlm * fromIntegral d1
+      let nlC = nlmC * fromIntegral d1
+      let nlL = nlmL * fromIntegral d1
       if canComputeNoiseLevel
-        then printf "%s -> %s -> %s -> noise level %0.3f\n" (show els') (show vs) (show d) nl
+        then printf "%s -> %s -> %s -> noise level %0.3f | %0.3f\n" (show els') (show vs) (show d) nlC nlL
         else printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
-      return nl
-    when canComputeNoiseLevel $ printf "-> noise level %0.3f\n" nl
-    return nl
+      --return nl
+      return (fromIntegral d1)
+    let nlC = nlmC * maxd
+    let nlL = nlmL * maxd
+    when canComputeNoiseLevel $ printf "-> noise level %0.3f | %0.3f\n" nlC nlL
+    return (nlC,nlL)
+  let noiseLevelC = maximum nlsC
+  let noiseLevelL = maximum nlsL
   if canComputeNoiseLevel
     then do
       printf "query result = %0.3f\n" (fromIntegral (head (head queryResult)) :: Double)
-      printf "noise level to add = %0.3f\n" noiseLevel
+      printf "noise level to add = %0.3f | %0.3f\n" noiseLevelC noiseLevelL
+      -- quantiles of the absolute value of added noise
+      let nqL p = - log (1 - p)
+      when (noise_Cauchy_gamma == 2) $ do
+        let nqC p = tan (0.5 * pi * p)
+        let ps = 0 : 0.001 : 0.01 : 0.1 : 0.2 : 0.3 : 0.4 : map (\ i -> 1 - (2 :: Double)**(- 1.0 * i)) [1..20]
+        forM_ ps $ \ p -> do
+          let qC = noiseLevelC * nqC p
+          let qL = noiseLevelL * nqL p
+          printf "%9.5f%% quantile: %0.3f | %0.3f | ratio = %0.3f\n" (100 * p) qC qL (qC / qL)
     else do
       putStrLn "query result:"
       mapM_ print queryResult

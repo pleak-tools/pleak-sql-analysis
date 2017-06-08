@@ -40,12 +40,53 @@ table4 = [[i, 10*i+1] | i <- [3..110]]
 dbTables = Map.fromList [
   ("t1", table1),
   ("t2", table2),
+  ("t2copy", table2),
   ("t3", table3),
   ("t4", table4)]
 
 sumExprBound = 1000
 
-noise_Cauchy_gamma = 2.0
+data NoiseDistribution = NoiseDistribution { distrC1 :: Double, distrC2 :: Double, distrQuantiles :: [Double] -> [Double] }
+
+noise_Laplace noise_Laplace_delta =
+  NoiseDistribution {
+    distrC1 = noise_Laplace_C1,
+    distrC2 = noise_Laplace_C2,
+    distrQuantiles = map nqL
+  }
+  where
+    noise_Laplace_k = - log noise_Laplace_delta
+    noise_Laplace_C1 = noise_Laplace_k - 1
+    noise_Laplace_C2 = 1.0
+    -- quantiles of the absolute value of added noise
+    nqL p = - log (1 - p)
+
+noise_Cauchy =
+  NoiseDistribution {
+    distrC1 = noise_Cauchy_C1,
+    distrC2 = noise_Cauchy_C2,
+    distrQuantiles = map nqC
+  }
+  where
+    noise_Cauchy_gamma = 2.0
+    noise_Cauchy_C1 = 1 + noise_Cauchy_gamma
+    noise_Cauchy_C2 = 1 + noise_Cauchy_gamma
+    nqC p = tan (0.5 * pi * p)
+
+noise_GenCauchy noise_Cauchy_gamma =
+  NoiseDistribution {
+    distrC1 = noise_Cauchy_C1,
+    distrC2 = noise_Cauchy_C2,
+    distrQuantiles = compute_generalized_Cauchy_distribution_quantiles noise_Cauchy_gamma
+  }
+  where
+    noise_Cauchy_C1 = 1 + noise_Cauchy_gamma
+    noise_Cauchy_C2 = 1 + noise_Cauchy_gamma
+
+noise_distributions = [noise_GenCauchy 10.0, noise_GenCauchy 5.0, noise_GenCauchy 3.0, noise_Cauchy, noise_Laplace 1.0e-5, noise_Laplace 1.0e-10]
+
+{-
+noise_Cauchy_gamma = 5.0
 noise_Cauchy_C1 = 1 + noise_Cauchy_gamma
 noise_Cauchy_C2 = 1 + noise_Cauchy_gamma
 
@@ -53,15 +94,41 @@ noise_Laplace_delta = 1.0e-5
 noise_Laplace_k = - log noise_Laplace_delta
 noise_Laplace_C1 = noise_Laplace_k - 1
 noise_Laplace_C2 = 1.0
+-}
 
 noise_epsilon = 1.0
 noise_b2 = 0.5 -- must be in the interval (0,1)
 noise_b1 = 1 - noise_b2
 
 
+prefixSum :: (Num a) => [a] -> [a]
 prefixSum = f 0 where
   f s [] = [s]
   f s (x : xs) = s : f (s + x) xs
+
+compute_generalized_Cauchy_distribution_quantiles noise_Cauchy_gamma =
+  let
+    k1 = 1000
+    k2 = 20
+    pd x = 1 / (1 + x**noise_Cauchy_gamma)
+    invk1 = (1 :: Double) / fromIntegral k1
+    samples = map ((invk1 *) . fromIntegral) [0..k1-1] ++ map ((\ i -> exp (invk1 * i)) . fromIntegral) [0..k2*k1]
+    pds = map pd samples
+    ps = zipWith (*) pds $ zipWith (-) (tail samples) samples
+    cps = prefixSum ps
+    invtotalprob = 1 / last cps
+    qlist = zip (map (invtotalprob *) cps) samples
+    --forM_ (zip3 samples pds cps) $ \ (s,pd,cp) ->
+    --  printf "%0.3f %0.7f %0.7f\n" s (pd*invtotalprob) (cp*invtotalprob)
+    --forM_ qlist $ \ (cp,s) ->
+    --  printf "%0.7f %0.3f\n" cp s
+    findQuantiles = f qlist where
+      f _ [] = []
+      f qs@((cp,s):qs') cp0s@(cp0:cp0s')
+        | cp < cp0  = f qs' cp0s
+        | otherwise = s : f qs cp0s'
+  in findQuantiles
+
 
 nmcs :: Name -> [String]
 nmcs (Name _ ncs) = map ncStr ncs
@@ -656,8 +723,13 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
               else
                 f rs tncs
       findAllDers dtncs
+
+    showNoiseLevelList :: [Double] -> String
+    showNoiseLevelList [] = "[]"
+    showNoiseLevelList nls = take (length s - 3) s
+      where s = concatMap (printf "%0.3f | " :: Double -> String) nls
   ders3 <- if hasSubQueries then combineSubQueryDers else return derivatives
-  (nlsC,nlsL) <- fmap unzip $ forM ders3 $ \ (dtncs,ders) -> do
+  nlss <- fmap transpose $ forM ders3 $ \ (dtncs,ders) -> do
     putStr "Combined derivatives w.r.t. original tables "
     print dtncs
     let ders4 = map splitElsVs $ mergeManyCpms (map ((:[]) . unsplitElsVs) ders)
@@ -665,37 +737,52 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
     let
       nlm :: Double -> Double -> Double
       nlm noise_C1 noise_C2 = if numdtables == 0 then 0 else noise_C2 / noise_b2 * (noise_C1 / noise_b1)^(numdtables - 1) / noise_epsilon^numdtables
-      nlmC = nlm noise_Cauchy_C1 noise_Cauchy_C2
-      nlmL = nlm noise_Laplace_C1 noise_Laplace_C2
-    when canComputeNoiseLevel $ printf "Noise level multiplier = %0.3f | %0.3f\n" nlmC nlmL
+      --nlmC = nlm noise_Cauchy_C1 noise_Cauchy_C2
+      --nlmL = nlm noise_Laplace_C1 noise_Laplace_C2
+
+      distr_nlm :: NoiseDistribution -> Double
+      distr_nlm d = nlm (distrC1 d) (distrC2 d)
+    let distr_nlms = map distr_nlm noise_distributions
+    when canComputeNoiseLevel $ printf "Noise level multiplier = %s\n" (showNoiseLevelList distr_nlms)
     maxd <- fmap maximum $ forM ders4 $ \ (els',vs,d) -> do
       let d1 = if null d then 1 else head d
-      let nlC = nlmC * fromIntegral d1
-      let nlL = nlmL * fromIntegral d1
-      if canComputeNoiseLevel
-        then printf "%s -> %s -> %s -> noise level %0.3f | %0.3f\n" (show els') (show vs) (show d) nlC nlL
-        else printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
+      --let nlC = nlmC * fromIntegral d1
+      --let nlL = nlmL * fromIntegral d1
+      --if canComputeNoiseLevel
+      --  then printf "%s -> %s -> %s -> noise level %0.3f | %0.3f\n" (show els') (show vs) (show d) nlC nlL
+      --  else printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
+      printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
       --return nl
       return (fromIntegral d1)
-    let nlC = nlmC * maxd
-    let nlL = nlmL * maxd
-    when canComputeNoiseLevel $ printf "-> noise level %0.3f | %0.3f\n" nlC nlL
-    return (nlC,nlL)
-  let noiseLevelC = maximum nlsC
-  let noiseLevelL = maximum nlsL
+    let nls = map (* maxd) distr_nlms
+    --let nlC = nlmC * maxd
+    --let nlL = nlmL * maxd
+    when canComputeNoiseLevel $ printf "-> noise level %s\n" (showNoiseLevelList nls)
+    --when canComputeNoiseLevel $ printf "-> noise level %0.3f | %0.3f\n" nlC nlL
+    --return (nlC,nlL)
+    return nls
+  --let noiseLevelC = maximum nlsC
+  --let noiseLevelL = maximum nlsL
+  let noiseLevels = map maximum nlss
   if canComputeNoiseLevel
     then do
+      --nqsGC <- compute_generalized_Cauchy_distribution
       printf "query result = %0.3f\n" (fromIntegral (head (head queryResult)) :: Double)
-      printf "noise level to add = %0.3f | %0.3f\n" noiseLevelC noiseLevelL
+      --printf "noise level to add = %0.3f | %0.3f\n" noiseLevelC noiseLevelL
+      printf "noise level to add = %s\n" (showNoiseLevelList noiseLevels)
       -- quantiles of the absolute value of added noise
-      let nqL p = - log (1 - p)
-      when (noise_Cauchy_gamma == 2) $ do
-        let nqC p = tan (0.5 * pi * p)
+      --let nqL p = - log (1 - p)
+      --when (noise_Cauchy_gamma == 2) $ do
+      do
+        --let nqC p = tan (0.5 * pi * p)
         let ps = 0 : 0.001 : 0.01 : 0.1 : 0.2 : 0.3 : 0.4 : map (\ i -> 1 - (2 :: Double)**(- 1.0 * i)) [1..20]
-        forM_ ps $ \ p -> do
-          let qC = noiseLevelC * nqC p
-          let qL = noiseLevelL * nqL p
-          printf "%9.5f%% quantile: %0.3f | %0.3f | ratio = %0.3f\n" (100 * p) qC qL (qC / qL)
+        let nqss = transpose $ map (flip distrQuantiles ps) noise_distributions
+        forM_ (zip ps nqss) $ \ (p, nqs) -> do
+          let qs = zipWith (*) noiseLevels nqs
+          --let qC = noiseLevelC * nqC p
+          --let qL = noiseLevelL * nqL p
+          --printf "%9.5f%% quantile: %0.3f %0.3f | %0.3f | ratio = %0.3f\n" (100 * p) (noiseLevelC * nqGC) qC qL (qC / qL)
+          printf "%9.5f%% quantile: %s\n" (100 * p) (showNoiseLevelList qs)
     else do
       putStrLn "query result:"
       mapM_ print queryResult

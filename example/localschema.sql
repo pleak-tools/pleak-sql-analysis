@@ -18,6 +18,11 @@ CREATE TABLE t3 (
     c2 int4 NOT NULL
 );
 
+CREATE TABLE t3copy (
+    c1 int4 NOT NULL,
+    c2 int4 NOT NULL
+);
+
 CREATE TABLE t4 (
     c1 int4 NOT NULL,
     c2 int4 NOT NULL

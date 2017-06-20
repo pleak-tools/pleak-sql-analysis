@@ -27,14 +27,30 @@ import qualified Data.Text.Lazy as T
 import Schema -- TODO: workaround
 import Logging
 
-parseSelectQuery :: Dialect -> FilePath -> T.Text -> IO QueryExpr
+--parseSelectQuery :: Dialect -> FilePath -> T.Text -> IO QueryExpr
+--parseSelectQuery dialect fp src =
+--  case parseQueryExpr parseFlags fp Nothing src of
+--    Left err -> fatal (show err)
+--    Right query@Select{} -> return query
+--    Right _ -> fatal "Unsupported query type. Expecting basic SELECT query."
+--  where
+--    parseFlags = defaultParseFlags { pfDialect = dialect }
+
+parseSelectQuery :: Dialect -> FilePath -> T.Text -> IO (QueryExpr, [QueryExpr])
 parseSelectQuery dialect fp src =
   case parseQueryExpr parseFlags fp Nothing src of
     Left err -> fatal (show err)
-    Right query@Select{} -> return query
-    Right _ -> fatal "Unsupported query type. Expecting basic SELECT query."
+    Right query -> do
+      qs <- extractQueries query
+      return (query, qs)
   where
     parseFlags = defaultParseFlags { pfDialect = dialect }
+    extractQueries query@Select{} = return [query]
+    extractQueries (CombineQueryExpr _ cqt q1 q2) | cqt `elem` [Intersect,Union,Except] = do
+      qs1 <- extractQueries q1
+      qs2 <- extractQueries q2
+      return (qs1 ++ qs2)
+    extractQueries _ = fatal "Unsupported query type. Expecting basic SELECT query."
 
 type Reason = String
 type Loc = Maybe SourcePosition -- using location of hssqlppp
@@ -92,7 +108,7 @@ isSupportedWhereExpr = \case
   BinaryOp _ n _ _ -> nameToStr n `elem` ops
   _                -> False
   where
-    ops = ["=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/"]
+    ops = ["=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/", "not"]
 
 nameToStr :: Name -> String
 nameToStr (Name _ ns) = intercalate "." (map ncStr ns)
@@ -109,23 +125,24 @@ extractJoinTables = concatMap go . selTref
     go (JoinTref _ l _ _ _ r _) = go l ++ go r
     go t = [t]
 
-typeCheckSelectQuery :: Dialect -> Bool -> FilePath -> Catalog -> QueryExpr -> IO QueryExpr
-typeCheckSelectQuery dialect local fp catalog query = do
+typeCheckSelectQuery :: Dialect -> Bool -> Bool -> FilePath -> Catalog -> QueryExpr -> IO QueryExpr
+typeCheckSelectQuery dialect local checkUnsupporteds fp catalog query = do
   query <- return $ typeCheckQueryExpr typeCheckFlags catalog query
   queryErrs <- checkAndReportErrors query
   when queryErrs exitFailure -- dont bail?
   -- Because type checker may rewrite queries to a different form
   -- we perform feature check late.
   bailRef <- newIORef False
-  forM_ (unsupportedClauses local query) $ \str -> do
-    bailRef `writeIORef` True
-    err $ str ++ " clause is not supported"
-  forM_ (unsupportedFrom local query) $ \ (loc, str) -> do
-    bailRef `writeIORef` True
-    err $ prettyLoc (printf "%s not supported in FROM clause." str) loc
-  forM_ (unsupportedWhere local query) $ \loc -> do
-    bailRef `writeIORef` True
-    err $ prettyLoc "Unsupported expression in WHERE clause or join." loc
+  when checkUnsupporteds $ do
+    forM_ (unsupportedClauses local query) $ \str -> do
+      bailRef `writeIORef` True
+      err $ str ++ " clause is not supported"
+    forM_ (unsupportedFrom local query) $ \ (loc, str) -> do
+      bailRef `writeIORef` True
+      err $ prettyLoc (printf "%s not supported in FROM clause." str) loc
+    forM_ (unsupportedWhere local query) $ \loc -> do
+      bailRef `writeIORef` True
+      err $ prettyLoc "Unsupported expression in WHERE clause or join." loc
   bail <- readIORef bailRef
   when bail exitFailure
   return query

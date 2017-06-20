@@ -6,6 +6,8 @@ module Z3Bridge (
   generateZ3,
   performAnalysis,
   printAnalysisResults,
+  printCombinedAnalysisResults,
+  analysisResultsToInts,
   alternativeAnalysisResults,
   extractTableNames)
   where
@@ -160,18 +162,42 @@ printAnalysisResults opts (tables, results) =
       Unknown -> yellow $ printf "sensitivity not known on %s (Z3 yielded unknown)" (unpack t)
       Bad str -> red $ printf "on table %s Z3 failed on with: %s" (unpack t) str
 
-alternativeAnalysisResults :: [[CatName]] -> ([CatName], [SatResult]) -> [Int]
-alternativeAnalysisResults tableNamess (tables, results) =
-  map (combineResInts . map (flip (Map.findWithDefault 0) (Map.fromList (zip tables (map resultToInt results))))) tableNamess
+printCombinedAnalysisResults :: [(CatName, Int)] -> IO ()
+printCombinedAnalysisResults res =
+  forM_ res $ \ (t, r) -> printf "sensitivity on table %s: %d\n" t r
+
+sumGroupsWith :: (Ord a, Ord b) => ([b] -> b) -> [(a,b)] -> [(a,b)]
+sumGroupsWith sumf = map (\ g -> (fst (head g), sumf (map snd g))) . groupBy (\ x y -> fst x == fst y) . sort
+
+analysisResultsToInts :: [([CatName], [SatResult])] -> [(CatName, Int)]
+analysisResultsToInts ress = sumGroupsWith sumWithInfinity (zip cns is)
   where
+    (cnss, srss) = unzip ress
+    cns = concat cnss
+    srs = concat srss
+    is = map resultToInt srs
+
+    sumWithInfinity [] = 0
+    sumWithInfinity (x : xs) | x < 0 || y < 0 = min x y
+                             | otherwise      = x + y
+                           where
+                             y = sumWithInfinity xs
+
+    resultToInt :: SatResult -> Int
     resultToInt Sat = -1
     resultToInt Unsat = 1
     resultToInt _ = -1
+
+
+alternativeAnalysisResults :: [[CatName]] -> [(CatName, Int)] -> [Int]
+alternativeAnalysisResults tableNamess results =
+  map (combineResInts . map (flip (Map.findWithDefault 0) (Map.fromList results))) tableNamess
+  where
     combineResInts [] = 0
-    combineResInts (x : xs) | x < 0 || cr < 0 = min x cr
-                            | otherwise       = max x cr
-      where
-        cr = combineResInts xs
+    combineResInts (x : xs) | x < 0 || y < 0 = min x y
+                            | otherwise      = max x y
+                          where
+                            y = combineResInts xs
 
 extractTableNames :: [Statement] -> [CatName]
 extractTableNames = concatMap extractTableName

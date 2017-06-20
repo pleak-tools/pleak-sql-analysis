@@ -71,6 +71,7 @@ main = do
         return (tableIds, tableNamess, concat stmtss)
       else do
         stmts <- parseSchema dialect (schemaFp args) schemaText
+        --print stmts
         return (undefined, undefined, stmts)
   (catalog, stmts) <- typeCheckSchema dialect (schemaFp args) catalog stmts
   let catUpdates = concatMap extractCatalogUpdates stmts
@@ -91,30 +92,54 @@ main = do
   -- T.putStrLn (prettyStatements defaultPrettyFlags stmts')
 
   src <- T.readFile (queryFp args)
-  query <- parseSelectQuery dialect (queryFp args) src
-  query <- typeCheckSelectQuery dialect (local args) (queryFp args) catalog query
+  queries <- do
+    (query,queries) <- parseSelectQuery dialect (queryFp args) src
+    query <- typeCheckSelectQuery dialect (local args) False (queryFp args) catalog query
+    --putStrLn (groom query)
+    --T.putStrLn (prettyQueryExpr defaultPrettyFlags query)
+    let numqueries = length queries
+    forM (zip queries [1..]) $ \ (query,i) -> do
+      --putStrLn (groom query)
+      query <- typeCheckSelectQuery dialect (local args) True (queryFp args) catalog query
+      when (debugPrintQuery args) $ do
+        when (numqueries > 1) $ putStrLn $ "Query " ++ show i ++ ":"
+        if debugVerbose args
+          then putStrLn (groom query)
+          else T.putStrLn (prettyQueryExpr defaultPrettyFlags query)
+      return query
+  --query <- parseSelectQuery dialect (queryFp args) src
+  --query <- typeCheckSelectQuery dialect (local args) (queryFp args) catalog query
 
-  when (debugPrintQuery args) $
-    if debugVerbose args
-      then putStrLn (groom query)
-      else T.putStrLn (prettyQueryExpr defaultPrettyFlags query)
+  --when (debugPrintQuery args) $
+  --  if debugVerbose args
+  --    then putStrLn (groom query)
+  --    else T.putStrLn (prettyQueryExpr defaultPrettyFlags query)
+
   -- putStrLn $ groomStripped $ extractJoinTables query
   -- forM_ stmts $ \stmt -> do
   --   putStrLn $ show $ extractName stmt
   --   putStrLn $ groomStripped $ extractUniques stmt
   if local args
     then
-      performLocalSensitivityAnalysis
-                      (debugVerbose args)
-                      (dbFromCatalogUpdates catUpdates)
-                      query
+      forM_ queries $ \ query ->
+        performLocalSensitivityAnalysis
+                        (debugVerbose args)
+                        (dbFromCatalogUpdates catUpdates)
+                        query
     else do
-      res <- performAnalysis args
-                             (dbUniqueInfoFromStatements stmts)
-                             (dbFromCatalogUpdates catUpdates)
-                             query
+      let numqueries = length queries
+      ress <- forM (zip queries [1..]) $ \ (query,i) -> do
+        res <- performAnalysis args
+                               (dbUniqueInfoFromStatements stmts)
+                               (dbFromCatalogUpdates catUpdates)
+                               query
+        unless (alternative args) $ do
+          when (numqueries > 1) $ putStrLn $ "Query " ++ show i ++ ":"
+          printAnalysisResults args res
+        return res
+      let res = analysisResultsToInts ress
       if alternative args
         then
           T.putStr $ T.intercalate unitSeparator $ unzipToOneList $ zip tableIds (map (T.pack . show) (alternativeAnalysisResults tableNames res))
         else
-          printAnalysisResults args res
+          printCombinedAnalysisResults res

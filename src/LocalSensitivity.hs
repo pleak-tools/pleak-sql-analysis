@@ -58,7 +58,8 @@ data NoiseDistribution =
 
 noise_Laplace noise_Laplace_delta =
   NoiseDistribution {
-    distrBeta = noise_epsilon / (2 * log (2 / noise_Laplace_delta)),
+    --distrBeta = noise_epsilon / (2 * log (2 / noise_Laplace_delta)),
+    distrBeta = noise_epsilon / (2 * (log (2 / noise_Laplace_delta) - noise_epsilon)),
     distrSmNlm = 2 / noise_epsilon,
     distrC1 = noise_Laplace_C1,
     distrC2 = noise_Laplace_C2,
@@ -790,6 +791,7 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
                 in smsens0 beta (g 0 (f 1)) xs
             let betas = map distrBeta noise_distributions
             --printf "  beta = %s\n" (showNoiseLevelList betas)
+            --printf "  1/beta = %s\n" (showNoiseLevelList (map (1/) betas))
             --forM_ [0..100] $ \ i ->
             --  printf "  %2d: %20s %10.3f %10.3f\n" i (show (satds i xs)) (satd i xs) (smsens0 beta i xs)
             let smss = map (`smsens` xs) betas
@@ -896,6 +898,7 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
     let distr_nlms = map distr_nlm noise_distributions
     let distr_smnlms = map distrSmNlm noise_distributions
     when canComputeNoiseLevel $ printf "Noise level multiplier = %s\n" (showNoiseLevelList distr_nlms)
+    when canComputeNoiseLevel $ printf "Smooth noise level multiplier = %s\n" (showNoiseLevelList distr_smnlms)
     maxd:maxsmss <- fmap (map maximum . transpose) $ forM ders4 $ \ (els',vs,d) -> do
       let d1 = if null d then 1 else head d
       --if canComputeNoiseLevel

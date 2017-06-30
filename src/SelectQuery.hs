@@ -3,6 +3,7 @@
 module SelectQuery (
   parseSelectQuery,
   typeCheckSelectQuery,
+  combinePrimaryKeys,
   extractWhereExpr,
   extractJoinTables)
   where
@@ -51,6 +52,22 @@ parseSelectQuery dialect fp src =
       qs2 <- extractQueries q2
       return (qs1 ++ qs2)
     extractQueries _ = fatal "Unsupported query type. Expecting basic SELECT query."
+
+combinePrimaryKeys :: QueryExpr -> [[Bool]] -> [Bool]
+combinePrimaryKeys q pks = fst $ f q pks
+  where
+    f Select{} (pk:pks) = (pk,pks)
+    f (CombineQueryExpr _ cqt q1 q2) pks =
+      let
+        (pk1,pks') = f q1 pks
+        (pk2,pks'') = f q2 pks'
+        pk =
+          case cqt of
+            Intersect -> zipWith (||) pk1 pk2
+            Union -> map (const False) pk1
+            Except -> pk1
+      in
+        (pk,pks'')
 
 type Reason = String
 type Loc = Maybe SourcePosition -- using location of hssqlppp

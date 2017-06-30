@@ -92,9 +92,9 @@ main = do
   -- T.putStrLn (prettyStatements defaultPrettyFlags stmts')
 
   src <- T.readFile (queryFp args)
+  (wholeQuery,queries) <- parseSelectQuery dialect (queryFp args) src
   queries <- do
-    (query,queries) <- parseSelectQuery dialect (queryFp args) src
-    query <- typeCheckSelectQuery dialect (local args) False (queryFp args) catalog query
+    query <- typeCheckSelectQuery dialect (local args) False (queryFp args) catalog wholeQuery
     --putStrLn (groom query)
     --T.putStrLn (prettyQueryExpr defaultPrettyFlags query)
     let numqueries = length queries
@@ -143,3 +143,15 @@ main = do
           T.putStr $ T.intercalate unitSeparator $ unzipToOneList $ zip tableIds (map (T.pack . show) (alternativeAnalysisResults tableNames res))
         else
           printCombinedAnalysisResults res
+      when (primaryKeys args) $ do
+        ress <- mapM (findPrimaryKeys args
+                                      (dbUniqueInfoFromStatements stmts)
+                                      (dbFromCatalogUpdates catUpdates))
+                     queries
+        let res = combinePrimaryKeys wholeQuery ress
+        if alternative args
+          then
+            mapM_ T.putStr [unitSeparator, unitSeparator, T.pack $ map (\ b -> if b then '1' else '0') res]
+          else
+            forM_ (zip res [1..]) $ \ (b,i) ->
+              putStrLn $ "Result column " ++ show i ++ " " ++ (if b then "is" else "is not") ++ " primary key"

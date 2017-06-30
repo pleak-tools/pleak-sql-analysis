@@ -4,6 +4,7 @@ module Z3Bridge (
   dbFromCatalogUpdates,
   dbUniqueInfoFromStatements,
   generateZ3,
+  findPrimaryKeys,
   performAnalysis,
   printAnalysisResults,
   printCombinedAnalysisResults,
@@ -153,6 +154,21 @@ performAnalysis opts us s q = do
     (tables, doc) = second fcat $ unzip $ generateZ3 us s q (sensitivity opts)
     z3Input = doc ""
 
+findPrimaryKeys :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO [Bool]
+findPrimaryKeys opts us s q = do
+  when (debugPrintZ3 opts) $ do
+    hPutStrLn stderr "---"
+    hPutStrLn stderr z3Input
+    hPutStrLn stderr "---"
+  result <- sendToZ3 (z3Path opts) (map (const (pack "")) selects) z3Input
+  results <- case result of
+    Nothing -> fatal "Z3 timed out."
+    Just rs -> return rs
+  return (map (== Unsat) results)
+  where
+    selects = getSelects q
+    z3Input = generatePrimaryKeyZ3 us s q ""
+
 printAnalysisResults :: ProgramOptions -> ([CatName], [SatResult]) -> IO ()
 printAnalysisResults opts (tables, results) =
   forM_ (zip tables results) $ \(t, r) ->
@@ -212,7 +228,20 @@ generateZ3 :: UniqueInfo         -- ^ uniques
            -> QueryExpr          -- ^ query
            -> Int                -- ^ sensitivity
            -> [(CatName, ShowS)]
-generateZ3 us s query n = map (\t -> (t, go t)) uniqueJoinTables
+generateZ3 us s query n = map (\t -> (t, generateZ3Go us s query n t Nothing)) uniqueJoinTables
+  where
+    joinTables = map (nameToCatName.getName) $ extractJoinTables query
+    uniqueJoinTables = nub joinTables
+    getName (Tref _ n) = n -- TODO: obviously...
+
+generateZ3Go :: UniqueInfo         -- ^ uniques
+             -> DbSchema           -- ^ information about the database
+             -> QueryExpr          -- ^ query
+             -> Int                -- ^ sensitivity
+             -> CatName
+             -> Maybe ScalarExpr
+             -> ShowS
+generateZ3Go us s query n = go
   where
     joinTables = map (nameToCatName.getName) $ extractJoinTables query
     selects = getSelects query
@@ -227,21 +256,31 @@ generateZ3 us s query n = map (\t -> (t, go t)) uniqueJoinTables
     mkTuple = showString "mk-tuple"
     funDecl = z3DeclareFun mkTuple (map (genType.fst) selects) (showString "Int")
 
+    colEqAsserts fixedTable e = z3Assert $ z3Eq $ take 2 $ genScalarExpr' fixedTable e
+
     distinctAsserts fixedTable = let
         ess = transpose [take (n + 1) $ genScalarExpr' fixedTable e | (_, e) <- selects]
       in z3Assert $ z3Distinct $ map (\es -> showP $ mkTuple `spaced` sepBySpace es) ess
 
     getName (Tref _ n) = n -- TODO: obviously...
 
-    go fixedTable = id
+    go fixedTable se = id
       . z3Push
       . genDecls schema fixedTable n
       . uniqueAsserts fixedTable
       . whereAsserts fixedTable
       . funDecl
+      . (case se of Just e -> colEqAsserts fixedTable e; Nothing -> id)
       . distinctAsserts fixedTable
       . z3CheckSat
       . z3Pop
+
+generatePrimaryKeyZ3 :: UniqueInfo         -- ^ uniques
+                     -> DbSchema           -- ^ information about the database
+                     -> QueryExpr          -- ^ query
+                     -> ShowS
+generatePrimaryKeyZ3 us s query = fcat $ map (generateZ3Go us s query 1 (pack "") . Just) (map snd $ getSelects query)
+
 
 nameComponentToCatName :: NameComponent -> CatName
 nameComponentToCatName n = pack $ genNameComponent n ""
@@ -384,6 +423,7 @@ data SatResult
   | Sat
   | Unknown
   | Bad String
+  deriving Eq
 
 readSatResultZ3 :: String -> SatResult
 readSatResultZ3 = \case

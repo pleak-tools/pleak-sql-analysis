@@ -47,10 +47,19 @@ dbTables = Map.fromList [
 
 sumExprBound = 1000
 
+data NoiseParameters =
+  NoiseParameters {
+    noise_epsilon :: Double,
+    noise_b2 :: Double -- must be in the interval (0,1)
+  }
+
+noise_b1 :: NoiseParameters -> Double
+noise_b1 np = 1 - noise_b2 np
+
 data NoiseDistribution =
   NoiseDistribution {
-    distrBeta :: Double, -- for smooth sensitivity
-    distrSmNlm :: Double, -- for smooth sensitivity
+    distrBeta :: NoiseParameters -> Double, -- for smooth sensitivity
+    distrSmNlm :: NoiseParameters -> Double, -- for smooth sensitivity
     distrC1 :: Double,
     distrC2 :: Double,
     distrQuantiles :: [Double] -> [Double]
@@ -58,9 +67,11 @@ data NoiseDistribution =
 
 noise_Laplace noise_Laplace_delta =
   NoiseDistribution {
+    distrBeta = \ np -> noise_b1 np * noise_epsilon np / (noise_Laplace_k - 1),
     --distrBeta = noise_epsilon / (2 * log (2 / noise_Laplace_delta)),
-    distrBeta = noise_epsilon / (2 * (log (2 / noise_Laplace_delta) - noise_epsilon)),
-    distrSmNlm = 2 / noise_epsilon,
+    --distrBeta = noise_epsilon / (2 * (log (2 / noise_Laplace_delta) - noise_epsilon)),
+    --distrSmNlm = 2 / noise_epsilon,
+    distrSmNlm = \ np -> 1 / (noise_b2 np * noise_epsilon np),
     distrC1 = noise_Laplace_C1,
     distrC2 = noise_Laplace_C2,
     distrQuantiles = map nqL
@@ -74,8 +85,8 @@ noise_Laplace noise_Laplace_delta =
 
 noise_Cauchy =
   NoiseDistribution {
-    distrBeta = noise_epsilon / (2 * (noise_Cauchy_gamma + 1)),
-    distrSmNlm = 2 * (noise_Cauchy_gamma + 1) / noise_epsilon,
+    distrBeta = \ np -> noise_b1 np * noise_epsilon np / (noise_Cauchy_gamma + 1),
+    distrSmNlm = \ np -> (noise_Cauchy_gamma + 1) / (noise_b2 np * noise_epsilon np),
     distrC1 = noise_Cauchy_C1,
     distrC2 = noise_Cauchy_C2,
     distrQuantiles = map nqC
@@ -88,8 +99,8 @@ noise_Cauchy =
 
 noise_GenCauchy noise_Cauchy_gamma =
   NoiseDistribution {
-    distrBeta = noise_epsilon / (2 * (noise_Cauchy_gamma + 1)),
-    distrSmNlm = 2 * (noise_Cauchy_gamma + 1) / noise_epsilon,
+    distrBeta = \ np -> noise_b1 np * noise_epsilon np / (noise_Cauchy_gamma + 1),
+    distrSmNlm = \ np -> (noise_Cauchy_gamma + 1) / (noise_b2 np * noise_epsilon np),
     distrC1 = noise_Cauchy_C1,
     distrC2 = noise_Cauchy_C2,
     distrQuantiles = compute_generalized_Cauchy_distribution_quantiles noise_Cauchy_gamma
@@ -100,9 +111,9 @@ noise_GenCauchy noise_Cauchy_gamma =
 
 noise_distributions = [noise_GenCauchy 10.0, noise_GenCauchy 5.0, noise_GenCauchy 3.0, noise_Cauchy, noise_Laplace 1.0e-5, noise_Laplace 1.0e-10]
 
-noise_epsilon = 1.0
-noise_b2 = 0.5 -- must be in the interval (0,1)
-noise_b1 = 1 - noise_b2
+--noise_epsilon = 1.0
+--noise_b2 = 0.5 -- must be in the interval (0,1)
+--noise_b1 = 1 - noise_b2
 
 
 prefixSum :: (Num a) => [a] -> [a]
@@ -493,11 +504,15 @@ performLocalSensitivityAnalysis debug schema query = do
     let tblName = T.unpack n1
     let cols = map (T.unpack . fst) ns
     return (tblName, cols)
-  _ <- performLocalSensitivityAnalysis' debug origTableCols query
+  let np = NoiseParameters { noise_epsilon = 1, noise_b2 = 0.5 }
+  --forM_ [0.1,0.2..0.9] $ \ b2 -> do
+  --  _ <- performLocalSensitivityAnalysis' debug np{noise_b2 = b2} origTableCols query
+  --  return ()
+  _ <- performLocalSensitivityAnalysis' debug np origTableCols query
   return ()
 
-performLocalSensitivityAnalysis' :: Bool -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [Int])])])
-performLocalSensitivityAnalysis' debug origTableCols query = do
+performLocalSensitivityAnalysis' :: Bool -> NoiseParameters -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [Int])])])
+performLocalSensitivityAnalysis' debug np origTableCols query = do
   putStrLn "performLocalSensitivityAnalysis'"
 
   putStrLn "Processing FROM clause"
@@ -518,7 +533,7 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
           let newTblName = ncStr newTblName0
           putStrLn "Processing subquery"
           putStrLn "==================="
-          (subColNames, res, ders) <- performLocalSensitivityAnalysis' debug origTableCols subquery
+          (subColNames, res, ders) <- performLocalSensitivityAnalysis' debug np origTableCols subquery
           putStrLn "============================"
           putStrLn "Finished processing subquery"
           printf "-> %s\n" newTblName
@@ -651,7 +666,7 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
       -- (i,j) -> r -> the derivative of the count of table j (filtered by the where conditions) w.r.t. row r of table i
       derivatives <- newIORef Map.empty :: IO (IORef (Map (Int,Int) (Map [Int] Int)))
       forM_ (zip [0..] db) $ \ (ti,currTable) -> do
-        printf "findSmoothSensitivity: %d\n" ti
+        --printf "findSmoothSensitivity: %d\n" ti
         let ta = tblAddr ! ti
         let lateAddrs = [(tblAddr ! (ti+1))..totalNumCols-1]
         let daddrs = [0..ta-1] ++ lateAddrs
@@ -659,12 +674,12 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
         forM_ currTable $ \ tr -> do
           checksPassed <- writeRowElements ta tr
           forM_ lateAddrs inferRowElement
-          printf "  %s -> %s\n" (show tr) (show checksPassed)
+          --printf "  %s -> %s\n" (show tr) (show checksPassed)
           when checksPassed $
             forM_ [0..numTables-1] $ \ i ->
               when (i /= ti) $ do
                 tri <- mapM (readArray row) [tblAddr ! i .. (tblAddr ! (i+1)) - 1]
-                printf "    %d: %s\n" i (show tri)
+                --printf "    %d: %s\n" i (show tri)
                 modifyIORef derivatives $
                   Map.alter
                     (\ m0 -> Just $
@@ -673,16 +688,16 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
                         tri
                         (case m0 of Nothing -> Map.empty; Just m -> m))
                     (i,ti)
-      putStrLn "findSmoothSensitivity: derivatives"
+      when debug $ putStrLn "findSmoothSensitivity: derivatives"
       derMaps <- readIORef derivatives
       fmap Map.fromList $ forM (Map.assocs derMaps) $ \ ((i,j),derMap) -> do
         let ders = Map.assocs derMap
         forM_ ders $ \ (r,d) ->
-          printf "  (%d,%d) -> %s -> %d\n" i j (show r) d
+          when debug $ printf "  (%d,%d) -> %s -> %d\n" i j (show r) d
         return ((i,j),ders)
 
   smoothDerMap <- findSmoothSensitivityDerMap
-  printf "distrSmNlm = %s\n" (showNoiseLevelList $ map distrSmNlm noise_distributions)
+  printf "distrSmNlm = %s\n" (showNoiseLevelList $ map (`distrSmNlm` np) noise_distributions)
 
   let
     printDerivatives :: [([Int], [Int], [Int])] -> IO ()
@@ -789,13 +804,13 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
                           | otherwise = g (k3+1) k2
                     where k3 = (k1 + k2) `div` 2
                 in smsens0 beta (g 0 (f 1)) xs
-            let betas = map distrBeta noise_distributions
+            let betas = map (`distrBeta` np) noise_distributions
             --printf "  beta = %s\n" (showNoiseLevelList betas)
             --printf "  1/beta = %s\n" (showNoiseLevelList (map (1/) betas))
             --forM_ [0..100] $ \ i ->
             --  printf "  %2d: %20s %10.3f %10.3f\n" i (show (satds i xs)) (satd i xs) (smsens0 beta i xs)
             let smss = map (`smsens` xs) betas
-            printf "%s -> %d # %s # %s\n" (show els) d1 (show sds) (showNoiseLevelList smss)
+            when debug $ printf "%s -> %d # %s # %s\n" (show els) d1 (show sds) (showNoiseLevelList smss)
             return (gels,vs,d++map ceiling smss)
           else
             return (gels,vs,d)
@@ -891,14 +906,15 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
     let numdtables = sum (map snd dtncs)
     let
       nlm :: Double -> Double -> Double
-      nlm noise_C1 noise_C2 = if numdtables == 0 then 0 else noise_C2 / noise_b2 * (noise_C1 / noise_b1)^(numdtables - 1) / noise_epsilon^numdtables
+      nlm noise_C1 noise_C2 = if numdtables == 0 then 0 else noise_C2 / noise_b2 np * (noise_C1 / noise_b1 np) ^ (numdtables - 1) / noise_epsilon np ^ numdtables
 
       distr_nlm :: NoiseDistribution -> Double
       distr_nlm d = nlm (distrC1 d) (distrC2 d)
     let distr_nlms = map distr_nlm noise_distributions
-    let distr_smnlms = map distrSmNlm noise_distributions
+    let distr_smnlms = map (`distrSmNlm` np) noise_distributions
+    let canComputeSmoothNoiseLevel = canComputeNoiseLevel && numdtables == 1
     when canComputeNoiseLevel $ printf "Noise level multiplier = %s\n" (showNoiseLevelList distr_nlms)
-    when canComputeNoiseLevel $ printf "Smooth noise level multiplier = %s\n" (showNoiseLevelList distr_smnlms)
+    when canComputeSmoothNoiseLevel $ printf "Smooth noise level multiplier = %s\n" (showNoiseLevelList distr_smnlms)
     maxd:maxsmss <- fmap (map maximum . transpose) $ forM ders4 $ \ (els',vs,d) -> do
       let d1 = if null d then 1 else head d
       --if canComputeNoiseLevel
@@ -912,7 +928,7 @@ performLocalSensitivityAnalysis' debug origTableCols query = do
     let nls = map (* maxd) distr_nlms
     let smnls = zipWith (*) maxsmss distr_smnlms
     when canComputeNoiseLevel $ printf "-> noise level %s\n" (showNoiseLevelList nls)
-    when canComputeNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
+    when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
     --when canComputeNoiseLevel $ printf "-> noise level %0.3f | %0.3f\n" nlC nlL
     return $ nls ++ if null smnls then replicate (length nls) 0 else smnls
   let noiseLevels = map maximum nlss

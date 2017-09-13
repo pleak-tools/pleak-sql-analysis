@@ -782,11 +782,11 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
                   limit = numeq * (y - x)
                   (q,r) = quotRem k numeq
             sds <- forM ([0..currti-1] ++ [currti+1..numTables-1]) $ \ i -> do
-              --printf "  #%d:\n" i
+              when debug $ printf "  #%d:\n" i
               fmap sum $ forM (smoothDerMap Map.! (currti,i)) $ \ (r,sd) ->
                 if isPatternSubset els r
                   then do
-                    --printf "    %s -> %d\n" (show r) sd
+                    when debug $ printf "    %s -> %d\n" (show r) sd
                     return sd
                   else return 0
             let xs = sort sds

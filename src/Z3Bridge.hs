@@ -151,8 +151,16 @@ performAnalysis opts us s q = do
     Just rs -> return rs
   return (tables, results)
   where
-    (tables, doc) = second fcat $ unzip $ generateZ3 us s q (sensitivity opts)
+    q' = if null (selGroupBy q) then q else transformGroupBy q
+    (tables, doc) = second fcat $ unzip $ generateZ3 us s q' (sensitivity opts)
     z3Input = doc ""
+
+-- replace a GROUP BY query by a non-GROUP BY query with the same sensitivity bound
+transformGroupBy :: QueryExpr -> QueryExpr
+transformGroupBy q = q {selSelectList = SelectList err newSelectList, selGroupBy = [], selDistinct = Distinct}
+  where
+    err = error "transformGroupBy"
+    newSelectList = map (\ x -> SelectItem err x (Nmc err)) (selGroupBy q)
 
 findPrimaryKeys :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO [Bool]
 findPrimaryKeys opts us s q = do

@@ -142,7 +142,7 @@ main = do
         then
           T.putStr $ T.intercalate unitSeparator $ unzipToOneList $ zip tableIds (map (T.pack . show) (alternativeAnalysisResults tableNames res))
         else
-          printCombinedAnalysisResults res
+          when (numqueries > 1) $ printCombinedAnalysisResults res
       when (primaryKeys args) $ do
         ress <- mapM (findPrimaryKeys args
                                       (dbUniqueInfoFromStatements stmts)

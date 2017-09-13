@@ -122,6 +122,7 @@ isSupportedWhereExpr = \case
   Parens{}         -> True
   PrefixOp _ n _   -> nameToStr n `elem` ops
   BinaryOp _ n _ _ -> nameToStr n `elem` ops
+  SpecialOp _ n _  -> nameToStr n == "between"
   _                -> False
   where
     ops = ["=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/", "not"]

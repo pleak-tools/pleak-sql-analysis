@@ -420,6 +420,12 @@ genScalarExpr showIdent = go
       Parens _ e -> go e
       PrefixOp _ op e -> showP $ genOp op `spaced` go e
       BinaryOp _ op e1 e2 -> showP $ genOp op `spaced` go e1 `spaced` go e2
+      SpecialOp _ op [e1,e2,e3] | map toLower (genName op "") == "between" ->
+        let
+          goe1 = go e1
+        in
+          showP (showString "and" `spaced` (showP (showString ">=" `spaced` goe1 `spaced` go e2))
+                                  `spaced` (showP (showString "<=" `spaced` goe1 `spaced` go e3)))
       _ -> ice "Invalid scalar expression." -- TODO: location
 
 -------------------------

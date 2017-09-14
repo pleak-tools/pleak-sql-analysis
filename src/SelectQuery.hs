@@ -5,7 +5,8 @@ module SelectQuery (
   typeCheckSelectQuery,
   combinePrimaryKeys,
   extractWhereExpr,
-  extractJoinTables)
+  extractJoinTables,
+  isSupportedAggregOp)
   where
 
 import Control.Monad
@@ -78,7 +79,8 @@ prettyLoc msg (Just (fp, r, c)) = printf "%s. Error at %s:%d:%d" msg fp r c
 
 unsupportedClauses :: Bool -> QueryExpr -> [Reason]
 unsupportedClauses False query =
-  ["ALL without GROUP BY" | selDistinct query == All && null (selGroupBy query) ] ++
+  ["ALL with non-aggregating expressions and without GROUP BY"
+    | selDistinct query == All && not (isSelectListOnlyAggregExprs (selSelectList query)) && null (selGroupBy query) ] ++
   ["LIMIT"    | isJust $ selLimit query] ++
   ["OFFSET"   | isJust $ selOffset query] ++
   ["HAVING"   | isJust $ selHaving query]
@@ -126,6 +128,25 @@ isSupportedWhereExpr = \case
   _                -> False
   where
     ops = ["=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/", "not"]
+
+isSupportedAggregOp :: Name -> Bool
+isSupportedAggregOp op = nameToStr op `elem` ["count", "sum", "avg", "min", "max"]
+
+isAggregExpr :: ScalarExpr -> Bool
+isAggregExpr = \case
+  App _ op [_]       -> isSupportedAggregOp op
+  NumberLit{}        -> True
+  StringLit{}        -> True
+  -- NullLit{}       -> True
+  BooleanLit{}       -> True
+  Identifier{}       -> False
+  PrefixOp _ n e     -> isAggregExpr e
+  BinaryOp _ n e1 e2 -> isAggregExpr e1 && isAggregExpr e2
+  SpecialOp _ n es   -> all isAggregExpr es
+  _                  -> False
+
+isSelectListOnlyAggregExprs :: SelectList -> Bool
+isSelectListOnlyAggregExprs (SelectList _ sis) = all (\ (SelectItem _ e _) -> isAggregExpr e) sis
 
 nameToStr :: Name -> String
 nameToStr (Name _ ns) = intercalate "." (map ncStr ns)

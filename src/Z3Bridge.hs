@@ -426,6 +426,8 @@ genScalarExpr showIdent = go
         in
           showP (showString "and" `spaced` (showP (showString ">=" `spaced` goe1 `spaced` go e2))
                                   `spaced` (showP (showString "<=" `spaced` goe1 `spaced` go e3)))
+      App _ op [_] | isSupportedAggregOp op ->
+        showString "0"
       _ -> ice "Invalid scalar expression." -- TODO: location
 
 -------------------------

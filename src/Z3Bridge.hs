@@ -324,6 +324,7 @@ genType n = showString $ case unpack n of
   "int8"    -> "Int"
   "integer" -> "Int"
   "int"     -> "Int"
+  "date"    -> "Int"
   "bool"    -> "Bool"
 --  "text"    -> "String"
   "text"    -> "(Seq (_ BitVec 8))"

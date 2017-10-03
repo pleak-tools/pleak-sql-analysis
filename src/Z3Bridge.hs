@@ -260,7 +260,7 @@ generateZ3Go us s query n = go
     schema = Map.filterWithKey (\k v -> k `elem` uniqueJoinTables) s
 
     uniqueAsserts fixedTable = fcat [genUnique schema fixedTable tbl cols n | (tbl, colss) <- us, cols <- colss]
-    whereAsserts fixedTable = fcat $ map (genWhere schema fixedTable) $ extractWhereExpr query
+    whereAsserts fixedTable = fcat $ map (genWhere schema fixedTable n) $ extractWhereExpr query
     mkTuple = showString "mk-tuple"
     funDecl = z3DeclareFun mkTuple (map (genType.fst) selects) (showString "Int")
 
@@ -347,9 +347,9 @@ genColName :: CatName -> CatName -> ShowS -> ShowS
 genColName tbl row suffix = genColNamePrefix tbl row . suffix
 
 -- TODO: get rid of duplicates
-genWhere :: DbSchema -> CatName -> ScalarExpr -> ShowS
-genWhere schema fixed e = z3Assert e1 . z3Assert e2
-  where e1 : e2 : _ = genScalarExpr' fixed e
+genWhere :: DbSchema -> CatName -> Int -> ScalarExpr -> ShowS
+genWhere schema fixed n e = fcat (map z3Assert es)
+  where es = take (n + 1) $ genScalarExpr' fixed e
 
 genDecls :: DbSchema -> CatName -> Int -> ShowS
 genDecls schema fixed n = fcat $ concatMap go $ Map.toList schema
@@ -368,27 +368,47 @@ genDecls schema fixed n = fcat $ concatMap go $ Map.toList schema
         decl i = z3DeclareConst (name i) ty
       in fcat [decl i | i <- [1 .. n + 1]]
 
+---- ^ Assumes that "tbl" is not the one that is fixed!
+--genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS
+--genUnique schema fixedTable tbl us n
+--  | tblName == fixedTable = id
+--  | null otherColNames = id
+--  | otherwise = z3Assert (precond `z3Impl` postcond)
+--  where
+--    tblName = nameToCatName tbl
+--    usNames = map nameComponentToCatName us
+--    uniqueColNames = map (genColNamePrefix tblName) usNames
+--    mk i x = x . showString "-" . shows i
+--
+--    precond = z3And $ do
+--      name <- uniqueColNames
+--      i <- [1 .. n + 1]
+--      j <- [i + 1 .. n + 1]
+--      return $ z3Eq [mk i name, mk j name]
+--
+--    mkEq name = z3Eq [mk i name | i <- [1 .. n + 1]]
+--    postcond = z3And $ map mkEq otherColNames
+--
+--    -- TODO: only own table?
+--    otherColNames = do
+--      (tbl', cols) <- Map.toList schema
+--      guard $ fixedTable /= tbl'
+--      -- only own table
+--      guard $ tbl' == tblName
+--      (col, _) <- cols
+--      return $ genColNamePrefix tbl' col
+
 -- ^ Assumes that "tbl" is not the one that is fixed!
 genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS
 genUnique schema fixedTable tbl us n
   | tblName == fixedTable = id
   | null otherColNames = id
-  | otherwise = z3Assert (precond `z3Impl` postcond)
-  where
-    tblName = nameToCatName tbl
-    usNames = map nameComponentToCatName us
-    uniqueColNames = map (genColNamePrefix tblName) usNames
-    mk i x = x . showString "-" . shows i
-
-    precond = z3And $ do
-      name <- uniqueColNames
+  | otherwise = fcat $ do
       i <- [1 .. n + 1]
       j <- [i + 1 .. n + 1]
-      return $ z3Eq [mk i name, mk j name]
-
-    mkEq name = z3Eq [mk i name | i <- [1 .. n + 1]]
-    postcond = z3And $ map mkEq otherColNames
-
+      return $ genUnique' schema fixedTable tblName us otherColNames i j
+  where
+    tblName = nameToCatName tbl
     -- TODO: only own table?
     otherColNames = do
       (tbl', cols) <- Map.toList schema
@@ -397,6 +417,20 @@ genUnique schema fixedTable tbl us n
       guard $ tbl' == tblName
       (col, _) <- cols
       return $ genColNamePrefix tbl' col
+
+genUnique' :: DbSchema -> CatName -> CatName -> [NameComponent] -> [ShowS] -> Int -> Int -> ShowS
+genUnique' schema fixedTable tblName us otherColNames u v = z3Assert (precond `z3Impl` postcond)
+  where
+    usNames = map nameComponentToCatName us
+    uniqueColNames = map (genColNamePrefix tblName) usNames
+    mk i x = x . showString "-" . shows i
+
+    precond = z3And $ do
+      name <- uniqueColNames
+      return $ z3Eq [mk u name, mk v name]
+
+    mkEq name = z3Eq [mk i name | i <- [u,v]]
+    postcond = z3And $ map mkEq otherColNames
 
 -- TODO: quite inefficient
 genScalarExpr' :: CatName -> ScalarExpr -> [ShowS]
@@ -444,10 +478,10 @@ data SatResult
 
 readSatResultZ3 :: String -> SatResult
 readSatResultZ3 = \case
-  "unsat"  -> Unsat
-  "sat"    -> Sat
-  "unkown" -> Unknown
-  str      -> Bad str
+  "unsat"   -> Unsat
+  "sat"     -> Sat
+  "unknown" -> Unknown
+  str       -> Bad str
 
 withTimeout :: Int -> IO a -> IO (Maybe a)
 withTimeout timeout act  = either Just (const Nothing) <$> race act (threadDelay timeout)
@@ -455,6 +489,7 @@ withTimeout timeout act  = either Just (const Nothing) <$> race act (threadDelay
 sendToZ3 :: Maybe FilePath -> [CatName] -> String -> IO (Maybe [SatResult])
 sendToZ3 z3Path tbls msg = do
   let z3Command = fromMaybe "z3" z3Path
+  --let cmdArgs = ["-smt2", "-in", "-T:310", "-t:300000"]
   let cmdArgs = ["-smt2", "-in", "-T:15", "-t:5000"]
   (Just hin, Just hout, _, procHandle) <- createProcess (proc z3Command cmdArgs) {
     std_in  = CreatePipe,
@@ -464,6 +499,7 @@ sendToZ3 z3Path tbls msg = do
   hPutStrLn hin msg
   hFlush hin
 
+  --result <- withTimeout 310000000 $ do
   result <- withTimeout 15000000 $ do
     rs <- forM tbls $ \_ ->
       readSatResultZ3 <$> hGetLine hout

@@ -810,7 +810,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
             --forM_ [0..100] $ \ i ->
             --  printf "  %2d: %20s %10.3f %10.3f\n" i (show (satds i xs)) (satd i xs) (smsens0 beta i xs)
             let smss = map (`smsens` xs) betas
-            when debug $ printf "%s -> %d # %s # %s\n" (show els) d1 (show sds) (showNoiseLevelList smss)
+            when debug $ printf "%s -> %d # %s # %s # %s\n" (show els) d1 (show sds) (show (map ceiling smss)) (showNoiseLevelList smss)
             return (gels,vs,d++map ceiling smss)
           else
             return (gels,vs,d)

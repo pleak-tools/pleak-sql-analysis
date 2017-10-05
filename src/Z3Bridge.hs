@@ -32,6 +32,7 @@ import System.IO
 import System.Process
 
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 
 import Logging
 import ProgramOptions
@@ -57,6 +58,9 @@ spaced x y = x . space . y
 
 sepBySpace :: [ShowS] -> ShowS
 sepBySpace = fcat . intersperse space
+
+sepByHyphen :: [ShowS] -> ShowS
+sepByHyphen = fcat . intersperse (showChar '-')
 
 nl :: ShowS
 nl = showChar '\n'
@@ -403,26 +407,48 @@ genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS
 genUnique schema fixedTable tbl us n
   | tblName == fixedTable = id
   | null otherColNames = id
-  | otherwise = fcat $ do
+  | otherwise = genUnique1
+  where
+    mk i x = x . showString "-" . shows i
+    -- genUnique1 and genUnique2 describe the same model but the former with O(n) input and the latter with O(n^2) input size to Z3.
+    genUnique1 = fcat $
+      zipWith (\ ocn oct ->
+          let
+            funName = sepByHyphen uniqueColNames . showString "-to-" . ocn
+          in
+            z3DeclareFun funName (ucTypes) oct .
+            fcat (do
+              i <- [1 .. n + 1]
+              return $ z3Assert $ z3Eq [mk i ocn, showP (funName `spaced` sepBySpace (map (mk i) uniqueColNames))]))
+        otherColNames ocTypes
+    genUnique2 = fcat $ do
       i <- [1 .. n + 1]
       j <- [i + 1 .. n + 1]
-      return $ genUnique' schema fixedTable tblName us otherColNames i j
-  where
+      return $ genUnique' schema fixedTable tblName uniqueColNames otherColNames i j
+    usNames = map nameComponentToCatName us
+    --uniqueColNames = map (genColNamePrefix tblName) usNames
+    usNamesSet = Set.fromList usNames
     tblName = nameToCatName tbl
     -- TODO: only own table?
-    otherColNames = do
+    (otherColNames, ocTypes) = unzip $ do
       (tbl', cols) <- Map.toList schema
       guard $ fixedTable /= tbl'
       -- only own table
       guard $ tbl' == tblName
-      (col, _) <- cols
-      return $ genColNamePrefix tbl' col
+      (col, colt) <- cols
+      guard $ Set.notMember col usNamesSet
+      return (genColNamePrefix tbl' col, genType colt)
+    (uniqueColNames, ucTypes) = unzip $ do
+      (tbl', cols) <- Map.toList schema
+      guard $ fixedTable /= tbl'
+      guard $ tbl' == tblName
+      (col, colt) <- cols
+      guard $ Set.member col usNamesSet
+      return (genColNamePrefix tbl' col, genType colt)
 
-genUnique' :: DbSchema -> CatName -> CatName -> [NameComponent] -> [ShowS] -> Int -> Int -> ShowS
-genUnique' schema fixedTable tblName us otherColNames u v = z3Assert (precond `z3Impl` postcond)
+genUnique' :: DbSchema -> CatName -> CatName -> [ShowS] -> [ShowS] -> Int -> Int -> ShowS
+genUnique' schema fixedTable tblName uniqueColNames otherColNames u v = z3Assert (precond `z3Impl` postcond)
   where
-    usNames = map nameComponentToCatName us
-    uniqueColNames = map (genColNamePrefix tblName) usNames
     mk i x = x . showString "-" . shows i
 
     precond = z3And $ do

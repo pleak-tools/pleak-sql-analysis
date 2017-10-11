@@ -153,10 +153,12 @@ performAnalysis opts us s q = do
   results <- case result of
     Nothing -> fatal "Z3 timed out."
     Just rs -> return rs
-  return (tables, results)
+  return (tables', results)
   where
     q' = if null (selGroupBy q) then q else transformGroupBy q
-    (tables, doc) = second fcat $ unzip $ generateZ3 us s q' (sensitivity opts)
+    (us'',s'',q'',aliasToOrigTableMap) = transformTableAliases us s q'
+    (tables, doc) = second fcat $ unzip $ generateZ3 us'' s'' q'' (sensitivity opts)
+    tables' = map (aliasToOrigTableMap Map.!) tables
     z3Input = doc ""
 
 -- replace a GROUP BY query by a non-GROUP BY query with the same sensitivity bound
@@ -165,6 +167,22 @@ transformGroupBy q = q {selSelectList = SelectList err newSelectList, selGroupBy
   where
     err = error "transformGroupBy"
     newSelectList = map (\ x -> SelectItem err x (Nmc err)) (selGroupBy q)
+
+transformTableAliases :: UniqueInfo -> DbSchema -> QueryExpr -> (UniqueInfo, DbSchema, QueryExpr, Map CatName CatName)
+transformTableAliases us s q = (us', s', q {selTref = st'}, aliasToOrigTableMap)
+  where
+    err = error "transformTableAliases"
+    (st', tableAliases, tableOrigs) = unzip3 $ map (
+      \case
+        TableAlias _ ta (Tref _ (Name _ [t0])) -> (Tref err (Name err [ta]), ta, t0)
+        tr@(Tref _ (Name _ [t])) -> (tr, t, t)
+      ) (selTref q)
+    nameAliases (Name _ [t]) = map (Name err . (:[])) $ Map.findWithDefault [] t (Map.fromList (listGroups (zip tableOrigs tableAliases)))
+    us' = [(tbl',colss) | (tbl,colss) <- us, tbl' <- nameAliases tbl]
+    tas = map nameComponentToCatName tableAliases
+    t0s = map nameComponentToCatName tableOrigs
+    s' = Map.fromList $ map (second fromJust) $ filter (isJust . snd) $ zipWith (\ ta t0 -> (ta, Map.lookup t0 s)) tas t0s
+    aliasToOrigTableMap = Map.fromList $ zip tas t0s
 
 findPrimaryKeys :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO [Bool]
 findPrimaryKeys opts us s q = do
@@ -192,13 +210,16 @@ printAnalysisResults opts (tables, results) =
 
 printCombinedAnalysisResults :: [(CatName, Int)] -> IO ()
 printCombinedAnalysisResults res =
-  forM_ res $ \ (t, r) -> printf "sensitivity on table %s: %d\n" t r
+  forM_ res $ \ (t, r) -> printf "upper bound of sensitivity on table %s: %d\n" t r
 
 sumGroupsWith :: (Ord a, Ord b) => ([b] -> b) -> [(a,b)] -> [(a,b)]
 sumGroupsWith sumf = map (\ g -> (fst (head g), sumf (map snd g))) . groupBy (\ x y -> fst x == fst y) . sort
 
-analysisResultsToInts :: [([CatName], [SatResult])] -> [(CatName, Int)]
-analysisResultsToInts ress = sumGroupsWith sumWithInfinity (zip cns is)
+listGroups :: (Ord a, Ord b) => [(a,b)] -> [(a,[b])]
+listGroups = sumGroupsWith concat . map (second (:[]))
+
+analysisResultsToInts :: ProgramOptions -> [([CatName], [SatResult])] -> [(CatName, Int)]
+analysisResultsToInts opts ress = sumGroupsWith sumWithInfinity (zip cns is)
   where
     (cnss, srss) = unzip ress
     cns = concat cnss
@@ -213,7 +234,7 @@ analysisResultsToInts ress = sumGroupsWith sumWithInfinity (zip cns is)
 
     resultToInt :: SatResult -> Int
     resultToInt Sat = -1
-    resultToInt Unsat = 1
+    resultToInt Unsat = sensitivity opts
     resultToInt _ = -1
 
 

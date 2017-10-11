@@ -137,12 +137,12 @@ main = do
           when (numqueries > 1) $ putStrLn $ "Query " ++ show i ++ ":"
           printAnalysisResults args res
         return res
-      let res = analysisResultsToInts ress
+      let res = analysisResultsToInts args ress
       if alternative args
         then
           T.putStr $ T.intercalate unitSeparator $ unzipToOneList $ zip tableIds (map (T.pack . show) (alternativeAnalysisResults tableNames res))
         else
-          when (numqueries > 1) $ printCombinedAnalysisResults res
+          when (numqueries > 1 || length res < sum (map (length . fst) ress)) $ printCombinedAnalysisResults res
       when (primaryKeys args) $ do
         ress <- mapM (findPrimaryKeys args
                                       (dbUniqueInfoFromStatements stmts)

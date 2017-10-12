@@ -135,14 +135,18 @@ main = do
                                query
         unless (alternative args) $ do
           when (numqueries > 1) $ putStrLn $ "Query " ++ show i ++ ":"
-          printAnalysisResults args res
-        return res
-      let res = analysisResultsToInts args ress
+          case res of
+            Left res -> printAnalysisResults args res
+            Right _ -> return ()
+        return $ case res of
+          Left res -> analysisResultsToInts args res
+          Right res -> res
+      let res = combineAnalysisResults ress
       if alternative args
         then
           T.putStr $ T.intercalate unitSeparator $ unzipToOneList $ zip tableIds (map (T.pack . show) (alternativeAnalysisResults tableNames res))
         else
-          when (numqueries > 1 || length res < sum (map (length . fst) ress)) $ printCombinedAnalysisResults res
+          when (sensitivity args == -1 || numqueries > 1 || length res < sum (map (length . fst) ress)) $ printCombinedAnalysisResults res
       when (primaryKeys args) $ do
         ress <- mapM (findPrimaryKeys args
                                       (dbUniqueInfoFromStatements stmts)

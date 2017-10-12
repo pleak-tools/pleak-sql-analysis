@@ -9,6 +9,7 @@ module Z3Bridge (
   printAnalysisResults,
   printCombinedAnalysisResults,
   analysisResultsToInts,
+  combineAnalysisResults,
   alternativeAnalysisResults,
   extractTableNames)
   where
@@ -145,21 +146,43 @@ getSelects query = do
     Just t -> return t
   return (t, e)
 
-performAnalysis :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO ([CatName], [SatResult])
+performAnalysis :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO (Either ([CatName], [SatResult]) ([CatName], [Int]))
 performAnalysis opts us s q = do
   when (debugPrintZ3 opts) $
     hPutStrLn stderr z3Input
-  result <- sendToZ3 (z3Path opts) tables z3Input
-  results <- case result of
-    Nothing -> fatal "Z3 timed out."
-    Just rs -> return rs
-  return (tables', results)
+  if sensitivity opts == -1
+    then do
+      results <- forM tables (analyzeOneTable (z3Path opts) us'' s'' q'')
+      return $ Right (tables',results)
+    else do
+      result <- sendToZ3 (z3Path opts) tables z3Input
+      results <- case result of
+        Nothing -> fatal "Z3 timed out."
+        Just rs -> return rs
+      return $ Left (tables', results)
   where
     q' = if null (selGroupBy q) then q else transformGroupBy q
     (us'',s'',q'',aliasToOrigTableMap) = transformTableAliases us s q'
     (tables, doc) = second fcat $ unzip $ generateZ3 us'' s'' q'' (sensitivity opts)
     tables' = map (aliasToOrigTableMap Map.!) tables
     z3Input = doc ""
+
+analyzeOneTable :: Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> CatName -> IO Int
+analyzeOneTable fp us s q t = do
+  let genZ3 n = generateZ3Go us s q n t Nothing
+  let invokeZ3 n = sendToZ3 fp [t] (genZ3 n "")
+  let
+    try n = if n > 10 then return (-1) else do
+      res <- invokeZ3 n
+      case res of
+        Nothing        -> return (-1)
+        Just [Unknown] -> do printf "sensitivity not known on %s (Z3 yielded unknown)\n" (unpack t)
+                             return (-1)
+        Just [Unsat]   -> do printf "<= %d sensitive on %s\n" n (unpack t)
+                             return n
+        Just [Sat]     -> do printf "> %d sensitive on %s\n" n (unpack t)
+                             try (n+1)
+  try 1
 
 -- replace a GROUP BY query by a non-GROUP BY query with the same sensitivity bound
 transformGroupBy :: QueryExpr -> QueryExpr
@@ -218,13 +241,12 @@ sumGroupsWith sumf = map (\ g -> (fst (head g), sumf (map snd g))) . groupBy (\ 
 listGroups :: (Ord a, Ord b) => [(a,b)] -> [(a,[b])]
 listGroups = sumGroupsWith concat . map (second (:[]))
 
-analysisResultsToInts :: ProgramOptions -> [([CatName], [SatResult])] -> [(CatName, Int)]
-analysisResultsToInts opts ress = sumGroupsWith sumWithInfinity (zip cns is)
+combineAnalysisResults :: [([CatName], [Int])] -> [(CatName, Int)]
+combineAnalysisResults ress = sumGroupsWith sumWithInfinity (zip cns is)
   where
     (cnss, srss) = unzip ress
     cns = concat cnss
-    srs = concat srss
-    is = map resultToInt srs
+    is = concat srss
 
     sumWithInfinity [] = 0
     sumWithInfinity (x : xs) | x < 0 || y < 0 = min x y
@@ -232,10 +254,33 @@ analysisResultsToInts opts ress = sumGroupsWith sumWithInfinity (zip cns is)
                            where
                              y = sumWithInfinity xs
 
+analysisResultsToInts :: ProgramOptions -> ([CatName], [SatResult]) -> ([CatName], [Int])
+analysisResultsToInts opts res = second (map resultToInt) res
+  where
     resultToInt :: SatResult -> Int
     resultToInt Sat = -1
     resultToInt Unsat = sensitivity opts
     resultToInt _ = -1
+
+
+--analysisResultsToInts :: ProgramOptions -> [([CatName], [SatResult])] -> [(CatName, Int)]
+--analysisResultsToInts opts ress = sumGroupsWith sumWithInfinity (zip cns is)
+--  where
+--    (cnss, srss) = unzip ress
+--    cns = concat cnss
+--    srs = concat srss
+--    is = map resultToInt srs
+--
+--    sumWithInfinity [] = 0
+--    sumWithInfinity (x : xs) | x < 0 || y < 0 = min x y
+--                             | otherwise      = x + y
+--                           where
+--                             y = sumWithInfinity xs
+--
+--    resultToInt :: SatResult -> Int
+--    resultToInt Sat = -1
+--    resultToInt Unsat = sensitivity opts
+--    resultToInt _ = -1
 
 
 alternativeAnalysisResults :: [[CatName]] -> [(CatName, Int)] -> [Int]

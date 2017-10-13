@@ -152,7 +152,7 @@ performAnalysis opts us s q = do
     hPutStrLn stderr z3Input
   if sensitivity opts == -1
     then do
-      results <- forM tables (analyzeOneTable (z3Path opts) us'' s'' q'')
+      results <- forM tables (analyzeOneTable (alternative opts) (z3Path opts) us'' s'' q'')
       return $ Right (tables',results)
     else do
       result <- sendToZ3 (z3Path opts) tables z3Input
@@ -167,8 +167,8 @@ performAnalysis opts us s q = do
     tables' = map (aliasToOrigTableMap Map.!) tables
     z3Input = doc ""
 
-analyzeOneTable :: Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> CatName -> IO Int
-analyzeOneTable fp us s q t = do
+analyzeOneTable :: Bool -> Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> CatName -> IO Int
+analyzeOneTable alt fp us s q t = do
   let genZ3 n = generateZ3Go us s q n t Nothing
   let invokeZ3 n = sendToZ3 fp [t] (genZ3 n "")
   let
@@ -176,11 +176,11 @@ analyzeOneTable fp us s q t = do
       res <- invokeZ3 n
       case res of
         Nothing        -> return (-1)
-        Just [Unknown] -> do printf "sensitivity not known on %s (Z3 yielded unknown)\n" (unpack t)
+        Just [Unknown] -> do unless alt $ printf "sensitivity not known on %s (Z3 yielded unknown)\n" (unpack t)
                              return (-1)
-        Just [Unsat]   -> do printf "<= %d sensitive on %s\n" n (unpack t)
+        Just [Unsat]   -> do unless alt $ printf "<= %d sensitive on %s\n" n (unpack t)
                              return n
-        Just [Sat]     -> do printf "> %d sensitive on %s\n" n (unpack t)
+        Just [Sat]     -> do unless alt $ printf "> %d sensitive on %s\n" n (unpack t)
                              try (n+1)
   try 1
 

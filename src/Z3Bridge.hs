@@ -182,7 +182,7 @@ analyzeOneTable alt fp us s q t = do
                              return n
         Just [Sat]     -> do unless alt $ printf "> %d sensitive on %s\n" n (unpack t)
                              try (n+1)
-  try 1
+  try 0
 
 -- replace a GROUP BY query by a non-GROUP BY query with the same sensitivity bound
 transformGroupBy :: QueryExpr -> QueryExpr

@@ -220,7 +220,8 @@ findPrimaryKeys opts us s q = do
   return (map (== Unsat) results)
   where
     selects = getSelects q
-    z3Input = generatePrimaryKeyZ3 us s q ""
+    (us'',s'',q'',_aliasToOrigTableMap) = transformTableAliases us s q
+    z3Input = generatePrimaryKeyZ3 us'' s'' q'' ""
 
 printAnalysisResults :: ProgramOptions -> ([CatName], [SatResult]) -> IO ()
 printAnalysisResults opts (tables, results) =

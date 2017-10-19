@@ -152,27 +152,40 @@ performAnalysis opts us s q = do
     hPutStrLn stderr z3Input
   if sensitivity opts == -1
     then do
-      results <- forM tables (analyzeOneTable (alternative opts) (z3Path opts) us'' s'' q'')
+      results <- forM tables $ \ t -> (analyzeOneTable (alternative opts) (z3Path opts) us'' s'' q'''
+                                                       (useMultisetSemantics && isAnyOtherTableWithoutUniquenessConstraint t) t)
       return $ Right (tables',results)
     else do
       result <- sendToZ3 (z3Path opts) tables z3Input
       results <- case result of
         Nothing -> fatal "Z3 timed out."
-        Just rs -> return rs
+        Just rs -> return $ zipWith (\ t r -> if sensitivity opts /= 0 && useMultisetSemantics && isAnyOtherTableWithoutUniquenessConstraint t
+                                                then Bad "Use -s0 or -s-1 for this query and table"
+                                                else r)
+                                    tables' rs
       return $ Left (tables', results)
   where
     q' = if null (selGroupBy q) then q else transformGroupBy q
     (us'',s'',q'',aliasToOrigTableMap) = transformTableAliases us s q'
-    (tables, doc) = second fcat $ unzip $ generateZ3 us'' s'' q'' (sensitivity opts)
+    allTables = Map.keys aliasToOrigTableMap
+    useMultisetSemantics = selDistinct q'' == All && not (isSelectListOnlyAggregExprs (selSelectList q'')) && null (selGroupBy q'')
+    q''' =
+      if useMultisetSemantics
+        then transformAll allTables s'' q''
+        else q''
+    tablesWithUniquenessConstraint = Set.fromList $ map (nameToCatName . fst) $ filter (not . null . snd) us''
+    tablesWithoutUniquenessConstraint = Set.fromList allTables Set.\\ tablesWithUniquenessConstraint
+    isAnyOtherTableWithoutUniquenessConstraint t = not $ Set.null (Set.delete t tablesWithoutUniquenessConstraint)
+    (tables, doc) = second fcat $ unzip $ generateZ3 us'' s'' q''' (sensitivity opts)
     tables' = map (aliasToOrigTableMap Map.!) tables
     z3Input = doc ""
 
-analyzeOneTable :: Bool -> Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> CatName -> IO Int
-analyzeOneTable alt fp us s q t = do
+analyzeOneTable :: Bool -> Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> Bool -> CatName -> IO Int
+analyzeOneTable alt fp us s q multisetsWithNonUniqueInput t = do
   let genZ3 n = generateZ3Go us s q n t Nothing
   let invokeZ3 n = sendToZ3 fp [t] (genZ3 n "")
   let
-    try n = if n > 10 then return (-1) else do
+    try n limit = if n > limit then return (-1) else do
       res <- invokeZ3 n
       case res of
         Nothing        -> return (-1)
@@ -181,8 +194,8 @@ analyzeOneTable alt fp us s q t = do
         Just [Unsat]   -> do unless alt $ printf "<= %d sensitive on %s\n" n (unpack t)
                              return n
         Just [Sat]     -> do unless alt $ printf "> %d sensitive on %s\n" n (unpack t)
-                             try (n+1)
-  try 0
+                             try (n+1) limit
+  try 0 (if multisetsWithNonUniqueInput then 0 else 10)
 
 -- replace a GROUP BY query by a non-GROUP BY query with the same sensitivity bound
 transformGroupBy :: QueryExpr -> QueryExpr
@@ -206,6 +219,35 @@ transformTableAliases us s q = (us', s', q {selTref = st'}, aliasToOrigTableMap)
     t0s = map nameComponentToCatName tableOrigs
     s' = Map.fromList $ map (second fromJust) $ filter (isJust . snd) $ zipWith (\ ta t0 -> (ta, Map.lookup t0 s)) tas t0s
     aliasToOrigTableMap = Map.fromList $ zip tas t0s
+
+isAggregExpr :: ScalarExpr -> Bool
+isAggregExpr = \case
+  App _ op [_]       -> isSupportedAggregOp op
+  NumberLit{}        -> True
+  StringLit{}        -> True
+  -- NullLit{}       -> True
+  BooleanLit{}       -> True
+  Identifier{}       -> False
+  PrefixOp _ n e     -> isAggregExpr e
+  BinaryOp _ n e1 e2 -> isAggregExpr e1 && isAggregExpr e2
+  SpecialOp _ n es   -> all isAggregExpr es
+  _                  -> False
+
+isSelectListOnlyAggregExprs :: SelectList -> Bool
+isSelectListOnlyAggregExprs (SelectList _ sis) = all (\ (SelectItem _ e _) -> isAggregExpr e) sis
+
+transformAll :: [CatName] -> DbSchema -> QueryExpr -> QueryExpr
+transformAll selectedTables s q = q {selSelectList = SelectList err newSelectList}
+  where
+    err = error "transformAll"
+    catNameToNmc = Nmc . unpack
+    newSelectList = [SelectItem
+                        err
+                        (Identifier
+                          (Annotation{anType = Just (TypeExtra {teType = ScalarType colt})})
+                          (Name err [catNameToNmc t, colNmc]))
+                        colNmc |
+                      t <- selectedTables, (col,colt) <- s Map.! t, let colNmc = catNameToNmc col]
 
 findPrimaryKeys :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO [Bool]
 findPrimaryKeys opts us s q = do

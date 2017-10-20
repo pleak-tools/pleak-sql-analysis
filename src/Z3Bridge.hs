@@ -22,6 +22,7 @@ import Data.Char
 import Data.Data
 import Data.List
 import Data.Map (Map)
+import Data.Set (Set)
 import Data.Maybe
 import Data.Text (unpack, pack)
 import Database.HsSqlPpp.Annotation
@@ -152,7 +153,7 @@ performAnalysis opts us s q = do
     hPutStrLn stderr z3Input
   if sensitivity opts == -1
     then do
-      results <- forM tables $ \ t -> (analyzeOneTable (alternative opts) (z3Path opts) us'' s'' q'''
+      results <- forM tables $ \ t -> (analyzeOneTable (alternative opts) (z3Path opts) us' s' q'
                                                        (useMultisetSemantics && isAnyOtherTableWithoutUniquenessConstraint t) t)
       return $ Right (tables',results)
     else do
@@ -165,18 +166,9 @@ performAnalysis opts us s q = do
                                     tables' rs
       return $ Left (tables', results)
   where
-    q' = if null (selGroupBy q) then q else transformGroupBy q
-    (us'',s'',q'',aliasToOrigTableMap) = transformTableAliases us s q'
-    allTables = Map.keys aliasToOrigTableMap
-    useMultisetSemantics = selDistinct q'' == All && not (isSelectListOnlyAggregExprs (selSelectList q'')) && null (selGroupBy q'')
-    q''' =
-      if useMultisetSemantics
-        then transformAll allTables s'' q''
-        else q''
-    tablesWithUniquenessConstraint = Set.fromList $ map (nameToCatName . fst) $ filter (not . null . snd) us''
-    tablesWithoutUniquenessConstraint = Set.fromList allTables Set.\\ tablesWithUniquenessConstraint
+    (us',s',q',useMultisetSemantics,tablesWithoutUniquenessConstraint,aliasToOrigTableMap) = doAllTransforms us s q
     isAnyOtherTableWithoutUniquenessConstraint t = not $ Set.null (Set.delete t tablesWithoutUniquenessConstraint)
-    (tables, doc) = second fcat $ unzip $ generateZ3 us'' s'' q''' (sensitivity opts)
+    (tables, doc) = second fcat $ unzip $ generateZ3 us' s' q' (sensitivity opts)
     tables' = map (aliasToOrigTableMap Map.!) tables
     z3Input = doc ""
 
@@ -188,26 +180,18 @@ findPrimaryKeys opts us s q = do
     hPutStrLn stderr "---"
   if isAnyTableWithoutUniquenessConstraint
     then
-      return $ map (const False) selects
+      return $ map (const False) origSelects
     else do
-      result <- sendToZ3 (z3Path opts) (map (const (pack "")) selects) z3Input
+      result <- sendToZ3 (z3Path opts) (map (const (pack "")) origSelects) z3Input
       results <- case result of
         Nothing -> fatal "Z3 timed out."
         Just rs -> return rs
       return $ map (== Unsat) results
   where
-    (us'',s'',q'',aliasToOrigTableMap) = transformTableAliases us s q
-    selects = getSelects q''
-    allTables = Map.keys aliasToOrigTableMap
-    useMultisetSemantics = selDistinct q'' == All && not (isSelectListOnlyAggregExprs (selSelectList q'')) && null (selGroupBy q'')
-    q''' =
-      if useMultisetSemantics
-        then transformAll allTables s'' q''
-        else q''
-    tablesWithUniquenessConstraint = Set.fromList $ map (nameToCatName . fst) $ filter (not . null . snd) us''
-    tablesWithoutUniquenessConstraint = Set.fromList allTables Set.\\ tablesWithUniquenessConstraint
+    origSelects = getSelects q
+    (us',s',q',useMultisetSemantics,tablesWithoutUniquenessConstraint,_) = doAllTransforms us s q
     isAnyTableWithoutUniquenessConstraint = not $ Set.null tablesWithoutUniquenessConstraint
-    z3Input = generatePrimaryKeyZ3 us'' s'' q''' selects ""
+    z3Input = generatePrimaryKeyZ3 us' s' q' origSelects ""
 
 analyzeOneTable :: Bool -> Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> Bool -> CatName -> IO Int
 analyzeOneTable alt fp us s q multisetsWithNonUniqueInput t = do
@@ -225,6 +209,20 @@ analyzeOneTable alt fp us s q multisetsWithNonUniqueInput t = do
         Just [Sat]     -> do unless alt $ printf "> %d sensitive on %s\n" n (unpack t)
                              try (n+1) limit
   try 0 (if multisetsWithNonUniqueInput then 0 else 10)
+
+doAllTransforms :: UniqueInfo -> DbSchema -> QueryExpr -> (UniqueInfo, DbSchema, QueryExpr, Bool, Set CatName, Map CatName CatName)
+doAllTransforms us s q = (us',s',q''',useMultisetSemantics,tablesWithoutUniquenessConstraint,aliasToOrigTableMap)
+  where
+    (us',s',q',aliasToOrigTableMap) = transformTableAliases us s q
+    q'' = if null (selGroupBy q') then q' else transformGroupBy q'
+    allTables = Map.keys aliasToOrigTableMap
+    useMultisetSemantics = selDistinct q'' == All && not (isSelectListOnlyAggregExprs (selSelectList q'')) && null (selGroupBy q'')
+    q''' =
+      if useMultisetSemantics
+        then transformAll allTables s' q''
+        else q''
+    tablesWithUniquenessConstraint = Set.fromList $ map (nameToCatName . fst) $ filter (not . null . snd) us'
+    tablesWithoutUniquenessConstraint = Set.fromList allTables Set.\\ tablesWithUniquenessConstraint
 
 -- replace a GROUP BY query by a non-GROUP BY query with the same sensitivity bound
 transformGroupBy :: QueryExpr -> QueryExpr

@@ -180,6 +180,35 @@ performAnalysis opts us s q = do
     tables' = map (aliasToOrigTableMap Map.!) tables
     z3Input = doc ""
 
+findPrimaryKeys :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO [Bool]
+findPrimaryKeys opts us s q = do
+  when (debugPrintZ3 opts) $ do
+    hPutStrLn stderr "---"
+    hPutStrLn stderr z3Input
+    hPutStrLn stderr "---"
+  if isAnyTableWithoutUniquenessConstraint
+    then
+      return $ map (const False) selects
+    else do
+      result <- sendToZ3 (z3Path opts) (map (const (pack "")) selects) z3Input
+      results <- case result of
+        Nothing -> fatal "Z3 timed out."
+        Just rs -> return rs
+      return $ map (== Unsat) results
+  where
+    (us'',s'',q'',aliasToOrigTableMap) = transformTableAliases us s q
+    selects = getSelects q''
+    allTables = Map.keys aliasToOrigTableMap
+    useMultisetSemantics = selDistinct q'' == All && not (isSelectListOnlyAggregExprs (selSelectList q'')) && null (selGroupBy q'')
+    q''' =
+      if useMultisetSemantics
+        then transformAll allTables s'' q''
+        else q''
+    tablesWithUniquenessConstraint = Set.fromList $ map (nameToCatName . fst) $ filter (not . null . snd) us''
+    tablesWithoutUniquenessConstraint = Set.fromList allTables Set.\\ tablesWithUniquenessConstraint
+    isAnyTableWithoutUniquenessConstraint = not $ Set.null tablesWithoutUniquenessConstraint
+    z3Input = generatePrimaryKeyZ3 us'' s'' q''' selects ""
+
 analyzeOneTable :: Bool -> Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> Bool -> CatName -> IO Int
 analyzeOneTable alt fp us s q multisetsWithNonUniqueInput t = do
   let genZ3 n = generateZ3Go us s q n t Nothing
@@ -249,22 +278,6 @@ transformAll selectedTables s q = q {selSelectList = SelectList err newSelectLis
                         colNmc |
                       t <- selectedTables, (col,colt) <- s Map.! t, let colNmc = catNameToNmc col]
 
-findPrimaryKeys :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO [Bool]
-findPrimaryKeys opts us s q = do
-  when (debugPrintZ3 opts) $ do
-    hPutStrLn stderr "---"
-    hPutStrLn stderr z3Input
-    hPutStrLn stderr "---"
-  result <- sendToZ3 (z3Path opts) (map (const (pack "")) selects) z3Input
-  results <- case result of
-    Nothing -> fatal "Z3 timed out."
-    Just rs -> return rs
-  return (map (== Unsat) results)
-  where
-    selects = getSelects q
-    (us'',s'',q'',_aliasToOrigTableMap) = transformTableAliases us s q
-    z3Input = generatePrimaryKeyZ3 us'' s'' q'' ""
-
 printAnalysisResults :: ProgramOptions -> ([CatName], [SatResult]) -> IO ()
 printAnalysisResults opts (tables, results) =
   forM_ (zip tables results) $ \(t, r) ->
@@ -304,26 +317,6 @@ analysisResultsToInts opts res = second (map resultToInt) res
     resultToInt Sat = -1
     resultToInt Unsat = sensitivity opts
     resultToInt _ = -1
-
-
---analysisResultsToInts :: ProgramOptions -> [([CatName], [SatResult])] -> [(CatName, Int)]
---analysisResultsToInts opts ress = sumGroupsWith sumWithInfinity (zip cns is)
---  where
---    (cnss, srss) = unzip ress
---    cns = concat cnss
---    srs = concat srss
---    is = map resultToInt srs
---
---    sumWithInfinity [] = 0
---    sumWithInfinity (x : xs) | x < 0 || y < 0 = min x y
---                             | otherwise      = x + y
---                           where
---                             y = sumWithInfinity xs
---
---    resultToInt :: SatResult -> Int
---    resultToInt Sat = -1
---    resultToInt Unsat = sensitivity opts
---    resultToInt _ = -1
 
 
 alternativeAnalysisResults :: [[CatName]] -> [(CatName, Int)] -> [Int]
@@ -399,8 +392,9 @@ generateZ3Go us s query n = go
 generatePrimaryKeyZ3 :: UniqueInfo         -- ^ uniques
                      -> DbSchema           -- ^ information about the database
                      -> QueryExpr          -- ^ query
+                     -> [(CatName, ScalarExpr)]
                      -> ShowS
-generatePrimaryKeyZ3 us s query = fcat $ map (generateZ3Go us s query 1 (pack "") . Just) (map snd $ getSelects query)
+generatePrimaryKeyZ3 us s query origSelects = fcat $ map (generateZ3Go us s query 1 (pack "") . Just) (map snd origSelects)
 
 
 nameComponentToCatName :: NameComponent -> CatName
@@ -480,36 +474,6 @@ genDecls schema fixed n = fcat $ concatMap go $ Map.toList schema
         name i = genColName tbl (fst col) (showString "-" . shows i)
         decl i = z3DeclareConst (name i) ty
       in fcat [decl i | i <- [1 .. n + 1]]
-
----- ^ Assumes that "tbl" is not the one that is fixed!
---genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS
---genUnique schema fixedTable tbl us n
---  | tblName == fixedTable = id
---  | null otherColNames = id
---  | otherwise = z3Assert (precond `z3Impl` postcond)
---  where
---    tblName = nameToCatName tbl
---    usNames = map nameComponentToCatName us
---    uniqueColNames = map (genColNamePrefix tblName) usNames
---    mk i x = x . showString "-" . shows i
---
---    precond = z3And $ do
---      name <- uniqueColNames
---      i <- [1 .. n + 1]
---      j <- [i + 1 .. n + 1]
---      return $ z3Eq [mk i name, mk j name]
---
---    mkEq name = z3Eq [mk i name | i <- [1 .. n + 1]]
---    postcond = z3And $ map mkEq otherColNames
---
---    -- TODO: only own table?
---    otherColNames = do
---      (tbl', cols) <- Map.toList schema
---      guard $ fixedTable /= tbl'
---      -- only own table
---      guard $ tbl' == tblName
---      (col, _) <- cols
---      return $ genColNamePrefix tbl' col
 
 -- ^ Assumes that "tbl" is not the one that is fixed!
 genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS

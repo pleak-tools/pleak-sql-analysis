@@ -618,6 +618,9 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
               f (Left _ : es) (s : ss) gs = s : f es ss gs
               f (Right _ : es) ss (g : gs) = g : f es ss gs
         numSumExprs = length sumExprs
+  let aggrExprBound = fromIntegral $
+                        case sumExprs of [IntExpr (IntLit n)] -> n
+                                         _                    -> sumExprBound
   printf "Selected column names: %s\n" (show selectedColNames)
 
   putStrLn "Processing WHERE clause"
@@ -790,7 +793,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
                     return sd
                   else return 0
             let xs = sort sds
-            let satd0 k xs = product (map (fromIntegral :: Int -> Double) (satds k xs))
+            let satd0 k xs = product (map (fromIntegral :: Int -> Double) (satds k xs)) * aggrExprBound
             let numMissingRows = satd0 0 xs - fromIntegral d1
             let satd k xs = satd0 k xs - numMissingRows
             let smsens0 beta k xs = satd k xs * exp (-beta * fromIntegral k)

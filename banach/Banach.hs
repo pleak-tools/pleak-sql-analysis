@@ -8,21 +8,24 @@ type Var = Int                    -- variable corresponding to column i (startin
 
 -- this simultaneously defines a function E to be analyzed and a norm N on its domain
 -- expressions of type Expr use values from a single row
-data Expr = Power Var Double      -- x^r with norm | |
-          | Exp Double Var        -- e^(r*x) with norm | |
-          | ScaleNorm Double Expr -- E with norm a * N
-          | ZeroSens Expr         -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
-          | L Double [Var]        -- ||(x1,...,xn)||_p with l_p-norm
-          | LInf [Var]            -- same with p = infinity
-          | Prod [Expr]           -- E1*...*En with norm ||(N1,...,Nn)||_1
-          | Min [Expr]            -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
-          | Max [Expr]            -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
+data Expr = Power Var Double         -- x^r with norm | |
+          | ComposePower Expr Double -- E^r with norm N
+          | Exp Double Var           -- e^(r*x) with norm | |
+          | ScaleNorm Double Expr    -- E with norm a * N
+          | ZeroSens Expr            -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
+          | L Double [Var]           -- ||(x1,...,xn)||_p with l_p-norm
+          | ComposeL Double [Expr]   -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
+          | LInf [Var]               -- same with p = infinity
+          | Prod [Expr]              -- E1*...*En with norm ||(N1,...,Nn)||_1
+          | Min [Expr]               -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
+          | Max [Expr]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
 data TableExpr = SelectProd Expr        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row
                | SelectMin Expr         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectMax Expr         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
+               | SelectL Double Expr    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
 
 -- SUB g beta0  is a value such that
 --   g beta  is a beta-smooth upper bound of a function f at a certain point x for each beta >= beta0
@@ -103,6 +106,16 @@ analyzeExpr row expr = trace ("analyzeExpr " ++ show row ++ ": " ++ show expr ++
                     subf = SUB (\ beta -> if x >= r/beta then x ** r else exp (beta*x - r) * (r/beta)**r) 0,
                     sdsf = SUB (\ beta -> if x >= (r-1)/beta then r * x**(r-1) else r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1)) 0}
            else error "analyzeExpr/Power: condition (r >= 1 && x > 0) not satisfied"
+    ComposePower e1 r ->
+      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) = analyzeExpr row e1
+          beta3 = (r-1)*beta1 + beta2
+          b1 = if beta3 > 0 then beta1 / beta3 else 1/r
+          b2 = if beta3 > 0 then beta2 / beta3 else 1/r
+      in if r >= 1 && gx > 0
+           then AR {fx = gx ** r,
+                    subf = SUB (\ beta -> subf1g (beta / r)) (r*beta1),
+                    sdsf = SUB (\ beta -> r * (subf1g (b1 * beta))**(r-1) * sdsf1g (b2 * beta)) beta3}
+           else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
     Exp r i ->
       let x = row !! i
       in AR {fx = exp (r * x),
@@ -133,6 +146,7 @@ analyzeExpr row expr = trace ("analyzeExpr " ++ show row ++ ": " ++ show expr ++
     Prod es -> combineArsProd $ map (analyzeExpr row) es
     Min es -> combineArsMin $ map (analyzeExpr row) es
     Max es -> combineArsMax $ map (analyzeExpr row) es
+    ComposeL p es -> combineArsL p $ map (analyzeExpr row) es
 
 combineArsProd :: [AnalysisResult] -> AnalysisResult
 combineArsProd ars =
@@ -175,9 +189,23 @@ combineArsMax ars =
          subf = SUB (\ beta -> maximum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
+combineArsL :: Double -> [AnalysisResult] -> AnalysisResult
+combineArsL p ars =
+  let fxs = map fx ars
+      subfs = map subf ars
+      sdsfs = map sdsf ars
+      subfBetas = map subBeta subfs
+      sdsfBetas = map subBeta sdsfs
+      subgs = map subg subfs
+      sdsgs = map subg sdsfs
+  in AR {fx = lpnorm p fxs,
+         subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
+         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+
 analyzeTableExpr :: Table -> TableExpr -> AnalysisResult
 analyzeTableExpr rows te =
   case te of
     SelectMin expr -> combineArsMin $ map (`analyzeExpr` expr) rows
     SelectMax expr -> combineArsMax $ map (`analyzeExpr` expr) rows
     SelectProd expr -> combineArsProd $ map (`analyzeExpr` expr) rows
+    SelectL p expr -> combineArsL p $ map (`analyzeExpr` expr) rows

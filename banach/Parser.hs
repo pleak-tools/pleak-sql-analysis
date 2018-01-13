@@ -26,21 +26,24 @@ type VarName = String
 -- TODO: Expr and TableExpr are being synchronized with B.Expr and B.TableExpr
 
 -- these are single-step Banach expressions, all 'Expr' and 'Var' substituted with 'VarName'
-data Expr = Power VarName Double      -- x^r with norm | |
-          | Exp Double VarName        -- e^(r*x) with norm | |
-          | ScaleNorm Double VarName  -- E with norm a * N
-          | ZeroSens VarName          -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
-          | L Double [VarName]        -- ||(x1,...,xn)||_p with l_q-norm where q = p/(p-1)
-          | LInf [VarName]            -- same with p = infinity, q = 1
-          | Prod [VarName]            -- E1*...*En with norm ||(N1,...,Nn)||_1
-          | Min [VarName]             -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
-          | Max [VarName]             -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
+data Expr = Power VarName Double        -- x^r with norm | |
+          | ComposePower VarName Double -- E^r with norm N
+          | Exp Double VarName          -- e^(r*x) with norm | |
+          | ScaleNorm Double VarName    -- E with norm a * N
+          | ZeroSens VarName            -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
+          | L Double [VarName]          -- ||(x1,...,xn)||_p with l_q-norm where q = p/(p-1)
+          | ComposeL Double [VarName]   -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
+          | LInf [VarName]              -- same with p = infinity, q = 1
+          | Prod [VarName]              -- E1*...*En with norm ||(N1,...,Nn)||_1
+          | Min [VarName]               -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
+          | Max [VarName]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
 data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row
                | SelectMin VarName         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectMax VarName         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
+               | SelectL Double VarName    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
   deriving Show
 
 
@@ -53,6 +56,7 @@ extractArg t =
         SelectProd x -> x
         SelectMin x  -> x
         SelectMax x  -> x
+        SelectL _ x  -> x
 
 substituteArg :: TableExpr -> B.Expr -> B.TableExpr
 substituteArg t y =
@@ -60,40 +64,51 @@ substituteArg t y =
         SelectProd _ -> B.SelectProd y
         SelectMin _  -> B.SelectMin y
         SelectMax _  -> B.SelectMax y
+        SelectL c _  -> B.SelectL c y
 
--- Expr constructor arguments can be Var, Expr, Double -- let us split these types into triples ([Var],[Expr],[Double])
-extractArgs :: Expr -> ([VarName],[VarName],[Double])
+-- Expr constructor variable arguments can be Var, Expr -- let us split these types into pairs ([Var],[Expr])
+-- if a VarName can be either Var or Expr, put it into both lists
+extractArgs :: Expr -> ([VarName],[VarName])
 extractArgs t =
     case t of
-        Power x c     -> ([x],[],[c])
-        Exp c x       -> ([x],[],[c])
-        ScaleNorm c x -> ([],[x],[c])
-        ZeroSens x    -> ([],[x],[])
-        L c xs        -> (xs,[],[c])
-        LInf xs       -> (xs,[],[])
-        Prod xs       -> ([],xs,[])
-        Min xs        -> ([],xs,[])
-        Max xs        -> ([],xs,[])
+        Power x _        -> ([x],[x])
+        Exp _ x          -> ([x],[])
+        ScaleNorm _ x    -> ([],[x])
+        ZeroSens x       -> ([],[x])
+        L _ xs           -> (xs,xs)
+        LInf xs          -> (xs,[])
+        Prod xs          -> ([],xs)
+        Min xs           -> ([],xs)
+        Max xs           -> ([],xs)
 
-substituteArgs :: Expr -> [B.Var] -> [B.Expr] -> [Double] -> B.Expr
-substituteArgs t xs es cs =
+-- the constructor may depend on whether the arguments are input variables or expressions
+substituteArgs :: Expr -> [B.Var] -> [B.Expr] -> B.Expr
+substituteArgs t xs es =
     case t of
-        Power _ _     -> B.Power (head xs) (head cs)
-        Exp _ _       -> B.Exp (head cs) (head xs)
-        ScaleNorm _ _ -> B.ScaleNorm (head cs) (head es)
-        ZeroSens _    -> B.ZeroSens (head es)
-        L _ _         -> B.L (head cs) xs
-        LInf _        -> B.LInf xs
-        Prod _        -> B.Prod es
-        Min _         -> B.Min es
-        Max _         -> B.Max es
+        Power _ c        -> if xs /= [] then
+                                B.Power (head xs) c
+                            else
+                                B.ComposePower (head es) c
+
+        Exp c _          -> B.Exp c (head xs)
+        ScaleNorm c _    -> B.ScaleNorm c (head es)
+        ZeroSens _       -> B.ZeroSens (head es)
+        L c _            -> if xs /= [] then
+                                B.L c xs
+                            else
+                                B.ComposeL c es
+
+        LInf _           -> B.LInf xs
+        Prod _           -> B.Prod es
+        Min _            -> B.Min es
+        Max _            -> B.Max es
 
 ---------------------------------------------------------------------------------------------
 -- TODO: parsing of 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
 
 -- keywords
 allKeyWords :: [String] -- list of reserved "words"
-allKeyWords = ["return","^","exp","scaleNorm","zeroSens","lp","linf","prod","min","max","selectMin","selectMax","selectProd"]
+allKeyWords = ["return","^","exp","scaleNorm","zeroSens","lp","linf","prod","min","max","selectMin","selectMax","selectProd","selectL"]
 
 -- an expression
 expr :: Parser Expr
@@ -171,6 +186,7 @@ tableExpr :: Parser TableExpr
 tableExpr = selectProdExpr
   <|> selectMinExpr
   <|> selectMaxExpr
+  <|> selectLExpr
 
 -- parsing different expressions, one by one
 selectProdExpr :: Parser TableExpr
@@ -191,6 +207,12 @@ selectMaxExpr = do
   a <- varName
   return (SelectMax a)
 
+selectLExpr :: Parser TableExpr
+selectLExpr = do
+  keyWord "selectL"
+  c <- float
+  a <- varName
+  return (SelectL c a)
 
 
 -- ======================================================================= --
@@ -247,7 +269,7 @@ asgnStmt = do
 returnStmt :: Parser TableExpr
 returnStmt = do
   keyWord "return"
-  a <- selectMaxExpr
+  a <- tableExpr
   void (delim)
   return a
 
@@ -365,27 +387,29 @@ program2DB io_program = do
 program2Expr :: Program -> B.TableExpr
 program2Expr (P _ var_map (F asgn_map y)) =
     let x = extractArg y in
-    let z = matchIntermVariable var_map asgn_map x in
+    let z = head (matchIntermVariable var_map asgn_map x []) in
     substituteArg y z
 
 processExpression :: (Map VarName Int) -> (Map VarName Expr) -> Expr -> B.Expr 
 processExpression var_map asgn_map expr =
-    let (xs,es,cs) = extractArgs expr in
-    let new_xs = fmap (matchColumnVariable var_map)          xs in
-    let new_es = fmap (matchIntermVariable var_map asgn_map) es in
-    substituteArgs expr new_xs new_es cs
+    let (xs,es) = extractArgs expr in
+    let new_xs = Data.List.foldr (matchColumnVariable var_map)          [] xs in
+    let new_es = Data.List.foldr (matchIntermVariable var_map asgn_map) [] es in
+    --let new_xs = fmap (matchColumnVariable var_map)          xs in
+    --let new_es = fmap (matchIntermVariable var_map asgn_map) es in
+    substituteArgs expr new_xs new_es
 
 --check if the variable is a keys in a map, return the corresponding value if it is
-matchColumnVariable :: (Map VarName a) -> VarName -> a
-matchColumnVariable dict y =
-    if member y dict then (dict ! y) else
-    error ("Undefined column variable " ++ y)
+matchColumnVariable :: (Map VarName a) -> VarName -> [a] -> [a]
+matchColumnVariable dict y ys =
+    if member y dict then (dict ! y):ys else ys
+    --error ("Undefined column variable " ++ y)
 
 --check if the variable is a keys in a map, apply processExpression to the value of that key
-matchIntermVariable :: (Map VarName Int) -> (Map VarName Expr) -> VarName -> B.Expr
-matchIntermVariable var_map asgn_map y =
-    if member y asgn_map then processExpression var_map asgn_map (asgn_map ! y) else
-    error ("Undefined intermediate variable " ++ y)
+matchIntermVariable :: (Map VarName Int) -> (Map VarName Expr) -> VarName -> [B.Expr] -> [B.Expr]
+matchIntermVariable var_map asgn_map y ys =
+    if member y asgn_map then (processExpression var_map asgn_map (asgn_map ! y)):ys else ys
+    --error ("Undefined intermediate variable " ++ y)
 
 -- read the DB line by line -- no speacial parsing, assume that the delimiters are whitespaces
 readInput path = do

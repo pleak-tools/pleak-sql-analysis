@@ -39,6 +39,19 @@ data Expr = Power VarName Double        -- x^r with norm | |
           | Max [VarName]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
   deriving Show
 
+-- this is a double with additional top-value "any", meaning that any double is allowed at this place
+data ADouble = AtMost Double | Any
+  deriving Show
+
+-- the composite norm w.r.t. which we compute our sensitivities
+-- in the norms, we can use expressions as well as variables
+data Norm = Col VarName               -- a variable, if it is toplevel, it is meant to be the absolute value
+          | NormL     ADouble [Norm]  -- lp-norm
+          | NormLInf  [Norm]          -- linf-norm
+          | NormScale Double Norm     -- scaled norm a * N
+          | NormZero                  -- the same as NormScale with a -> infinity
+  deriving Show
+
 -- expressions of type TableExpr use values from the whole table
 data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row
                | SelectMin VarName         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
@@ -215,6 +228,31 @@ selectLExpr = do
   return (SelectL c a)
 
 
+---------------------------------------------------------------------------------------------
+-- TODO: norm derivation for 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
+deriveNorm :: [VarName] -> B.Expr -> Norm
+deriveNorm colnames expr = 
+    case expr of
+        B.Power x _        -> NormL (AtMost 1.0) [Col (colnames !! x)]
+        B.ComposePower e c -> deriveNorm colnames e
+        B.Exp _ x          -> NormL (AtMost 1.0) [Col (colnames !! x)]
+        B.ScaleNorm a e    -> NormScale a (deriveNorm colnames e)
+        B.ZeroSens _       -> NormZero
+        B.L p xs           -> NormL (AtMost p) (Data.List.map (\x -> Col (colnames !! x)) xs)
+        B.ComposeL p es    -> NormL (AtMost p) (Data.List.map (deriveNorm colnames) es)
+        B.LInf xs          -> NormLInf (Data.List.map (\x -> Col (colnames !! x)) xs)
+        B.Prod es          -> NormL (AtMost 1.0) (Data.List.map (deriveNorm colnames) es)
+        B.Min es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
+        B.Max es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
+
+deriveTableNorm ::  [VarName] -> B.TableExpr -> Norm
+deriveTableNorm colnames expr = 
+    case expr of
+        B.SelectProd e     -> NormL (AtMost 1.0) [deriveNorm colnames e]
+        B.SelectMin  e     -> NormL Any [deriveNorm colnames e]
+        B.SelectMax  e     -> NormL Any [deriveNorm colnames e]
+        B.SelectL p  e     -> NormL (AtMost p) [deriveNorm colnames e]
+
 -- ======================================================================= --
 -----------------------------------------------------------------------------
 ----      The code below does not need to be updated with Banach.hs      ----
@@ -384,11 +422,11 @@ program2DB io_program = do
     table <- fmap readDoubles (readInput dbFileName)
     return table
 
-program2Expr :: Program -> B.TableExpr
+program2Expr :: Program -> (B.TableExpr, Map VarName Int)
 program2Expr (P _ var_map (F asgn_map y)) =
     let x = extractArg y in
     let z = head (matchIntermVariable var_map asgn_map x []) in
-    substituteArg y z
+    (substituteArg y z, var_map)
 
 processExpression :: (Map VarName Int) -> (Map VarName Expr) -> Expr -> B.Expr 
 processExpression var_map asgn_map expr =
@@ -425,7 +463,8 @@ program2BanachAnalyserInput inputFile = do
     let iopr = parseFromFile program inputFile
     pr <- iopr
     table <- program2DB iopr
-    let expr = program2Expr pr
+    let (expr,var_map) = program2Expr pr
+    print (deriveTableNorm (keys var_map) expr)
     return (B.analyzeTableExpr table expr)
 
 -- this should be called from outside

@@ -14,10 +14,12 @@ import Control.Monad (void)
 import Data.Either
 import Data.List
 import Data.Map
+import qualified Data.Set as S
 import Data.Void
 
 -- import Expr directly from Banach.hs, 'qualified' because we want to reuse the names
 import qualified Banach as B
+import Norms
 
 -- let the variable names be alphanumeric strings starting with a character
 type VarName = String
@@ -39,18 +41,6 @@ data Expr = Power VarName Double        -- x^r with norm | |
           | Max [VarName]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
   deriving Show
 
--- this is a double with additional top-value "any", meaning that any double is allowed at this place
-data ADouble = AtMost Double | Any
-  deriving Show
-
--- the composite norm w.r.t. which we compute our sensitivities
--- in the norms, we can use expressions as well as variables
-data Norm = Col VarName               -- a variable, if it is toplevel, it is meant to be the absolute value
-          | NormL     ADouble [Norm]  -- lp-norm
-          | NormLInf  [Norm]          -- linf-norm
-          | NormScale Double Norm     -- scaled norm a * N
-          | NormZero                  -- the same as NormScale with a -> infinity
-  deriving Show
 
 -- expressions of type TableExpr use values from the whole table
 data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row
@@ -58,7 +48,6 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectMax VarName         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectL Double VarName    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
   deriving Show
-
 
 -----------------------------------------------------------------------------------
 -- TODO: reconstruction of terms are being synchronized with B.Expr and B.TableExpr
@@ -228,30 +217,7 @@ selectLExpr = do
   return (SelectL c a)
 
 
----------------------------------------------------------------------------------------------
--- TODO: norm derivation for 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
-deriveNorm :: [VarName] -> B.Expr -> Norm
-deriveNorm colnames expr = 
-    case expr of
-        B.Power x _        -> NormL (AtMost 1.0) [Col (colnames !! x)]
-        B.ComposePower e c -> deriveNorm colnames e
-        B.Exp _ x          -> NormL (AtMost 1.0) [Col (colnames !! x)]
-        B.ScaleNorm a e    -> NormScale a (deriveNorm colnames e)
-        B.ZeroSens _       -> NormZero
-        B.L p xs           -> NormL (AtMost p) (Data.List.map (\x -> Col (colnames !! x)) xs)
-        B.ComposeL p es    -> NormL (AtMost p) (Data.List.map (deriveNorm colnames) es)
-        B.LInf xs          -> NormLInf (Data.List.map (\x -> Col (colnames !! x)) xs)
-        B.Prod es          -> NormL (AtMost 1.0) (Data.List.map (deriveNorm colnames) es)
-        B.Min es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
-        B.Max es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
 
-deriveTableNorm ::  [VarName] -> B.TableExpr -> Norm
-deriveTableNorm colnames expr = 
-    case expr of
-        B.SelectProd e     -> NormL (AtMost 1.0) [deriveNorm colnames e]
-        B.SelectMin  e     -> NormL Any [deriveNorm colnames e]
-        B.SelectMax  e     -> NormL Any [deriveNorm colnames e]
-        B.SelectL p  e     -> NormL (AtMost p) [deriveNorm colnames e]
 
 -- ======================================================================= --
 -----------------------------------------------------------------------------
@@ -264,11 +230,11 @@ deriveTableNorm colnames expr =
 
 -- the format of the input file
 --   "String" is the name of the database file
---   "Map VarName Int" maps variable names to unique integers -- their column indices in the database
---                     we assume that the inputs listed in the input file are ordered as the columns
+--   "[VarName Int]" is a list that will later be turned to a map from variable names to unique integers -- their column indices in the database
+--                   we assume that the inputs listed in the input file are ordered as the columns
 --   "Function" is the function on inputs that the inquirer wants to compute
 data Program
-  = P String (Map VarName Int) Function
+  = P String [(VarName,Int)] Function
   deriving (Show)
 
 -- a function consists of unit expression assignments "Map VarName Expr" and returns a single "TableExpr"
@@ -294,7 +260,7 @@ program = do
   xs <- many varName
   void (delim)
   f <- function
-  return (P tablePath (fromList (zipWith (\x y -> (x,y)) xs [0..((length xs) - 1)])) f)
+  return (P tablePath (zipWith (\x y -> (x,y)) xs [0..((length xs) - 1)]) f)
 
 asgnStmt :: Parser (VarName,Expr)
 asgnStmt = do
@@ -417,25 +383,28 @@ signedFloat = L.signed spaceConsumer float
 -- read the database from the file defined in the program string
 -- read is as a single table row
 program2DB :: IO Program -> IO B.Table
-program2DB io_program = do
-    (P dbFileName _ _)  <- io_program
+program2DB ioProgram = do
+    (P dbFileName _ _)  <- ioProgram
     table <- fmap readDoubles (readInput dbFileName)
     return table
 
-program2Expr :: Program -> (B.TableExpr, Map VarName Int)
-program2Expr (P _ var_map (F asgn_map y)) =
+program2Expr :: (S.Set VarName) -> Program -> (S.Set VarName, B.TableExpr, [(VarName, Int)])
+program2Expr userNormVars (P _ inputVarList (F asgnMap y)) =
     let x = extractArg y in
-    let z = head (matchIntermVariable var_map asgn_map x []) in
-    (substituteArg y z, var_map)
+    let (vars,z) = head (matchIntermVariable userNormVars (fromList inputVarList) asgnMap x []) in
+    (vars,substituteArg y z, inputVarList)
 
-processExpression :: (Map VarName Int) -> (Map VarName Expr) -> Expr -> B.Expr 
-processExpression var_map asgn_map expr =
+processExpression :: (S.Set VarName) -> (Map VarName Int) -> (Map VarName Expr) -> Expr -> (S.Set VarName, B.Expr)
+processExpression userNormVars varMap asgnMap expr =
     let (xs,es) = extractArgs expr in
-    let new_xs = Data.List.foldr (matchColumnVariable var_map)          [] xs in
-    let new_es = Data.List.foldr (matchIntermVariable var_map asgn_map) [] es in
-    --let new_xs = fmap (matchColumnVariable var_map)          xs in
-    --let new_es = fmap (matchIntermVariable var_map asgn_map) es in
-    substituteArgs expr new_xs new_es
+    let xs1 = Data.List.foldr (matchColumnVariable varMap)         [] xs in
+    let zs  = Data.List.foldr (matchIntermVariable userNormVars varMap asgnMap) [] es in
+    let zs2 = Data.List.map (\(x,y) -> x) zs in
+    let xs2 = Data.List.foldr S.union S.empty zs2 in
+    let es2 = Data.List.map (\(x,y) -> y) zs in
+    --let xs' = fmap (matchColumnVariable varMap)         xs in
+    --let es' = fmap (matchIntermVariable varMap asgnMap) es in
+    (S.union (S.fromList xs) (xs2), substituteArgs expr xs1 es2)
 
 --check if the variable is a keys in a map, return the corresponding value if it is
 matchColumnVariable :: (Map VarName a) -> VarName -> [a] -> [a]
@@ -444,9 +413,14 @@ matchColumnVariable dict y ys =
     --error ("Undefined column variable " ++ y)
 
 --check if the variable is a keys in a map, apply processExpression to the value of that key
-matchIntermVariable :: (Map VarName Int) -> (Map VarName Expr) -> VarName -> [B.Expr] -> [B.Expr]
-matchIntermVariable var_map asgn_map y ys =
-    if member y asgn_map then (processExpression var_map asgn_map (asgn_map ! y)):ys else ys
+matchIntermVariable :: (S.Set VarName) -> (Map VarName Int) -> (Map VarName Expr) -> VarName -> [(S.Set VarName,B.Expr)] -> [(S.Set VarName,B.Expr)]
+matchIntermVariable userNormVars varMap asgnMap y ys =
+    if member y asgnMap then 
+        let (expVars,e) = (processExpression userNormVars varMap asgnMap (asgnMap ! y)) in
+        if S.null (S.intersection expVars userNormVars) then (S.empty, B.ZeroSens e):ys
+        else if S.isSubsetOf expVars userNormVars  then (expVars,e):ys
+        else error("cannot analyse this norm:\n\t cannot split vars: " ++ show(expVars) ++ "\n\t the user defined norm is w.r.t.: " ++ show(userNormVars))
+     else ys
     --error ("Undefined intermediate variable " ++ y)
 
 -- read the DB line by line -- no speacial parsing, assume that the delimiters are whitespaces
@@ -458,13 +432,21 @@ readDoubles :: String -> [[Double]]
 readDoubles s = fmap (Data.List.map read . words) (lines s)
 
 -- putting everything together
+-- this should be the only thing that depends on Norms.hs now
 program2BanachAnalyserInput :: String -> IO B.AnalysisResult
 program2BanachAnalyserInput inputFile = do
     let iopr = parseFromFile program inputFile
     pr <- iopr
     table <- program2DB iopr
-    let (expr,var_map) = program2Expr pr
-    print (deriveTableNorm (keys var_map) expr)
+    let userNormVarList = ["velocity","latitude","longitude"]
+    let userNormVars = S.fromList(userNormVarList)
+    let userNorm = NormLInf [NormL (AtMost 1.0) (Data.List.map (\x -> Col x) userNormVarList)]
+    let (vars,expr,inputVarList) = program2Expr userNormVars pr
+    print vars
+    let expNorm = deriveTableNorm (Data.List.map (\(x,y) -> x) inputVarList) expr
+    print userNorm
+    print expNorm
+    print (verifyNorm expNorm userNorm)
     return (B.analyzeTableExpr table expr)
 
 -- this should be called from outside

@@ -27,6 +27,7 @@ type VarName = String
 
 -- these are single-step Banach expressions, all 'Expr' and 'Var' substituted with 'VarName'
 data Expr = Power VarName Double      -- x^r with norm | |
+          | PowerLN VarName Double    -- x^r with logarithmic norm: ||x|| = |ln x|, addition in Banach space is multiplication of real numbers
           | Exp Double VarName        -- e^(r*x) with norm | |
           | ScaleNorm Double VarName  -- E with norm a * N
           | ZeroSens VarName          -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
@@ -66,6 +67,7 @@ extractArgs :: Expr -> ([VarName],[VarName],[Double])
 extractArgs t =
     case t of
         Power x c     -> ([x],[],[c])
+        PowerLN x c   -> ([x],[],[c])
         Exp c x       -> ([x],[],[c])
         ScaleNorm c x -> ([],[x],[c])
         ZeroSens x    -> ([],[x],[])
@@ -79,6 +81,7 @@ substituteArgs :: Expr -> [B.Var] -> [B.Expr] -> [Double] -> B.Expr
 substituteArgs t xs es cs =
     case t of
         Power _ _     -> B.Power (head xs) (head cs)
+        PowerLN _ _   -> B.PowerLN (head xs) (head cs)
         Exp _ _       -> B.Exp (head cs) (head xs)
         ScaleNorm _ _ -> B.ScaleNorm (head cs) (head es)
         ZeroSens _    -> B.ZeroSens (head es)
@@ -93,11 +96,12 @@ substituteArgs t xs es cs =
 
 -- keywords
 allKeyWords :: [String] -- list of reserved "words"
-allKeyWords = ["return","^","exp","scaleNorm","zeroSens","lp","linf","prod","min","max","selectMin","selectMax","selectProd"]
+allKeyWords = ["return","^","LN","exp","scaleNorm","zeroSens","lp","linf","prod","min","max","selectMin","selectMax","selectProd"]
 
 -- an expression
 expr :: Parser Expr
 expr = powerExpr
+  <|> powerLNExpr
   <|> expExpr
   <|> scaleNormExpr
   <|> zeroSensExpr
@@ -114,6 +118,14 @@ powerExpr = do
   a <- varName
   b <- float
   return (Power a b)
+
+powerLNExpr :: Parser Expr
+powerLNExpr = do
+  keyWord "LN"
+  keyWord "^"
+  a <- varName
+  b <- signedFloat
+  return (PowerLN a b)
 
 expExpr :: Parser Expr
 expExpr = do
@@ -247,7 +259,7 @@ asgnStmt = do
 returnStmt :: Parser TableExpr
 returnStmt = do
   keyWord "return"
-  a <- selectMaxExpr
+  a <- tableExpr
   void (delim)
   return a
 
@@ -396,12 +408,17 @@ readDoubles :: String -> [[Double]]
 readDoubles s = fmap (Data.List.map read . words) (lines s)
 
 -- putting everything together
-program2BanachAnalyserInput :: String -> IO B.AnalysisResult
-program2BanachAnalyserInput inputFile = do
+getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
+getBanachAnalyserInput inputFile = do
     let iopr = parseFromFile program inputFile
     pr <- iopr
     table <- program2DB iopr
     let expr = program2Expr pr
+    return (table,expr)
+
+program2BanachAnalyserInput :: String -> IO B.AnalysisResult
+program2BanachAnalyserInput inputFile = do
+    (table,expr) <- getBanachAnalyserInput inputFile
     return (B.analyzeTableExpr table expr)
 
 -- this should be called from outside

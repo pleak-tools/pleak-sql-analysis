@@ -1,0 +1,9 @@
+"input1.db";
+x y v;
+x2 = lp 2.0 x y;
+x2a = scaleNorm 1.0 x2;
+x3 = LN ^ v -1.0;
+x3a = scaleNorm 20.0 x3;
+x4 = prod x2a x3a;
+return selectMin x4;
+

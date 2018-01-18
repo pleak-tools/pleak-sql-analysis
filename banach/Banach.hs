@@ -1,6 +1,8 @@
 -- This module computes smooth derivative sensitivity in Banach spaces.
 module Banach where
 
+import ProgramOptions
+
 import Text.Printf
 import Debug.Trace
 
@@ -9,6 +11,7 @@ type Var = Int                    -- variable corresponding to column i (startin
 -- this simultaneously defines a function E to be analyzed and a norm N on its domain
 -- expressions of type Expr use values from a single row
 data Expr = Power Var Double         -- x^r with norm | |
+          | PowerLN Var Double       -- x^r with logarithmic norm: ||x|| = |ln x|, addition in Banach space is multiplication of real numbers
           | ComposePower Expr Double -- E^r with norm N
           | Exp Double Var           -- e^(r*x) with norm | |
           | ScaleNorm Double Expr    -- E with norm a * N
@@ -46,7 +49,7 @@ data AnalysisResult = AR {
   deriving Show
 
 epsilon :: Double
-epsilon = 0.5
+epsilon = 1.0
 
 gamma :: Double
 gamma = 4.0
@@ -56,12 +59,24 @@ defaultBeta = epsilon / (2 * (gamma + 1))
 
 fixedBeta :: Maybe Double
 fixedBeta = Nothing -- determine beta automatically
---fixedBeta = Just 0.7 -- use fixed value of beta
+--fixedBeta = Just 0.05 -- use fixed value of beta
 
 chooseBeta :: Double -> Double
 chooseBeta beta0 = case fixedBeta of Just beta -> beta
                                      Nothing -> if beta0 == 0 then defaultBeta
                                                               else beta0
+
+-- with custom defaultBeta and fixedBeta
+chooseBetaCustom :: Double -> Maybe Double -> Double -> Double
+chooseBetaCustom defaultBeta fixedBeta beta0 = case fixedBeta of Just beta -> beta
+                                                                 Nothing -> if beta0 == 0 then defaultBeta
+                                                                                          else beta0
+
+chooseSUBBeta :: Double -> Maybe Double -> SmoothUpperBound -> Double
+chooseSUBBeta defaultBeta fixedBeta (SUB g beta0) =
+                              let beta = chooseBetaCustom defaultBeta fixedBeta beta0
+                              in if beta >= beta0 then beta
+                                                  else error $ printf "ERROR (beta = %0.3f but must be >= %0.3f)" beta beta0
 
 type Row = [Double]
 type Table = [Row]
@@ -74,6 +89,11 @@ table = [
   [1,3,2],
   [3,4,5]]
 
+table2 :: Table
+table2 = [
+  [3,4,20],
+  [6,8,30]]
+
 exampleRow :: Row
 exampleRow = [3,4,5]
 
@@ -82,6 +102,9 @@ example :: Expr
 example = Prod [ScaleNorm 0.1 $ L 2 [0,1], Exp (-log 2) 2] -- full sensitivity, i.e. sensitivity w.r.t. component [0,1,2]
 exampleComp01 = Prod [ScaleNorm 0.1 $ L 2 [0,1], ZeroSens $ Exp (-log 2) 2] -- sensitivity w.r.t. component [0,1]
 exampleComp2 = Prod [ZeroSens $ ScaleNorm 0.1 $ L 2 [0,1], Exp (-log 2) 2] -- sensitivity w.r.t. component [2]
+
+example2 :: TableExpr
+example2 = SelectMin $ Prod [L 2 [0,1], ScaleNorm 20 $ PowerLN 2 (-1)]
 
 -- compute ||(x_1,...,x_n)||_p
 lpnorm :: Double -> [Double] -> Double
@@ -96,7 +119,7 @@ skipith :: Int -> [a] -> [a]
 skipith i xs = let (ys,_:zs) = splitAt i xs in ys ++ zs
 
 analyzeExpr :: Row -> Expr -> AnalysisResult
-analyzeExpr row expr = trace ("analyzeExpr " ++ show row ++ ": " ++ show expr ++ " -> " ++ show res) res where
+analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr ++ " -> " ++ show res)-} res where
  res =
   case expr of
     Power i r ->
@@ -121,6 +144,11 @@ analyzeExpr row expr = trace ("analyzeExpr " ++ show row ++ ": " ++ show expr ++
       in AR {fx = exp (r * x),
              subf = SUB (const $ exp (r * x)) (abs r),
              sdsf = SUB (const $ abs r * exp (r * x)) (abs r)}
+    PowerLN i r ->
+      let x = row !! i
+      in AR {fx = x ** r,
+             subf = SUB (const $ x ** r) (abs r),
+             sdsf = SUB (const $ abs r * x ** r) (abs r)}
     ScaleNorm a e1 ->
       let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) = analyzeExpr row e1
       in AR {fx = fx1,
@@ -209,3 +237,24 @@ analyzeTableExpr rows te =
     SelectMax expr -> combineArsMax $ map (`analyzeExpr` expr) rows
     SelectProd expr -> combineArsProd $ map (`analyzeExpr` expr) rows
     SelectL p expr -> combineArsL p $ map (`analyzeExpr` expr) rows
+
+performAnalysis :: ProgramOptions -> Table -> TableExpr -> IO ()
+performAnalysis args rows te = do
+  let ar = analyzeTableExpr rows te
+  putStrLn $ "Analysis result: " ++ show ar
+  let epsilon = getEpsilon args
+  printf "epsilon = %0.6f\n" epsilon
+  printf "gamma = %0.6f\n" gamma
+  let defaultBeta = epsilon / (2 * (gamma + 1))
+  let fixedBeta = getBeta args
+  let beta = chooseSUBBeta defaultBeta fixedBeta (sdsf ar)
+  printf "beta = %0.6f\n" beta
+  let b = epsilon / (gamma + 1) - beta
+  printf "b = %0.6f\n" b
+  let sds = subg (sdsf ar) beta
+  printf "beta-smooth derivative sensitivity: %0.6f\n" sds
+  let qr = fx ar
+  printf "query result: %0.6f\n" qr
+  let nl = sds / b
+  printf "noise level: %0.6f\n" nl
+  printf "relative error from noise: %0.3f%%\n" (nl / qr * 100)

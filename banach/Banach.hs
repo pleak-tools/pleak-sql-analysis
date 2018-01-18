@@ -29,6 +29,7 @@ data TableExpr = SelectProd Expr        -- product (map E rows) with norm ||(N1,
                | SelectMin Expr         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectMax Expr         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectL Double Expr    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
+  deriving Show
 
 -- SUB g beta0  is a value such that
 --   g beta  is a beta-smooth upper bound of a function f at a certain point x for each beta >= beta0

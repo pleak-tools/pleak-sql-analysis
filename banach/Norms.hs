@@ -17,7 +17,8 @@ data Norm a = Col a                     -- a variable, if it is toplevel, is tre
           | NormL     ADouble [Norm a]  -- lp-norm
           | NormLInf  [Norm a]          -- linf-norm
           | NormScale Double (Norm a)   -- scaled norm a * N
-          | NormZero                    -- the same as NormScale with a -> infinity
+          | NormZero (Norm a)           -- the same as NormScale with a -> infinity
+          | Dummy
   deriving Show
 
 ---------------------------------------------------------------------------------------------
@@ -30,7 +31,7 @@ deriveNorm colnames expr =
         B.ComposePower e c -> deriveNorm colnames e
         B.Exp _ x          -> NormL (AtMost 1.0) [Col (colnames !! x)]
         B.ScaleNorm a e    -> NormScale a (deriveNorm colnames e)
-        B.ZeroSens _       -> NormZero
+        B.ZeroSens e       -> NormZero (deriveNorm colnames e)
         B.L p xs           -> NormL (AtMost p) (Data.List.map (\x -> Col (colnames !! x)) xs)
 
 
@@ -58,14 +59,12 @@ groupLNorm p       [] = []
 
 -- we have reserved the double 10000 for infinity
 groupLNorm 10000.0 ns =
-     let ns1 = Data.List.filter (\x -> (case x of {NormLInf _ -> True;  _ -> False})) ns in
-     let ns2 = Data.List.filter (\x -> (case x of {NormLInf _ -> False; _ -> True })) ns in
+     let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormLInf _ -> True;  _ -> False})) ns in
      let ns1vars = concat (Data.List.map (\x -> (case x of {NormLInf xs -> xs; Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
      if (length ns1vars == 0) then ns2 else (NormLInf ns1vars):ns2
 
 groupLNorm p ns =
-     let ns1 = Data.List.filter (\x -> (case x of {NormL (AtMost q) _ -> (if q == p then True else False); Col y -> True;  _ -> False})) ns in
-     let ns2 = Data.List.filter (\x -> (case x of {NormL (AtMost q) _ -> (if q == p then False else True); Col y -> False; _ -> True })) ns in
+     let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormL (AtMost q) _ -> (if q == p then True else False); Col y -> True;  _ -> False})) ns in
      let ns1vars = concat (Data.List.map (\x -> (case x of {NormL (AtMost q) xs -> xs; Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
      if (length ns1vars == 0) then ns2 else (NormL (AtMost p) ns1vars):ns2
 
@@ -75,14 +74,12 @@ ungroupLNorm p       [] = []
 
 -- we have reserved the double 10000 for infinity
 ungroupLNorm 10000.0 ns =
-     let ns1 = Data.List.filter (\x -> (case x of {NormLInf _ -> True;  _ -> False})) ns in
-     let ns2 = Data.List.filter (\x -> (case x of {NormLInf _ -> False; _ -> True })) ns in
+     let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormLInf _ -> True;  _ -> False})) ns in
      let ns1vars = concat (Data.List.map (\x -> (case x of {NormLInf xs -> xs; Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
      if (length ns1vars == 0) then ns2 else ns1vars ++ ns2
 
 ungroupLNorm p ns =
-     let ns1 = Data.List.filter (\x -> (case x of {NormL (AtMost q) _ -> (if q == p then True else False); Col y -> True;  _ -> False})) ns in
-     let ns2 = Data.List.filter (\x -> (case x of {NormL (AtMost q) _ -> (if q == p then False else True); Col y -> False; _ -> True })) ns in
+     let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormL (AtMost q) _ -> (if q == p then True else False); Col y -> True;  _ -> False})) ns in
      let ns1vars = concat (Data.List.map (\x -> (case x of {NormL (AtMost q) xs -> xs; Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
      if (length ns1vars == 0) then ns2 else ns1vars ++ ns2
 
@@ -122,6 +119,10 @@ verifyNorm (Col x) (NormL _ [y]) =
 verifyNorm (NormL _ [x]) (Col y) = 
     verifyNorm x (Col y)
 
+-- we have x >= ln(x)
+verifyNorm (LN x) y = 
+    verifyNorm x y
+
 -- if the norm is "Any", we assume that it is as good as LInf
 -- TODO  It does not make sense to group/ungroup by 10000 is there is no LInf inside.
 --       "Any" gives us more possibilities for grouping, we could make more use of it.
@@ -153,6 +154,11 @@ verifyNorm (NormL (AtMost _) _) (NormL Any _) =
     False
 
 -- scaling
+verifyNorm (NormScale a1 n1) (NormScale a2 n2) =
+    if (a1 == a2) then
+        verifyNorm n1 n2
+    else False
+
 verifyNorm (NormScale a1 n1) n2 =
     if (a1 <= 1) then
         verifyNorm n1 n2
@@ -164,7 +170,7 @@ verifyNorm n1 (NormScale a2 n2) =
     else False
 
 -- this is a base case
-verifyNorm NormZero _ = True
+verifyNorm (NormZero _) _ = True
 
 verifyNorm _ _ = False
 

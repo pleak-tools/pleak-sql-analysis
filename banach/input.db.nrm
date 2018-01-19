@@ -1,0 +1,4 @@
+"";
+velocity latitude longitude;
+z = lp 1.0 velocity latitude longitude;
+return selectMax z;

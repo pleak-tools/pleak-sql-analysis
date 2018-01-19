@@ -42,12 +42,12 @@ data Expr = Power VarName Double        -- x^r with norm | |
           | Max [VarName]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
   deriving Show
 
-
 -- expressions of type TableExpr use values from the whole table
 data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row
                | SelectMin VarName         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectMax VarName         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectL Double VarName    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
+               | Id VarName                -- use it if do not want to apply aggregation function and treat a single row, currently supports only norms
   deriving Show
 
 -----------------------------------------------------------------------------------
@@ -60,14 +60,25 @@ extractArg t =
         SelectMin x  -> x
         SelectMax x  -> x
         SelectL _ x  -> x
+        Id x         -> x
 
-substituteArg :: TableExpr -> B.Expr -> B.TableExpr
-substituteArg t y =
+queryArg :: TableExpr -> B.Expr -> B.TableExpr
+queryArg t y =
     case t of
         SelectProd _ -> B.SelectProd y
         SelectMin _  -> B.SelectMin y
         SelectMax _  -> B.SelectMax y
         SelectL c _  -> B.SelectL c y
+        Id _         -> error("the branch 'TableExpr = Id VarName' should not be reached in queryArg, there is error somewhere")
+
+normArg :: TableExpr -> Norm a -> Norm a
+normArg t y =
+    case t of
+        SelectProd _ -> error("the branch 'TableExpr = SelectProd VarName' should not be reached in normArg, there is error somewhere")
+        SelectMin _  -> NormLInf [y]
+        SelectMax _  -> NormLInf [y]
+        SelectL c _  -> NormL (AtMost c) [y]
+        Id _         -> y
 
 -- Expr constructor variable arguments can be Var, Expr -- let us split these types into pairs ([Var],[Expr])
 -- if a VarName can be either Var or Expr, put it into both lists
@@ -86,8 +97,8 @@ extractArgs t =
         Max xs           -> ([],xs)
 
 -- the constructor may depend on whether the arguments are input variables or expressions
-substituteArgs :: Expr -> [B.Var] -> [B.Expr] -> B.Expr
-substituteArgs t xs es =
+queryExpression :: Expr -> [B.Var] -> [B.Expr] -> B.Expr
+queryExpression t xs es =
     case t of
         Power _ c        -> if xs /= [] then
                                 B.Power (head xs) c
@@ -106,6 +117,15 @@ substituteArgs t xs es =
         Prod _           -> B.Prod es
         Min _            -> B.Min es
         Max _            -> B.Max es
+
+normExpression :: Expr -> [a] -> [Norm a] -> (Norm a)
+normExpression t xs es =
+    let zs = (Data.List.map (\ x -> Col x) xs) in
+    case t of
+        ScaleNorm c _    -> NormScale c (head es)
+        ZeroSens _       -> NormZero (head es)
+        L c _            -> NormL (AtMost c) (zs ++ es)
+        LInf _           -> NormLInf zs
 
 ---------------------------------------------------------------------------------------------
 -- TODO: parsing of 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
@@ -200,6 +220,7 @@ tableExpr = selectProdExpr
   <|> selectMinExpr
   <|> selectMaxExpr
   <|> selectLExpr
+  <|> idExpr
 
 -- parsing different expressions, one by one
 selectProdExpr :: Parser TableExpr
@@ -227,8 +248,10 @@ selectLExpr = do
   a <- varName
   return (SelectL c a)
 
-
-
+idExpr :: Parser TableExpr
+idExpr = do
+  a <- varName
+  return (Id a)
 
 -- ======================================================================= --
 -----------------------------------------------------------------------------
@@ -393,46 +416,63 @@ signedFloat = L.signed spaceConsumer float
 
 -- read the database from the file defined in the program string
 -- read is as a single table row
-program2DB :: IO Program -> IO B.Table
-program2DB ioProgram = do
-    (P dbFileName _ _)  <- ioProgram
+readDB :: String -> IO B.Table
+readDB dbFileName = do
     table <- fmap readDoubles (readInput dbFileName)
     return table
 
-program2Expr :: (S.Set VarName) -> Program -> (S.Set VarName, B.TableExpr, [(VarName, Int)])
-program2Expr userNormVars (P _ inputVarList (F asgnMap y)) =
-    let x = extractArg y in
-    let (vars,z) = head (matchIntermVariable userNormVars (fromList inputVarList) asgnMap x []) in
-    (vars,substituteArg y z, inputVarList)
+getProgramInputs :: Program -> [(VarName, Int)]
+getProgramInputs (P _ inputVarList _) = inputVarList
 
-processExpression :: (S.Set VarName) -> (Map VarName Int) -> (Map VarName Expr) -> Expr -> (S.Set VarName, B.Expr)
-processExpression userNormVars varMap asgnMap expr =
-    let (xs,es) = extractArgs expr in
-    let xs1 = Data.List.foldr (matchColumnVariable varMap)         [] xs in
-    let zs  = Data.List.foldr (matchIntermVariable userNormVars varMap asgnMap) [] es in
-    let zs2 = Data.List.map (\(x,y) -> x) zs in
-    let xs2 = Data.List.foldr S.union S.empty zs2 in
-    let es2 = Data.List.map (\(x,y) -> y) zs in
-    --let xs' = fmap (matchColumnVariable varMap)         xs in
-    --let es' = fmap (matchIntermVariable varMap asgnMap) es in
-    (S.union (S.fromList xs) (xs2), substituteArgs expr xs1 es2)
+getProgramDbFileName :: Program -> String
+getProgramDbFileName (P dbFileName _ _) = dbFileName
+
+program2Expr :: [VarName] -> (Map VarName B.Var) -> Program -> (S.Set B.Var, B.TableExpr)
+program2Expr usedVarList inputMap (P _ _ (F asgnMap y))  =
+    let x = extractArg y in
+    let usedVars = S.fromList (Data.List.map (\x -> inputMap ! x) usedVarList) in
+    let (vars,z) = matchAsgnVariable queryExpression B.ZeroSens usedVars inputMap asgnMap x in
+    (vars, queryArg y z)
+
+norm2Expr :: [VarName] -> (Map VarName B.Var) -> Program -> (S.Set B.Var, Norm B.Var)
+norm2Expr usedVarList inputMap (P _ _ (F asgnMap y)) =
+    let x = extractArg y in
+    let usedVars = S.fromList (Data.List.map (\x -> inputMap ! x) usedVarList) in
+    let (vars,z) = matchAsgnVariable normExpression NormZero usedVars inputMap asgnMap x in
+    (vars, normArg y z)
+
+processExpression :: (Show a, Ord a) => 
+                         (Expr -> [a] -> [b] -> b) -> -- the function that actually rewrites the term
+                         (b -> b) ->                  -- applied to terms that contain only unused variables (ZeroSens, NormZero)
+                         (S.Set a) ->                 -- the set of used variables
+                         (Map VarName a) ->           -- input variable map
+                         (Map VarName Expr) ->        -- assigmnent variable map
+                         Expr ->                      -- the expression that we rewrite
+                         (S.Set a, b)
+processExpression f nullify usedVars inputMap asgnMap expr =
+    let (inputVarNames, asgnVarNames) = extractArgs expr in
+    let usedInputVarNames = Data.List.filter (\x -> member x inputMap) inputVarNames in
+    let usedAsgnVarNames  = Data.List.filter (\x -> member x asgnMap)  asgnVarNames  in
+
+    let inputVars       = Data.List.map (matchInputVariable inputMap)                           usedInputVarNames in
+    let asgnInputsExprs = Data.List.map (matchAsgnVariable f nullify usedVars inputMap asgnMap) usedAsgnVarNames  in
+
+    let (asgnInputs,asgnExprs) = Data.List.unzip asgnInputsExprs in
+    (S.union (S.fromList inputVars) (Data.List.foldr S.union S.empty asgnInputs), f expr inputVars asgnExprs)
 
 --check if the variable is a keys in a map, return the corresponding value if it is
-matchColumnVariable :: (Map VarName a) -> VarName -> [a] -> [a]
-matchColumnVariable dict y ys =
-    if member y dict then (dict ! y):ys else ys
-    --error ("Undefined column variable " ++ y)
+matchInputVariable :: (Show a, Ord a) => (Map VarName a) -> VarName -> a
+matchInputVariable inputMap x = (inputMap ! x)
 
 --check if the variable is a keys in a map, apply processExpression to the value of that key
-matchIntermVariable :: (S.Set VarName) -> (Map VarName Int) -> (Map VarName Expr) -> VarName -> [(S.Set VarName,B.Expr)] -> [(S.Set VarName,B.Expr)]
-matchIntermVariable userNormVars varMap asgnMap y ys =
-    if member y asgnMap then 
-        let (expVars,e) = (processExpression userNormVars varMap asgnMap (asgnMap ! y)) in
-        if S.null (S.intersection expVars userNormVars) then (S.empty, B.ZeroSens e):ys
-        else if S.isSubsetOf expVars userNormVars  then (expVars,e):ys
-        else error("cannot analyse this norm:\n\t cannot split vars: " ++ show(expVars) ++ "\n\t the user defined norm is w.r.t.: " ++ show(userNormVars))
-     else ys
-    --error ("Undefined intermediate variable " ++ y)
+matchAsgnVariable :: (Show a, Ord a) => (Expr -> [a] -> [b] -> b) -> (b -> b) -> (S.Set a) -> (Map VarName a) -> (Map VarName Expr) -> VarName -> (S.Set a,b)
+matchAsgnVariable f nullify usedVars inputMap asgnMap x =
+
+        -- if y is an assignment variable, find its value recursively
+        let expr = (asgnMap ! x) in
+        let (expVars,e) = (processExpression f nullify usedVars inputMap asgnMap expr) in
+        if S.null (S.intersection expVars usedVars) then (S.empty, nullify e) else (expVars,e)
+
 
 -- read the DB line by line -- no speacial parsing, assume that the delimiters are whitespaces
 readInput path = do
@@ -445,42 +485,32 @@ readDoubles s = fmap (Data.List.map read . words) (lines s)
 -- putting everything together
 getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
 getBanachAnalyserInput inputFile = do
-    let iopr = parseFromFile program inputFile
-    pr <- iopr
-    table <- program2DB iopr
-    let userNormVarList = (["x","y","v"]::[String]) --["velocity","latitude","longitude"]
-    let userNormVars = S.fromList(userNormVarList)
-    let userNorm = NormLInf [NormL (AtMost 1.0) (Data.List.map (\x -> Col x) userNormVarList)]
-    let (vars,expr,inputVarList) = program2Expr userNormVars pr
-    print vars
-    let expNorm = deriveTableNorm (Data.List.map (\(x,y) -> x) inputVarList) expr
-    print userNorm
-    print expNorm
-    print (verifyNorm expNorm userNorm)
+    userPr  <- parseFromFile program inputFile
+    let dbFileName = getProgramDbFileName userPr
+    table   <- readDB dbFileName
+    ownerPr <- parseFromFile program (dbFileName ++ ".nrm")
+
+    -- fix integer indices for variable names
+    let inputVarList = getProgramInputs userPr
+    let inputMap = fromList inputVarList
+
+    -- read owner's requirements from file
+    let (ownerNormVarNames, _) = Data.List.unzip (getProgramInputs ownerPr)    
+    let ownerNormVars = (Data.List.map (\x -> inputMap ! x) ownerNormVarNames)
+
+
+    let (_,ownerNorm) = norm2Expr ownerNormVarNames inputMap ownerPr
+    let (_,expr) = program2Expr ownerNormVarNames inputMap userPr
+
+    putStrLn $ "Columns sensitive to the owner: " ++ show ownerNormVars
+    
+    let userNorm = deriveTableNorm (Data.List.map snd inputVarList) expr
+    putStrLn $ "user  norm = " ++ show userNorm
+    putStrLn $ "owner norm = " ++ show ownerNorm
+
+    print (verifyNorm userNorm ownerNorm)
     putStrLn $ "table = " ++ show table
     putStrLn $ "expr = " ++ show expr
     return (table,expr)
 
--- this should be the only thing that depends on Norms.hs now
-program2BanachAnalyserInput :: String -> IO B.AnalysisResult
-program2BanachAnalyserInput inputFile = do
-    let iopr = parseFromFile program inputFile
-    pr <- iopr
-    table <- program2DB iopr
-    let userNormVarList = ["velocity","latitude","longitude"]
-    let userNormVars = S.fromList(userNormVarList)
-    let userNorm = NormLInf [NormL (AtMost 1.0) (Data.List.map (\x -> Col x) userNormVarList)]
-    let (vars,expr,inputVarList) = program2Expr userNormVars pr
-    print vars
-    let expNorm = deriveTableNorm (Data.List.map (\(x,y) -> x) inputVarList) expr
-    print userNorm
-    print expNorm
-    print (verifyNorm expNorm userNorm)
-    return (B.analyzeTableExpr table expr)
-
--- this should be called from outside
---main :: IO B.AnalysisResult
---main = do
---    input <- fmap head getArgs
---    program2BanachAnalyserInput input
 

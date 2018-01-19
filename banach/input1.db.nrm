@@ -1,0 +1,6 @@
+"";
+x y v;
+v1 = lp 1.0 v;
+v2 = scaleNorm 20.0 v1;
+z = lp 1.0 x y v2;
+return selectMax z;

@@ -47,8 +47,11 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectMin VarName         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectMax VarName         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectL Double VarName    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
-               | Id VarName                -- use it if do not want to apply aggregation function and treat a single row, currently supports only norms
   deriving Show
+
+-- a small bit, denoting whether we are parsin a query or a norm
+-- we define it, since a query and a norm have very similar format
+data ParserInstance = QueryParsing | NormParsing
 
 -----------------------------------------------------------------------------------
 -- TODO: reconstruction of terms are being synchronized with B.Expr and B.TableExpr
@@ -60,7 +63,6 @@ extractArg t =
         SelectMin x  -> x
         SelectMax x  -> x
         SelectL _ x  -> x
-        Id x         -> x
 
 queryArg :: TableExpr -> B.Expr -> B.TableExpr
 queryArg t y =
@@ -69,62 +71,82 @@ queryArg t y =
         SelectMin _  -> B.SelectMin y
         SelectMax _  -> B.SelectMax y
         SelectL c _  -> B.SelectL c y
-        Id _         -> error("the branch 'TableExpr = Id VarName' should not be reached in queryArg, there is error somewhere")
 
 normArg :: TableExpr -> Norm a -> Norm a
 normArg t y =
     case t of
-        SelectProd _ -> error("the branch 'TableExpr = SelectProd VarName' should not be reached in normArg, there is error somewhere")
+        SelectProd _ -> NormLInf [y]
         SelectMin _  -> NormLInf [y]
         SelectMax _  -> NormLInf [y]
         SelectL c _  -> NormL (AtMost c) [y]
-        Id _         -> y
 
--- Expr constructor variable arguments can be Var, Expr -- let us split these types into pairs ([Var],[Expr])
--- if a VarName can be either Var or Expr, put it into both lists
-extractArgs :: Expr -> ([VarName],[VarName])
+-- Expr constructor variable arguments can be Var, Expr
+-- we put all of them into one list and later check whether a variable is an input or an assignment variable
+extractArgs :: Expr -> [VarName]
 extractArgs t =
     case t of
-        Power x _        -> ([x],[x])
-        PowerLN x _      -> ([x],[])
-        Exp _ x          -> ([x],[])
-        ScaleNorm _ x    -> ([],[x])
-        ZeroSens x       -> ([],[x])
-        L _ xs           -> (xs,xs)
-        LInf xs          -> (xs,[])
-        Prod xs          -> ([],xs)
-        Min xs           -> ([],xs)
-        Max xs           -> ([],xs)
+        Power x _        -> [x]
+        PowerLN x _      -> [x]
+        Exp _ x          -> [x]
+        ScaleNorm _ x    -> [x]
+        ZeroSens x       -> [x]
+        L _ xs           -> xs
+        LInf xs          -> xs
+        Prod xs          -> xs
+        Min xs           -> xs
+        Max xs           -> xs
+
+-- this is needed to make error of a missing head clearer
+-- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa
+headInputVar :: Expr -> [a] -> a
+headInputVar t [] = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Var (input variable) type")
+headInputVar t xs = head xs
+
+headAsgnVar :: Expr -> [a] -> a
+headAsgnVar t [] = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Expr (assignment variable) type")
+headAsgnVar t xs = head xs
+
+onlyInputVars :: Expr -> [a] -> [b] -> [a]
+onlyInputVars t [] _ = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Var (input variable) type")
+onlyInputVars t xs [] = xs
+onlyInputVars t _ _ = error ("Cannot substitude variables into " ++ show t ++ ",\n some arguments are not of Var (input variable) type")
+
+onlyAsgnVars :: Expr -> [a] -> [b] -> [b]
+onlyAsgnVars t _ [] = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Expr (assignment variable) type")
+onlyAsgnVars t [] xs = xs
+onlyAsgnVars t _ _ = error ("Cannot substitude variables into " ++ show t ++ ",\n some arguments are not of Expr (assignment variable) type")
 
 -- the constructor may depend on whether the arguments are input variables or expressions
 queryExpression :: Expr -> [B.Var] -> [B.Expr] -> B.Expr
 queryExpression t xs es =
     case t of
         Power _ c        -> if xs /= [] then
-                                B.Power (head xs) c
+                                B.Power (headInputVar t xs) c
                             else
-                                B.ComposePower (head es) c
-        PowerLN _ c      -> B.PowerLN (head xs) c
-        Exp c _          -> B.Exp c (head xs)
-        ScaleNorm c _    -> B.ScaleNorm c (head es)
-        ZeroSens _       -> B.ZeroSens (head es)
+                                B.ComposePower (headAsgnVar t es) c
+        PowerLN _ c      -> B.PowerLN (headInputVar t xs) c
+        Exp c _          -> B.Exp c (headInputVar t xs)
+        ScaleNorm c _    -> B.ScaleNorm c (headAsgnVar t es)
+        ZeroSens _       -> B.ZeroSens (headAsgnVar t es)
         L c _            -> if xs /= [] then
-                                B.L c xs
+                                B.L c (onlyInputVars t xs es)
                             else
-                                B.ComposeL c es
+                                B.ComposeL c (onlyAsgnVars t xs es)
 
-        LInf _           -> B.LInf xs
-        Prod _           -> B.Prod es
-        Min _            -> B.Min es
-        Max _            -> B.Max es
+        LInf _           -> B.LInf (onlyInputVars t xs es)
+        Prod _           -> B.Prod (onlyAsgnVars  t xs es)
+        Min _            -> B.Min  (onlyAsgnVars  t xs es)
+        Max _            -> B.Max  (onlyAsgnVars  t xs es)
 
+-- the definition of Norm allows to use any variables inside argumets (both input and assignment variables)
 normExpression :: Expr -> [a] -> [Norm a] -> (Norm a)
 normExpression t xs es =
-    let zs = (Data.List.map (\ x -> Col x) xs) in
+    let zs = (Data.List.map (\ x -> Col x) xs) ++ es in
     case t of
-        ScaleNorm c _    -> NormScale c (head es)
-        ZeroSens _       -> NormZero (head es)
-        L c _            -> NormL (AtMost c) (zs ++ es)
+        PowerLN _ _      -> LN (head zs)
+        ScaleNorm c _    -> NormScale c (head zs)
+        ZeroSens _       -> NormZero (head zs)
+        L c _            -> NormL (AtMost c) zs
         LInf _           -> NormLInf zs
 
 ---------------------------------------------------------------------------------------------
@@ -134,9 +156,9 @@ normExpression t xs es =
 allKeyWords :: [String] -- list of reserved "words"
 allKeyWords = ["return","^","LN","exp","scaleNorm","zeroSens","lp","linf","prod","min","max","selectMin","selectMax","selectProd","selectL"]
 
--- an expression
-expr :: Parser Expr
-expr = powerExpr
+-- a query expression
+queryExpr :: Parser Expr
+queryExpr = powerExpr
   <|> powerLNExpr
   <|> expExpr
   <|> scaleNormExpr
@@ -146,6 +168,14 @@ expr = powerExpr
   <|> prodExpr
   <|> minExpr
   <|> maxExpr
+
+-- a norm expression
+normExpr :: Parser Expr
+normExpr = scaleNormExpr
+  <|> zeroSensExpr
+  <|> lpNormExpr
+  <|> linfNormExpr
+  <|> lnExpr
 
 -- parsing different expressions, one by one
 powerExpr :: Parser Expr
@@ -214,13 +244,25 @@ maxExpr = do
   bs <- many varName
   return (Max bs)
 
+-- this one is intended for norms
+lnExpr :: Parser Expr
+lnExpr = do
+  keyWord "LN"
+  a <- varName
+  return (PowerLN a 0.0)
+
 -- a table expression
-tableExpr :: Parser TableExpr
-tableExpr = selectProdExpr
+queryTableExpr :: Parser TableExpr
+queryTableExpr = selectProdExpr
   <|> selectMinExpr
   <|> selectMaxExpr
   <|> selectLExpr
-  <|> idExpr
+
+-- a table expression for norms (which norm is applied to the rows)
+normTableExpr :: Parser TableExpr
+normTableExpr = selectProdExpr
+  <|> linfTableExpr
+  <|> lpTableExpr
 
 -- parsing different expressions, one by one
 selectProdExpr :: Parser TableExpr
@@ -248,10 +290,18 @@ selectLExpr = do
   a <- varName
   return (SelectL c a)
 
-idExpr :: Parser TableExpr
-idExpr = do
-  a <- varName
-  return (Id a)
+lpTableExpr :: Parser TableExpr
+lpTableExpr = do
+  keyWord "lp"
+  a <- float
+  b <- varName
+  return (SelectL a b)
+
+linfTableExpr :: Parser TableExpr
+linfTableExpr = do
+  keyWord "linf"
+  b <- varName
+  return (SelectMax b)
 
 -- ======================================================================= --
 -----------------------------------------------------------------------------
@@ -287,34 +337,41 @@ type Parser = Parsec Void String
 ---- Parsing general input format ----
 --------------------------------------
 
-program :: Parser Program
-program = do
+query :: Parser Program
+query = do
   tablePath <- text
   void (delim)
   xs <- many varName
   void (delim)
-  f <- function
+  f <- function QueryParsing
   return (P tablePath (zipWith (\x y -> (x,y)) xs [0..((length xs) - 1)]) f)
 
-asgnStmt :: Parser (VarName,Expr)
-asgnStmt = do
+norm :: Parser Program
+norm = do
+  xs <- many varName
+  void (delim)
+  f <- function NormParsing
+  return (P "" (zipWith (\x y -> (x,y)) xs [0..((length xs) - 1)]) f)
+
+asgnStmt :: ParserInstance -> Parser (VarName,Expr)
+asgnStmt p = do
   a  <- varName
   void (asgn)
-  b <- expr
+  b <- case p of {QueryParsing -> queryExpr; NormParsing -> normExpr}
   void (delim)
   return (a,b)
 
-returnStmt :: Parser TableExpr
-returnStmt = do
+returnStmt :: ParserInstance -> Parser TableExpr
+returnStmt p = do
   keyWord "return"
-  a <- tableExpr
+  a <- case p of {QueryParsing -> queryTableExpr; NormParsing -> normTableExpr}
   void (delim)
   return a
 
-function :: Parser Function
-function = do
-  as <- many asgnStmt
-  b  <- returnStmt
+function :: ParserInstance -> Parser Function
+function p = do
+  as <- many (asgnStmt p)
+  b  <- returnStmt p
   return (F (fromList as) b)
 
 ------------------------------
@@ -450,9 +507,9 @@ processExpression :: (Show a, Ord a) =>
                          Expr ->                      -- the expression that we rewrite
                          (S.Set a, b)
 processExpression f nullify usedVars inputMap asgnMap expr =
-    let (inputVarNames, asgnVarNames) = extractArgs expr in
-    let usedInputVarNames = Data.List.filter (\x -> member x inputMap) inputVarNames in
-    let usedAsgnVarNames  = Data.List.filter (\x -> member x asgnMap)  asgnVarNames  in
+    let varNames = extractArgs expr in
+    let usedInputVarNames = Data.List.filter (\x -> member x inputMap) varNames in
+    let usedAsgnVarNames  = Data.List.filter (\x -> member x asgnMap)  varNames in
 
     let inputVars       = Data.List.map (matchInputVariable inputMap)                           usedInputVarNames in
     let asgnInputsExprs = Data.List.map (matchAsgnVariable f nullify usedVars inputMap asgnMap) usedAsgnVarNames  in
@@ -485,10 +542,10 @@ readDoubles s = fmap (Data.List.map read . words) (lines s)
 -- putting everything together
 getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
 getBanachAnalyserInput inputFile = do
-    userPr  <- parseFromFile program inputFile
+    userPr  <- parseFromFile query inputFile
     let dbFileName = getProgramDbFileName userPr
     table   <- readDB dbFileName
-    ownerPr <- parseFromFile program (dbFileName ++ ".nrm")
+    ownerPr <- parseFromFile norm (dbFileName ++ ".nrm")
 
     -- fix integer indices for variable names
     let inputVarList = getProgramInputs userPr
@@ -505,10 +562,13 @@ getBanachAnalyserInput inputFile = do
     putStrLn $ "Columns sensitive to the owner: " ++ show ownerNormVars
     
     let userNorm = deriveTableNorm (Data.List.map snd inputVarList) expr
-    putStrLn $ "user  norm = " ++ show userNorm
+    putStrLn $ "query norm = " ++ show userNorm
     putStrLn $ "owner norm = " ++ show ownerNorm
 
-    print (verifyNorm userNorm ownerNorm)
+    putStrLn $ if (verifyNorm userNorm ownerNorm) then 
+            "OK: the data owner's norm is at least as large as the query norm."
+        else
+             "WARNING: could not prove that the data owner's norm is at least as large as the query norm."
     putStrLn $ "table = " ++ show table
     putStrLn $ "expr = " ++ show expr
     return (table,expr)

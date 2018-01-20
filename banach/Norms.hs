@@ -26,7 +26,7 @@ data Norm a = Col a                     -- a variable, if it is toplevel, is tre
 deriveNorm :: [a] -> B.Expr -> Norm a
 deriveNorm colnames expr = 
     case expr of
-        B.PowerLN x c      -> NormL (AtMost 1.0) [LN (Col (colnames !! x))]
+        B.PowerLN x _      -> NormL (AtMost 1.0) [LN (Col (colnames !! x))]
         B.Power x _        -> NormL (AtMost 1.0) [Col (colnames !! x)]
         B.ComposePower e c -> deriveNorm colnames e
         B.Exp _ x          -> NormL (AtMost 1.0) [Col (colnames !! x)]
@@ -174,50 +174,54 @@ verifyNorm (NormZero _) _ = True
 
 verifyNorm _ _ = False
 
--- here is the main step proving |x_1,...,x_n|_p <= |y_1,...,y_m|_q for (q <= p)
+-- here is the main step proving |x_1,...,x_n|_{px} <= |y_1,...,y_m|_{py} for (py <= px)
 -- it tries to prove \forall x_i \exists y_i: x_i <= y_i, such that all y_i are distinct
 verifyNorms :: (Show a, Eq a) => Double ->  Double -> [Norm a] -> [Norm a] -> Bool
-verifyNorms pE pU [] nsU = True
-verifyNorms pE pU nsE [] = False
-verifyNorms pE pU nsE nsU =
-  if (length nsE > length nsU) then False
+verifyNorms pX pY [] nsY = True
+verifyNorms pX pY nsX [] = False
+verifyNorms pX pY nsX0 nsY0 =
+
+  -- discard all NormZero entries since we do not need to match them
+  let nsX = Data.List.filter (\x -> case x of {NormZero _ -> False; _ -> True}) nsX0 in
+  let nsY = Data.List.filter (\x -> case x of {NormZero _ -> False; _ -> True}) nsY0 in
+  if (length nsX > length nsY) then False
   else
 
-    -- for each nsE element, find all elements in nsU that are not smaller than it
+    -- for each nsX element, find all elements in nsY that are not smaller than it
     -- get a binary matrix of results
-    let ns = [ (x,[y | y <- nsU]) | x <- nsE] in
+    let ns = [ (x,[y | y <- nsY]) | x <- nsX] in
     let bss1 = Data.List.map (\(x,ys) -> Data.List.map (verifyNorm x) ys) ns in
 
     -- check if it is possible to assign a unique y_i to each x_i by counting non-zero columns
     let bss2 = (Data.List.transpose bss1) in
     let bs2  = Data.List.filter exTrue bss2 in
-    let b = (length bs2) >= (length nsE) in
+    let b = (length bs2) >= (length nsX) in
 
-    --trace (show(nsU) ++ "\n" ++ show(nsE) ++ "\n" ++ show(p) ++ "\n" ++ show(b)) (if b == True then True
+    --trace (show(nsY) ++ "\n" ++ show(nsX) ++ "\n" ++ show(p) ++ "\n" ++ show(b)) (if b == True then True
     if b == True then True else
 
         -- if the proof failed, we may try to rearrange the terms
         -- collect the norms for which we did not get a matching
-        let nsU' = Data.List.map (\(x,y) -> y) (Data.List.filter (\(x,y) -> not (exTrue x)) (zipWith (\x y -> (x,y)) bss2 nsU)) in
-        let nsE' = Data.List.map (\(x,y) -> y) (Data.List.filter (\(x,y) -> not (exTrue x)) (zipWith (\x y -> (x,y)) bss1 nsE)) in
+        let nsY' = Data.List.map (\(x,y) -> y) (Data.List.filter (\(x,y) -> not (exTrue x)) (zipWith (\x y -> (x,y)) bss2 nsY)) in
+        let nsX' = Data.List.map (\(x,y) -> y) (Data.List.filter (\(x,y) -> not (exTrue x)) (zipWith (\x y -> (x,y)) bss1 nsX)) in
 
         -- try to group   the variables in both norms if possible
         -- this operation may make the matching easier
-        let nsU1 = groupLNorm pU nsU' in
-        let nsE1 = groupLNorm pE nsE' in
+        let nsY1 = groupLNorm pY nsY' in
+        let nsX1 = groupLNorm pX nsX' in
 
         -- check if we now have strictly less elements, so that this would not create infinite loops
-        if (length nsE == length nsE1) && (length nsU == length nsU1) then False else 
-        let b1 = verifyNorms pE pU nsE1 nsU1 in
+        if (length nsX == length nsX1) && (length nsY == length nsY1) then False else 
+        let b1 = verifyNorms pX pY nsX1 nsY1 in
         if b1 == True then True else
             -- try to ungroup the variables in both norms if possible
             -- this operation may make the matching easier
-            let nsU2 = ungroupLNorm pU nsU' in
-            let nsE2 = ungroupLNorm pE nsE' in
+            let nsY2 = ungroupLNorm pY nsY' in
+            let nsX2 = ungroupLNorm pX nsX' in
 
             -- check if we now have strictly less elements, so that this would not create infinite loops
-            if (length nsE == length nsE2) && (length nsU == length nsU2) then False else 
-            let b2 = verifyNorms pE pU nsE2 nsU2 in b2
+            if (length nsX == length nsX2) && (length nsY == length nsY2) then False else 
+            let b2 = verifyNorms pX pY nsX2 nsY2 in b2
 
-            --trace (show(nsU) ++ "\n" ++ show(nsU'') ++ "\n" ++ show(nsE) ++ "\n" ++ show(nsE') ++ "\n"  ++ show(p) ++ "\n" ++ show(b2) ++ "\n") b2)
+            --trace (show(nsY) ++ "\n" ++ show(nsY'') ++ "\n" ++ show(nsX) ++ "\n" ++ show(nsX') ++ "\n"  ++ show(p) ++ "\n" ++ show(b2) ++ "\n") b2)
 

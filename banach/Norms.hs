@@ -59,8 +59,8 @@ groupLNorm p       [] = []
 
 -- we have reserved the double 10000 for infinity
 groupLNorm 10000.0 ns =
-     let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormLInf _ -> True;  _ -> False})) ns in
-     let ns1vars = concat (Data.List.map (\x -> (case x of {NormLInf xs -> xs; Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
+     let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormLInf _ -> True; Col y -> True;  _ -> False})) ns in
+     let ns1vars = concat (Data.List.map (\x -> (case x of {NormLInf xs -> xs;  Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
      if (length ns1vars == 0) then ns2 else (NormLInf ns1vars):ns2
 
 groupLNorm p ns =
@@ -74,14 +74,46 @@ ungroupLNorm p       [] = []
 
 -- we have reserved the double 10000 for infinity
 ungroupLNorm 10000.0 ns =
-     let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormLInf _ -> True;  _ -> False})) ns in
-     let ns1vars = concat (Data.List.map (\x -> (case x of {NormLInf xs -> xs; Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
+     let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormLInf _ -> True; Col y -> True;  _ -> False})) ns in
+     let ns1vars = concat (Data.List.map (\x -> (case x of {NormLInf xs -> xs;  Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
      if (length ns1vars == 0) then ns2 else ns1vars ++ ns2
 
 ungroupLNorm p ns =
      let (ns1,ns2) = Data.List.partition (\x -> (case x of {NormL (AtMost q) _ -> (if q == p then True else False); Col y -> True;  _ -> False})) ns in
      let ns1vars = concat (Data.List.map (\x -> (case x of {NormL (AtMost q) xs -> xs; Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ns1) in
      if (length ns1vars == 0) then ns2 else ns1vars ++ ns2
+
+-- do not put it directly into group/ungroup, use only if everything else failed
+allNormPartitions1 :: Ordering -> Double -> [Norm a] -> ([Norm a],[Norm a])
+allNormPartitions1 _ _ [] = ([],[])
+allNormPartitions1 ord 10000.0 xs@((NormLInf z):_) =
+        let (ys1,ys2) = Data.List.partition (\x -> (case x of {NormLInf _ -> True; Col y -> True;  _ -> False})) xs in
+        let ys1' = concat (Data.List.map (\x -> (case x of {NormLInf xs -> xs;  Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ys1) in
+        let (ys,zs) = allNormPartitions1 ord 10000.0 ys2 in
+        if (length ys1' == 0) then (ys,zs) else ((NormLInf ys1'):ys, zs)
+
+allNormPartitions1 ord p xs'@((NormL (AtMost q) z):xs) =
+    if (compare q p == ord || compare q p == EQ) then
+        let (ys1,ys2) = Data.List.partition (\x -> (case x of {NormL (AtMost q') _ -> (if q == q' then True else False); Col y -> True;  _ -> False})) xs' in
+        let ys1' = concat (Data.List.map (\x -> (case x of {NormL (AtMost q) xs -> xs; Col y -> [Col y]; _ -> error ("This should not happen, something is wrong")})) ys1) in
+        let (ys,zs) = allNormPartitions1 ord p ys2 in
+        ((NormL (AtMost q) ys1'):ys, zs)
+    else 
+        let (ys,zs) = allNormPartitions1 ord p xs in
+        (ys, (NormL (AtMost q) z) : zs)
+
+allNormPartitions1 ord p (x:xs) =
+        let (ys,zs) = allNormPartitions1 ord p xs in
+        (ys, x:zs)
+
+allNormPartitions :: Ordering -> Double -> [Norm a] -> [Norm a]
+allNormPartitions ord 10000.0 xs =
+    let (ys,zs) = allNormPartitions1 ord 10000.0 xs in
+    if (length ys == 0) then zs else (NormLInf ys):zs
+
+allNormPartitions ord p xs =
+    let (ys,zs) = allNormPartitions1 ord p xs in
+    if (length ys == 0) then zs else (NormL (AtMost p) ys):zs
 
 allTrue :: [Bool] -> Bool
 allTrue xs = Data.List.foldr (&&) True xs
@@ -184,6 +216,8 @@ verifyNorms pX pY nsX0 nsY0 =
   -- discard all NormZero entries since we do not need to match them
   let nsX = Data.List.filter (\x -> case x of {NormZero _ -> False; _ -> True}) nsX0 in
   let nsY = Data.List.filter (\x -> case x of {NormZero _ -> False; _ -> True}) nsY0 in
+
+  -- TODO this should skip only the first branch, not immediately fail
   if (length nsX > length nsY) then False
   else
 
@@ -221,7 +255,21 @@ verifyNorms pX pY nsX0 nsY0 =
 
             -- check if we now have strictly less elements, so that this would not create infinite loops
             if (length nsX == length nsX2) && (length nsY == length nsY2) then False else 
-            let b2 = verifyNorms pX pY nsX2 nsY2 in b2
+            let b2 = verifyNorms pX pY nsX2 nsY2 in
 
-            --trace (show(nsY) ++ "\n" ++ show(nsY'') ++ "\n" ++ show(nsX) ++ "\n" ++ show(nsX') ++ "\n"  ++ show(p) ++ "\n" ++ show(b2) ++ "\n") b2)
+            --trace (show(nsY) ++ "\n" ++ show(nsY2) ++ "\n" ++ show(nsX) ++ "\n" ++ show(nsX2) ++ "\n" ++ show(b2) ++ "\n") b2)
+            if b2 == True then True else
+
+                -- finally, try to group norms also for all q <= p
+                -- this operation may make the matching easier
+                let nsY3 = allNormPartitions GT pY nsY' in
+                let nsX3 = allNormPartitions LT pX nsX' in
+
+                -- check if we now have strictly less elements, so that this would not create infinite loops
+                if (length nsX == length nsX3) && (length nsY == length nsY3) then False else
+                let b3 = verifyNorms pX pY nsX3 nsY3 in
+                trace ("==> " ++ show(nsY) ++ "\n" ++ show(nsY3) ++ "\n" ++ show(nsX) ++ "\n" ++ show(nsX3) ++ "\n" ++ show(b3) ++ "\n") b3
+
+
+
 

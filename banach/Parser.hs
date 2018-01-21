@@ -565,12 +565,24 @@ getBanachAnalyserInput inputFile = do
     putStrLn $ "query norm = " ++ show userNorm
     putStrLn $ "owner norm = " ++ show ownerNorm
 
+    -- this check can be removed if something goes wrong with it
     putStrLn $ if (verifyNorm userNorm ownerNorm) then 
             "OK: the data owner's norm is at least as large as the query norm."
         else
              "WARNING: could not prove that the data owner's norm is at least as large as the query norm."
+
     putStrLn $ "table = " ++ show table
     putStrLn $ "expr = " ++ show expr
+
+    --let ns = [NormL (AtMost 1.0) [Col "x1"], NormL (AtMost 2.0) [Col "x2"], NormL (AtMost 3.0) [Col "x3"], NormL (AtMost 1.0) [Col "x4"], NormL (AtMost 2.0) [Col "x5"]]
+    --let n1 = NormLInf ns
+    --let n2 = NormLInf [NormL (AtMost 1.0) [Col "x1", Col "x4"], NormL (AtMost 2.0) [Col "x2", Col "x5"], NormL (AtMost 3.0) [Col "x3"]]
+    --putStrLn $ show n1
+    --putStrLn $ show n2
+    --putStrLn $ show (verifyNorm n1 n2)
+    --putStrLn $ show (allNormPartitions LT 10000.0 ns)
+    --putStrLn $ show (allNormPartitions LT 2.0 ns)
+    --putStrLn $ show (allNormPartitions LT 3.0 ns)
     return (table,expr)
 
 

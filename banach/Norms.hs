@@ -1,6 +1,10 @@
 module Norms where
 
+import Data.Graph.MaxBipartiteMatching
 import Data.List
+import Data.Map
+import Data.Tuple
+import qualified Data.Set as S
 import Debug.Trace
 
 -- import Expr directly from Banach.hs, 'qualified' because we want to reuse the names
@@ -121,154 +125,159 @@ allTrue xs = Data.List.foldr (&&) True xs
 exTrue :: [Bool] -> Bool
 exTrue xs = Data.List.foldr (||) False xs
 
-
--- TODO here are some rewriting rules that we are able to apply, we could improve the search
--- the first argument is our expression analysis norm, the second is the user norm
-verifyNorm :: (Show a, Eq a) => Norm a -> Norm a -> Bool
+-- TODO: The current implementation may make loops, so we limit the number of recursive calls.
+--       The counter is the first parameter, and we increase it only in the function verifyNorms,
+--       since only that function may expand the term instead of reducing it.
+-- the second argument is our expression analysis norm, the third is the user norm
+verifyNorm :: (Show a, Eq a) => Int -> Norm a -> Norm a -> Bool
 
 -- let '10000' be reserved for the infinity norm
 
 -- if there is no certain constructor decomposition, let us just compare the two terms
-verifyNorm (Col x) (Col y) =
+verifyNorm _ (Col x) (Col y) =
     x == y
 
 -- the norm of a vector of length 1 can be matched to any lp norm
-verifyNorm (NormL (AtMost a1) xs) (NormL (AtMost a2) [y]) = 
-    verifyNorms a1 a2 xs [y]
+verifyNorm k (NormL (AtMost a1) xs) (NormL (AtMost a2) [y]) = 
+    verifyNorms k a1 a2 xs [y]
 
-verifyNorm (NormL (AtMost a1) [x]) (NormL (AtMost a2) ys) = 
-    verifyNorms a1 a2 [x] ys
+verifyNorm k (NormL (AtMost a1) [x]) (NormL (AtMost a2) ys) = 
+    verifyNorms k a1 a2 [x] ys
 
-verifyNorm (NormLInf xs) (NormL (AtMost a2) [y]) = 
-    verifyNorms 10000.0 a2 xs [y]
+verifyNorm k (NormLInf xs) (NormL (AtMost a2) [y]) = 
+    verifyNorms k 10000.0 a2 xs [y]
 
-verifyNorm (NormL (AtMost a1) [x]) (NormLInf ys) = 
-    verifyNorms a1 10000.0 [x] ys
+verifyNorm k (NormL (AtMost a1) [x]) (NormLInf ys) = 
+    verifyNorms k a1 10000.0 [x] ys
 
-verifyNorm (Col x) (NormL _ [y]) = 
-    verifyNorm (Col x) y
+verifyNorm k (Col x) (NormL _ [y]) = 
+    verifyNorm k (Col x) y
 
-verifyNorm (NormL _ [x]) (Col y) = 
-    verifyNorm x (Col y)
+verifyNorm k (NormL _ [x]) (Col y) = 
+    verifyNorm k x (Col y)
 
 -- we have x >= ln(x)
-verifyNorm (LN x) y = 
-    verifyNorm x y
+verifyNorm k (LN x) y = 
+    verifyNorm k x y
 
 -- if the norm is "Any", we assume that it is as good as LInf
 -- TODO  It does not make sense to group/ungroup by 10000 is there is no LInf inside.
 --       "Any" gives us more possibilities for grouping, we could make more use of it.
-verifyNorm (NormLInf ns1) (NormLInf ns2) =
-        verifyNorms 10000.0 10000.0 ns1 ns2
+verifyNorm k (NormLInf ns1) (NormLInf ns2) =
+        verifyNorms k 10000.0 10000.0 ns1 ns2
 
-verifyNorm (NormL Any ns1) (NormL Any ns2) =
-        verifyNorms 10000.0 10000.0 ns1 ns2
+verifyNorm k (NormL Any ns1) (NormL Any ns2) =
+        verifyNorms k 10000.0 10000.0 ns1 ns2
 
-verifyNorm (NormLInf ns1) (NormL (AtMost a2) ns2) =
-        verifyNorms 10000.0 a2 ns1 ns2
+verifyNorm k (NormLInf ns1) (NormL (AtMost a2) ns2) =
+        verifyNorms k 10000.0 a2 ns1 ns2
 
-verifyNorm (NormL Any ns1) (NormL (AtMost a2) ns2) =
-        verifyNorms 10000.0 a2 ns1 ns2
+verifyNorm k (NormL Any ns1) (NormL (AtMost a2) ns2) =
+        verifyNorms k 10000.0 a2 ns1 ns2
 
-verifyNorm (NormL Any ns1) (NormLInf ns2) =
-        verifyNorms 10000.0 10000.0 ns1 ns2
+verifyNorm k (NormL Any ns1) (NormLInf ns2) =
+        verifyNorms k 10000.0 10000.0 ns1 ns2
 
-verifyNorm (NormLInf ns1) (NormL Any ns2) =
-        verifyNorms 10000.0 10000.0 ns1 ns2
+verifyNorm k (NormLInf ns1) (NormL Any ns2) =
+        verifyNorms k 10000.0 10000.0 ns1 ns2
 
-verifyNorm (NormL (AtMost a1) ns1) (NormL (AtMost a2) ns2) =
+verifyNorm k (NormL (AtMost a1) ns1) (NormL (AtMost a2) ns2) =
     if (a1 >= a2) then
-        verifyNorms a1 a2 ns1 ns2
+        verifyNorms k a1 a2 ns1 ns2
     else False
 
 -- if our analyzer only computes some lp norm for p /= \infty, then it is definitely not suitable for "Any" norm
-verifyNorm (NormL (AtMost _) _) (NormL Any _) =
+verifyNorm _ (NormL (AtMost _) _) (NormL Any _) =
     False
 
 -- scaling
-verifyNorm (NormScale a1 n1) (NormScale a2 n2) =
+verifyNorm k (NormScale a1 n1) (NormScale a2 n2) =
     if (a1 == a2) then
-        verifyNorm n1 n2
+        verifyNorm k n1 n2
     else False
 
-verifyNorm (NormScale a1 n1) n2 =
+verifyNorm k (NormScale a1 n1) n2 =
     if (a1 <= 1) then
-        verifyNorm n1 n2
+        verifyNorm k n1 n2
     else False
 
-verifyNorm n1 (NormScale a2 n2) =
+verifyNorm k n1 (NormScale a2 n2) =
     if (a2 >= 1) then
-        verifyNorm n1 n2
+        verifyNorm k n1 n2
     else False
 
 -- this is a base case
-verifyNorm (NormZero _) _ = True
+verifyNorm _ (NormZero _) _ = True
 
-verifyNorm _ _ = False
+verifyNorm _ _ _ = False
 
 -- here is the main step proving |x_1,...,x_n|_{px} <= |y_1,...,y_m|_{py} for (py <= px)
--- it tries to prove \forall x_i \exists y_i: x_i <= y_i, such that all y_i are distinct
-verifyNorms :: (Show a, Eq a) => Double ->  Double -> [Norm a] -> [Norm a] -> Bool
-verifyNorms pX pY [] nsY = True
-verifyNorms pX pY nsX [] = False
-verifyNorms pX pY nsX0 nsY0 =
+-- it tries to prove that there is an injective mapping f such that |x_i| <= |y_f(i)| for all i
+verifyNorms :: (Show a, Eq a) => Int -> Double ->  Double -> [Norm a] -> [Norm a] -> Bool
+verifyNorms _ pX pY [] nsY = True
+verifyNorms _ pX pY nsX [] = False
+verifyNorms 10 _ _ _ _     = False -- the limit is reached
+verifyNorms k pX pY nsX0 nsY0 =
 
   -- discard all NormZero entries since we do not need to match them
   let nsX = Data.List.filter (\x -> case x of {NormZero _ -> False; _ -> True}) nsX0 in
   let nsY = Data.List.filter (\x -> case x of {NormZero _ -> False; _ -> True}) nsY0 in
 
-  -- TODO this should skip only the first branch, not immediately fail
-  if (length nsX > length nsY) then False
-  else
+  -- after discarding NormZero, check the base cases again
+  if (length nsX == 0) then True else
+  if (length nsY == 0) then False else
 
-    -- for each nsX element, find all elements in nsY that are not smaller than it
-    -- get a binary matrix of results
-    let ns = [ (x,[y | y <- nsY]) | x <- nsX] in
-    let bss1 = Data.List.map (\(x,ys) -> Data.List.map (verifyNorm x) ys) ns in
+    -- we label the vertices with integers to define an ordering
+    let mapX = (zip [0..length nsX] nsX) in
+    let mapY = (zip [0..length nsY] nsY) in
 
-    -- check if it is possible to assign a unique y_i to each x_i by counting non-zero columns
-    let bss2 = (Data.List.transpose bss1) in
-    let bs2  = Data.List.filter exTrue bss2 in
-    let b = (length bs2) >= (length nsX) in
+    -- for each nsX element, find all elements in nsY that are not smaller than it (call verifyNorm recursively)
+    let ns = [ (x,[y | y <- mapY]) | x <- mapX] in
+    let edges = S.fromList (concat $ Data.List.map (\((kx,x),ys) -> Data.List.map (\(ky,_) -> (kx,ky)) (Data.List.filter (\(_,y) -> verifyNorm (k+1) x y) ys)) ns) in
 
-    --trace (show(nsY) ++ "\n" ++ show(nsX) ++ "\n" ++ show(p) ++ "\n" ++ show(b)) (if b == True then True
-    if b == True then True else
+    -- get a bipartite graph of results, find a maximal matching in it
+    let mmapY = matching edges in
+    let mmapX = fromList $ Data.List.map swap (toList mmapY) in -- the inverse map, which always exists for a matching
+
+    --trace ("\nnsY: " ++ show mapY ++ "\n" ++
+    --       "nsX: " ++ show mapX ++ "\n" ++
+    --       "Matching: " ++ show mmapX) $
+
+    -- if we could match all elements of nsX, then we are done
+    let b = (length mmapX) >= (length nsX) in
+
+    -- the following operation may make the matching easier
+    -- however, they may also break the previous matching, so use the next only if the previous has failed
+    if (b == True) then True else
 
         -- if the proof failed, we may try to rearrange the terms
-        -- collect the norms for which we did not get a matching
-        let nsY' = Data.List.map (\(x,y) -> y) (Data.List.filter (\(x,y) -> not (exTrue x)) (zipWith (\x y -> (x,y)) bss2 nsY)) in
-        let nsX' = Data.List.map (\(x,y) -> y) (Data.List.filter (\(x,y) -> not (exTrue x)) (zipWith (\x y -> (x,y)) bss1 nsX)) in
+        -- collect only the vertices for which we did not get a matching
+        let nsY' = Data.List.map snd (Data.List.filter (\(y,_) -> notMember y mmapY) mapY) in
+        let nsX' = Data.List.map snd (Data.List.filter (\(x,_) -> notMember x mmapX) mapX) in
 
-        -- try to group   the variables in both norms if possible
-        -- this operation may make the matching easier
+        -- try to group the variables in both lists if possible
         let nsY1 = groupLNorm pY nsY' in
         let nsX1 = groupLNorm pX nsX' in
 
-        -- check if we now have strictly less elements, so that this would not create infinite loops
-        if (length nsX == length nsX1) && (length nsY == length nsY1) then False else 
-        let b1 = verifyNorms pX pY nsX1 nsY1 in
+        let b1 = verifyNorms (k+1) pX pY nsX1 nsY1 in
+        --trace ("b1: nsY: " ++ show(nsY) ++ " --> " ++ show(nsY1) ++ "\n    nsX: " ++ show(nsX) ++ " --> " ++ show(nsX1)) $
         if b1 == True then True else
-            -- try to ungroup the variables in both norms if possible
-            -- this operation may make the matching easier
+
+            -- try to ungroup the variables in both lists if possible
             let nsY2 = ungroupLNorm pY nsY' in
             let nsX2 = ungroupLNorm pX nsX' in
 
-            -- check if we now have strictly less elements, so that this would not create infinite loops
-            if (length nsX == length nsX2) && (length nsY == length nsY2) then False else 
-            let b2 = verifyNorms pX pY nsX2 nsY2 in
-
-            --trace (show(nsY) ++ "\n" ++ show(nsY2) ++ "\n" ++ show(nsX) ++ "\n" ++ show(nsX2) ++ "\n" ++ show(b2) ++ "\n") b2)
+            let b2 = verifyNorms (k+1) pX pY nsX2 nsY2 in
+            --trace ("b2: nsY: " ++ show(nsY) ++ " --> " ++ show(nsY2) ++ "\n    nsX: " ++ show(nsX) ++ " --> " ++ show(nsX2)) $
             if b2 == True then True else
 
                 -- finally, try to group norms also for all q <= p
-                -- this operation may make the matching easier
                 let nsY3 = allNormPartitions GT pY nsY' in
                 let nsX3 = allNormPartitions LT pX nsX' in
 
-                -- check if we now have strictly less elements, so that this would not create infinite loops
-                if (length nsX == length nsX3) && (length nsY == length nsY3) then False else
-                let b3 = verifyNorms pX pY nsX3 nsY3 in
-                trace ("==> " ++ show(nsY) ++ "\n" ++ show(nsY3) ++ "\n" ++ show(nsX) ++ "\n" ++ show(nsX3) ++ "\n" ++ show(b3) ++ "\n") b3
+                let b3 = verifyNorms (k+1) pX pY nsX3 nsY3 in
+                --trace ("b3: nsY: " ++ show(nsY) ++ " --> " ++ show(nsY3) ++ "\n    nsX: " ++ show(nsX) ++ " --> " ++ show(nsX3)) $
+                b3
 
 
 

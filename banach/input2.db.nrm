@@ -1,0 +1,4 @@
+x y v;
+x2 = lp 2.0 x y;
+x3 = lp 1.0 x2 v;
+return linf x3;

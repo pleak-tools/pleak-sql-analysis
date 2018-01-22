@@ -430,7 +430,7 @@ identifier = (lexeme . try) (p >>= check)
               then fail $ "keyword " ++ show x ++ " cannot be an identifier"
               else return x
 
--- we need to read string identifiers and afterwards map them to integers!
+-- we need to read string identifiers and afterwards map them to integers
 varName :: Parser VarName
 varName = identifier
 
@@ -566,7 +566,7 @@ getBanachAnalyserInput inputFile = do
     putStrLn $ "owner norm = " ++ show ownerNorm
 
     -- this check can be removed if something goes wrong with it
-    putStrLn $ if (verifyNorm userNorm ownerNorm) then 
+    putStrLn $ if (verifyNorm 0 userNorm ownerNorm) then 
             "OK: the data owner's norm is at least as large as the query norm."
         else
              "WARNING: could not prove that the data owner's norm is at least as large as the query norm."

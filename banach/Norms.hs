@@ -51,10 +51,10 @@ deriveNorm colnames expr =
 deriveTableNorm ::  [a] -> B.TableExpr -> Norm a
 deriveTableNorm colnames expr = 
     case expr of
-        B.SelectProd e     -> NormL (AtMost 1.0) [deriveNorm colnames e]
-        B.SelectMin  e     -> NormL Any [deriveNorm colnames e]
-        B.SelectMax  e     -> NormL Any [deriveNorm colnames e]
-        B.SelectL p  e     -> NormL (AtMost p) [deriveNorm colnames e]
+        B.SelectProd [e]     -> NormL (AtMost 1.0) [deriveNorm colnames e]
+        B.SelectMin  [e]     -> NormL Any [deriveNorm colnames e]
+        B.SelectMax  [e]     -> NormL Any [deriveNorm colnames e]
+        B.SelectL p  [e]     -> NormL (AtMost p) [deriveNorm colnames e]
 
 -- TODO check if q <= p and q >= p would be better
 -- ||x|_p, |y|_p, z|_p == ||x,y|_p, z|_p

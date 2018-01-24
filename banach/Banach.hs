@@ -5,6 +5,7 @@ import ProgramOptions
 
 import Text.Printf
 import Debug.Trace
+import Control.Monad
 
 type Var = Int                    -- variable corresponding to column i (starting from 0)
 
@@ -14,21 +15,23 @@ data Expr = Power Var Double         -- x^r with norm | |
           | PowerLN Var Double       -- x^r with logarithmic norm: ||x|| = |ln x|, addition in Banach space is multiplication of real numbers
           | ComposePower Expr Double -- E^r with norm N
           | Exp Double Var           -- e^(r*x) with norm | |
+          | Sigmoid Double Double Var-- s(a,c,x) = e^(a*(x-c))/(e^(a*(x-c)) + 1)
           | ScaleNorm Double Expr    -- E with norm a * N
           | ZeroSens Expr            -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
           | L Double [Var]           -- ||(x1,...,xn)||_p with l_p-norm
           | ComposeL Double [Expr]   -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
           | LInf [Var]               -- same with p = infinity
-          | Prod [Expr]              -- E1*...*En with norm ||(N1,...,Nn)||_1
+          | Prod [Expr]              -- E1*...*En with norm ||(N1,...,Nn)||_1, no variable is used in more than one Ei
+          | Prod2 [Expr]             -- E1*...*En with norm N, where N is the common norm of all Ei
           | Min [Expr]               -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
           | Max [Expr]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
-data TableExpr = SelectProd Expr        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row
-               | SelectMin Expr         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
-               | SelectMax Expr         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
-               | SelectL Double Expr    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
+data TableExpr = SelectProd [Expr]        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row
+               | SelectMin [Expr]         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
+               | SelectMax [Expr]         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
+               | SelectL Double [Expr]    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
   deriving Show
 
 -- SUB g beta0  is a value such that
@@ -105,7 +108,7 @@ exampleComp01 = Prod [ScaleNorm 0.1 $ L 2 [0,1], ZeroSens $ Exp (-log 2) 2] -- s
 exampleComp2 = Prod [ZeroSens $ ScaleNorm 0.1 $ L 2 [0,1], Exp (-log 2) 2] -- sensitivity w.r.t. component [2]
 
 example2 :: TableExpr
-example2 = SelectMin $ Prod [L 2 [0,1], ScaleNorm 20 $ PowerLN 2 (-1)]
+example2 = SelectMin [Prod [L 2 [0,1], ScaleNorm 20 $ PowerLN 2 (-1)]]
 
 -- compute ||(x_1,...,x_n)||_p
 lpnorm :: Double -> [Double] -> Double
@@ -145,6 +148,13 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
       in AR {fx = exp (r * x),
              subf = SUB (const $ exp (r * x)) (abs r),
              sdsf = SUB (const $ abs r * exp (r * x)) (abs r)}
+    Sigmoid a c i ->
+      let x = row !! i
+          y = exp (a * (x - c))
+          z = y / (y + 1)
+      in AR {fx = z,
+             subf = SUB (const z) a,
+             sdsf = SUB (const $ a * y / (y+1)^2) a}
     PowerLN i r ->
       let x = row !! i
       in AR {fx = x ** r,
@@ -173,6 +183,7 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
              subf = SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
              sdsf = SUB (const 1) 0}
     Prod es -> combineArsProd $ map (analyzeExpr row) es
+    Prod2 es -> combineArsProd2 $ map (analyzeExpr row) es
     Min es -> combineArsMin $ map (analyzeExpr row) es
     Max es -> combineArsMax $ map (analyzeExpr row) es
     ComposeL p es -> combineArsL p $ map (analyzeExpr row) es
@@ -191,6 +202,22 @@ combineArsProd ars =
   in AR {fx = product fxs,
          subf = SUB (\ beta -> product (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> linfnorm (map (\ i -> c i beta) [0..n-1])) (maximum (subfBetas ++ sdsfBetas))}
+
+combineArsProd2 :: [AnalysisResult] -> AnalysisResult
+combineArsProd2 ars =
+  let fxs = map fx ars
+      subfs = map subf ars
+      sdsfs = map sdsf ars
+      subfBetas = map subBeta subfs
+      sdsfBetas = map subBeta sdsfs
+      subgs = map subg subfs
+      sdsgs = map subg sdsfs
+      n = length ars
+      divByn x = x / fromIntegral n
+      c i beta = ((sdsgs !! i) (divByn beta)) * product (map ($ (divByn beta)) $ skipith i subgs)
+  in AR {fx = product fxs,
+         subf = SUB (\ beta -> product (map ($ (divByn beta)) subgs)) (sum subfBetas),
+         sdsf = SUB (\ beta -> sum (map (\ i -> c i beta) [0..n-1])) (sum subfBetas + maximum (zipWith (-) sdsfBetas subfBetas))}
 
 combineArsMin :: [AnalysisResult] -> AnalysisResult
 combineArsMin ars =
@@ -234,10 +261,14 @@ combineArsL p ars =
 analyzeTableExpr :: Table -> TableExpr -> AnalysisResult
 analyzeTableExpr rows te =
   case te of
-    SelectMin expr -> combineArsMin $ map (`analyzeExpr` expr) rows
-    SelectMax expr -> combineArsMax $ map (`analyzeExpr` expr) rows
-    SelectProd expr -> combineArsProd $ map (`analyzeExpr` expr) rows
-    SelectL p expr -> combineArsL p $ map (`analyzeExpr` expr) rows
+    SelectMin [expr] -> combineArsMin $ map (`analyzeExpr` expr) rows
+    SelectMax [expr] -> combineArsMax $ map (`analyzeExpr` expr) rows
+    SelectProd [expr] -> combineArsProd $ map (`analyzeExpr` expr) rows
+    SelectL p [expr] -> combineArsL p $ map (`analyzeExpr` expr) rows
+    SelectMin exprs -> combineArsMin $ zipWith analyzeExpr rows exprs
+    SelectMax exprs -> combineArsMax $ zipWith analyzeExpr rows exprs
+    SelectProd exprs -> combineArsProd $ zipWith analyzeExpr rows exprs
+    SelectL p exprs -> combineArsL p $ zipWith analyzeExpr rows exprs
 
 performAnalysis :: ProgramOptions -> Table -> TableExpr -> IO ()
 performAnalysis args rows te = do
@@ -259,3 +290,4 @@ performAnalysis args rows te = do
   let nl = sds / b
   printf "noise level: %0.6f\n" nl
   printf "relative error from noise: %0.3f%%\n" (nl / qr * 100)
+  when (nl < 0) $ putStrLn "NEGATIVE NOISE LEVEL - differential privacy could not be achieved, try to increase epsilon!"

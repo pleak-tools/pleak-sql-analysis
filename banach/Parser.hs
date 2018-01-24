@@ -67,10 +67,10 @@ extractArg t =
 queryArg :: TableExpr -> B.Expr -> B.TableExpr
 queryArg t y =
     case t of
-        SelectProd _ -> B.SelectProd y
-        SelectMin _  -> B.SelectMin y
-        SelectMax _  -> B.SelectMax y
-        SelectL c _  -> B.SelectL c y
+        SelectProd _ -> B.SelectProd [y]
+        SelectMin _  -> B.SelectMin [y]
+        SelectMax _  -> B.SelectMax [y]
+        SelectL c _  -> B.SelectL c [y]
 
 normArg :: TableExpr -> Norm a -> Norm a
 normArg t y =

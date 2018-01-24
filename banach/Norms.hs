@@ -37,22 +37,25 @@ deriveNorm colnames expr =
         B.Power x _        -> NormL (Exactly 1.0) [Col (colnames !! x)]
         B.ComposePower e c -> deriveNorm colnames e
         B.Exp _ x          -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.Sigmoid _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
         B.ScaleNorm a e    -> NormScale a (deriveNorm colnames e)
         B.ZeroSens e       -> NormZero (deriveNorm colnames e)
         B.L p xs           -> NormL (Exactly p) (Data.List.map (\x -> Col (colnames !! x)) xs)
         B.ComposeL p es    -> NormL (Exactly p) (Data.List.map (deriveNorm colnames) es)
         B.LInf xs          -> NormLInf (Data.List.map (\x -> Col (colnames !! x)) xs)
         B.Prod es          -> NormL (Exactly 1.0) (Data.List.map (deriveNorm colnames) es)
+        B.Prod2 es         -> deriveNorm colnames (head es) -- we assume that equality of subnorms has been already checked
         B.Min es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
         B.Max es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
 
 deriveTableNorm ::  [a] -> B.TableExpr -> Norm a
 deriveTableNorm colnames expr = 
     case expr of
-        B.SelectProd e     -> NormL (Exactly 1.0) [deriveNorm colnames e]
-        B.SelectMin  e     -> NormL Any [deriveNorm colnames e]
-        B.SelectMax  e     -> NormL Any [deriveNorm colnames e]
-        B.SelectL p  e     -> NormL (Exactly p) [deriveNorm colnames e]
+
+        B.SelectProd [e]     -> NormL (Exactly 1.0) [deriveNorm colnames e]
+        B.SelectMin  [e]     -> NormL Any [deriveNorm colnames e]
+        B.SelectMax  [e]     -> NormL Any [deriveNorm colnames e]
+        B.SelectL p  [e]     -> NormL (Exactly p) [deriveNorm colnames e]
 
 -- Let p >= q. We have:
 -- ||x|_q, |y|_q, z|_p <= ||x,y|_q, z|_p

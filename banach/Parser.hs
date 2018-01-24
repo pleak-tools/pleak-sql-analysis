@@ -28,21 +28,22 @@ type VarName = String
 -- TODO: Expr and TableExpr are being synchronized with B.Expr and B.TableExpr
 
 -- these are single-step Banach expressions, all 'Expr' and 'Var' substituted with 'VarName'
-data Expr = Power VarName Double        -- x^r with norm | |
-          | PowerLN VarName Double    -- x^r with logarithmic norm: ||x|| = |ln x|, addition in Banach space is multiplication of real numbers
-          | ComposePower VarName Double -- E^r with norm N
-          | Exp Double VarName          -- e^(r*x) with norm | |
-          | ScaleNorm Double VarName    -- E with norm a * N
-          | ZeroSens VarName            -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
-          | L Double [VarName]          -- ||(x1,...,xn)||_p with l_q-norm where q = p/(p-1)
-          | ComposeL Double [VarName]   -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
-          | LInf [VarName]              -- same with p = infinity, q = 1
-          | Prod [VarName]              -- E1*...*En with norm ||(N1,...,Nn)||_1
-          | Min [VarName]               -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
-          | Max [VarName]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
+data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm N
+          | PowerLN VarName Double        -- x^r with logarithmic norm: ||x|| = |ln x|, addition in Banach space is multiplication of real numbers
+          | Exp Double VarName            -- e^(r*x) with norm | |
+          | Sigmoid Double Double VarName -- s(a,c,x) = e^(a*(x-c))/(e^(a*(x-c)) + 1)
+          | ScaleNorm Double VarName      -- E with norm a * N
+          | ZeroSens VarName              -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
+          | L Double [VarName]            -- ||(x1,...,xn)||_p with l_q-norm where q = p/(p-1)
+          | ComposeL Double [VarName]     -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
+          | LInf [VarName]                -- same with p = infinity, q = 1
+          | Prod [VarName]                -- E1*...*En with norm ||(N1,...,Nn)||_1 or N, where N is the common norm of all Ei
+          | Min [VarName]                 -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
+          | Max [VarName]                 -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
+-- the argument becomes a list when a query gets linked to a database
 data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row
                | SelectMin VarName         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectMax VarName         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
@@ -67,10 +68,10 @@ extractArg t =
 queryArg :: TableExpr -> B.Expr -> B.TableExpr
 queryArg t y =
     case t of
-        SelectProd _ -> B.SelectProd y
-        SelectMin _  -> B.SelectMin y
-        SelectMax _  -> B.SelectMax y
-        SelectL c _  -> B.SelectL c y
+        SelectProd _ -> B.SelectProd [y]
+        SelectMin _  -> B.SelectMin [y]
+        SelectMax _  -> B.SelectMax [y]
+        SelectL c _  -> B.SelectL c [y]
 
 normArg :: TableExpr -> Norm a -> Norm a
 normArg t y =
@@ -88,6 +89,7 @@ extractArgs t =
         Power x _        -> [x]
         PowerLN x _      -> [x]
         Exp _ x          -> [x]
+        Sigmoid _ _ x    -> [x]
         ScaleNorm _ x    -> [x]
         ZeroSens x       -> [x]
         L _ xs           -> xs
@@ -117,8 +119,12 @@ onlyAsgnVars t [] xs = xs
 onlyAsgnVars t _ _ = error ("Cannot substitude variables into " ++ show t ++ ",\n some arguments are not of Expr (assignment variable) type")
 
 -- the constructor may depend on whether the arguments are input variables or expressions
-queryExpression :: Expr -> [B.Var] -> [B.Expr] -> B.Expr
-queryExpression t xs es =
+-- arg1: the term
+-- arg2: used input variables
+-- arg3: used assignment variables
+-- arg4: the list of input vars in turn used by asgn variables -- needed e.g to decide whether Prod becomes B.Prod or B.Prod2
+queryExpression :: Expr -> [B.Var] -> [B.Expr] -> [S.Set B.Var] -> B.Expr
+queryExpression t xs es vss =
     case t of
         Power _ c        -> if xs /= [] then
                                 B.Power (headInputVar t xs) c
@@ -126,6 +132,7 @@ queryExpression t xs es =
                                 B.ComposePower (headAsgnVar t es) c
         PowerLN _ c      -> B.PowerLN (headInputVar t xs) c
         Exp c _          -> B.Exp c (headInputVar t xs)
+        Sigmoid a c x    -> B.Sigmoid a c (headInputVar t xs)
         ScaleNorm c _    -> B.ScaleNorm c (headAsgnVar t es)
         ZeroSens _       -> B.ZeroSens (headAsgnVar t es)
         L c _            -> if xs /= [] then
@@ -134,13 +141,16 @@ queryExpression t xs es =
                                 B.ComposeL c (onlyAsgnVars t xs es)
 
         LInf _           -> B.LInf (onlyInputVars t xs es)
-        Prod _           -> B.Prod (onlyAsgnVars  t xs es)
+        Prod _           -> if (pairwiseDisjoint vss) then -- checks if the variables of different args are pairwise disjoint
+                                B.Prod (onlyAsgnVars  t xs es)
+                            else
+                                B.Prod2 (onlyAsgnVars  t xs es)
         Min _            -> B.Min  (onlyAsgnVars  t xs es)
         Max _            -> B.Max  (onlyAsgnVars  t xs es)
 
 -- the definition of Norm allows to use any variables inside argumets (both input and assignment variables)
-normExpression :: Expr -> [a] -> [Norm a] -> (Norm a)
-normExpression t xs es =
+normExpression :: Expr -> [a] -> [Norm a] -> [S.Set a] -> (Norm a)
+normExpression t xs es _ =
     let zs = (Data.List.map (\ x -> Col x) xs) ++ es in
     case t of
         PowerLN _ _      -> LN (head zs)
@@ -149,12 +159,18 @@ normExpression t xs es =
         L c _            -> NormL (Exactly c) zs
         LInf _           -> NormLInf zs
 
+pairwiseDisjoint :: [S.Set B.Var] -> Bool
+pairwiseDisjoint [] = True
+pairwiseDisjoint (vs:vss) =
+    let n = length $ Data.List.filter (\vs' -> not (S.null (S.intersection vs vs'))) vss in
+    if (n == 0) then pairwiseDisjoint vss else False
+
 ---------------------------------------------------------------------------------------------
 -- TODO: parsing of 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
 
 -- keywords
 allKeyWords :: [String] -- list of reserved "words"
-allKeyWords = ["return","^","LN","exp","scaleNorm","zeroSens","lp","linf","prod","min","max","selectMin","selectMax","selectProd","selectL"]
+allKeyWords = ["return","^","LN","exp","scaleNorm","zeroSens","lp","linf","prod","min","max","sigmoid","selectMin","selectMax","selectProd","selectL"]
 
 -- a query expression
 queryExpr :: Parser Expr
@@ -168,6 +184,7 @@ queryExpr = powerExpr
   <|> prodExpr
   <|> minExpr
   <|> maxExpr
+  <|> sigmoidExpr
 
 -- a norm expression
 normExpr :: Parser Expr
@@ -243,6 +260,14 @@ maxExpr = do
   keyWord "max"
   bs <- many varName
   return (Max bs)
+
+sigmoidExpr :: Parser Expr
+sigmoidExpr = do
+  keyWord "sigmoid"
+  a <- float
+  c <- float
+  x <- varName
+  return (Sigmoid a c x)
 
 -- this one is intended for norms
 lnExpr :: Parser Expr
@@ -499,13 +524,13 @@ norm2Expr usedVarList inputMap (P _ _ (F asgnMap y)) =
     (vars, normArg y z)
 
 processExpression :: (Show a, Ord a) => 
-                         (Expr -> [a] -> [b] -> b) -> -- the function that actually rewrites the term
-                         (b -> b) ->                  -- applied to terms that contain only unused variables (ZeroSens, NormZero)
-                         (S.Set a) ->                 -- the set of used variables
-                         (Map VarName a) ->           -- input variable map
-                         (Map VarName Expr) ->        -- assigmnent variable map
-                         Expr ->                      -- the expression that we rewrite
-                         (S.Set a, b)
+                     (Expr -> [a] -> [b] -> [S.Set a] -> b) -> -- the function that actually rewrites the term
+                     (b -> b) ->                               -- applied to terms that contain only unused variables (ZeroSens, NormZero)
+                     (S.Set a) ->                              -- the set of used variables
+                     (Map VarName a) ->                        -- input variable map
+                     (Map VarName Expr) ->                     -- assigmnent variable map
+                     Expr ->                                   -- the expression that we rewrite
+                     (S.Set a, b)
 processExpression f nullify usedVars inputMap asgnMap expr =
     let varNames = extractArgs expr in
     let usedInputVarNames = Data.List.filter (\x -> member x inputMap) varNames in
@@ -515,14 +540,14 @@ processExpression f nullify usedVars inputMap asgnMap expr =
     let asgnInputsExprs = Data.List.map (matchAsgnVariable f nullify usedVars inputMap asgnMap) usedAsgnVarNames  in
 
     let (asgnInputs,asgnExprs) = Data.List.unzip asgnInputsExprs in
-    (S.union (S.fromList inputVars) (Data.List.foldr S.union S.empty asgnInputs), f expr inputVars asgnExprs)
+    (S.union (S.fromList inputVars) (Data.List.foldr S.union S.empty asgnInputs), f expr inputVars asgnExprs asgnInputs)
 
 --check if the variable is a keys in a map, return the corresponding value if it is
 matchInputVariable :: (Show a, Ord a) => (Map VarName a) -> VarName -> a
 matchInputVariable inputMap x = (inputMap ! x)
 
 --check if the variable is a keys in a map, apply processExpression to the value of that key
-matchAsgnVariable :: (Show a, Ord a) => (Expr -> [a] -> [b] -> b) -> (b -> b) -> (S.Set a) -> (Map VarName a) -> (Map VarName Expr) -> VarName -> (S.Set a,b)
+matchAsgnVariable :: (Show a, Ord a) => (Expr -> [a] -> [b] -> [S.Set a] -> b) -> (b -> b) -> (S.Set a) -> (Map VarName a) -> (Map VarName Expr) -> VarName -> (S.Set a,b)
 matchAsgnVariable f nullify usedVars inputMap asgnMap x =
 
         -- if y is an assignment variable, find its value recursively
@@ -545,6 +570,7 @@ getBanachAnalyserInput inputFile = do
     queryPr  <- parseFromFile query inputFile
     let dbFileName = getProgramDbFileName queryPr
     table   <- readDB dbFileName
+    let numOfRows = length table
     dbPr <- parseFromFile norm (dbFileName ++ ".nrm")
 
     -- fix integer indices for variable names

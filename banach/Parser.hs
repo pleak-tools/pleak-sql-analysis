@@ -78,7 +78,7 @@ normArg t y =
         SelectProd _ -> NormLInf [y]
         SelectMin _  -> NormLInf [y]
         SelectMax _  -> NormLInf [y]
-        SelectL c _  -> NormL (AtMost c) [y]
+        SelectL c _  -> NormL (Exactly c) [y]
 
 -- Expr constructor variable arguments can be Var, Expr
 -- we put all of them into one list and later check whether a variable is an input or an assignment variable
@@ -146,7 +146,7 @@ normExpression t xs es =
         PowerLN _ _      -> LN (head zs)
         ScaleNorm c _    -> NormScale c (head zs)
         ZeroSens _       -> NormZero (head zs)
-        L c _            -> NormL (AtMost c) zs
+        L c _            -> NormL (Exactly c) zs
         LInf _           -> NormLInf zs
 
 ---------------------------------------------------------------------------------------------
@@ -542,47 +542,51 @@ readDoubles s = fmap (Data.List.map read . words) (lines s)
 -- putting everything together
 getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
 getBanachAnalyserInput inputFile = do
-    userPr  <- parseFromFile query inputFile
-    let dbFileName = getProgramDbFileName userPr
+    queryPr  <- parseFromFile query inputFile
+    let dbFileName = getProgramDbFileName queryPr
     table   <- readDB dbFileName
-    ownerPr <- parseFromFile norm (dbFileName ++ ".nrm")
+    dbPr <- parseFromFile norm (dbFileName ++ ".nrm")
 
     -- fix integer indices for variable names
-    let inputVarList = getProgramInputs userPr
+    let inputVarList = getProgramInputs queryPr
     let inputMap = fromList inputVarList
 
-    -- read owner's requirements from file
-    let (ownerNormVarNames, _) = Data.List.unzip (getProgramInputs ownerPr)    
-    let ownerNormVars = (Data.List.map (\x -> inputMap ! x) ownerNormVarNames)
+    -- read db's requirements from file
+    let (dbNormVarNames, _) = Data.List.unzip (getProgramInputs dbPr)    
+    let dbNormVars = (Data.List.map (\x -> inputMap ! x) dbNormVarNames)
 
 
-    let (_,ownerNorm) = norm2Expr ownerNormVarNames inputMap ownerPr
-    let (_,expr) = program2Expr ownerNormVarNames inputMap userPr
+    let (_,dbNorm) = norm2Expr dbNormVarNames inputMap dbPr
+    let (_,expr) = program2Expr dbNormVarNames inputMap queryPr
 
-    putStrLn $ "Columns sensitive to the owner: " ++ show ownerNormVars
+    putStrLn $ "Sensitive colums of the database: " ++ show dbNormVars
     
-    let userNorm = deriveTableNorm (Data.List.map snd inputVarList) expr
-    putStrLn $ "query norm = " ++ show userNorm
-    putStrLn $ "owner norm = " ++ show ownerNorm
+    let queryNorm = deriveTableNorm (Data.List.map snd inputVarList) expr
+    putStrLn $ "query norm = " ++ show queryNorm
+    putStrLn $ "database norm = " ++ show dbNorm
 
     -- this check can be removed if something goes wrong with it
-    putStrLn $ if (verifyNorm 0 userNorm ownerNorm) then 
-            "OK: the data owner's norm is at least as large as the query norm."
+    putStrLn $ if (verifyNorm 0 queryNorm dbNorm) then 
+            "OK: the database norm is at least as large as the query norm."
         else
-             "WARNING: could not prove that the data owner's norm is at least as large as the query norm."
+             "WARNING: could not prove that the database norm is at least as large as the query norm."
 
     putStrLn $ "table = " ++ show table
     putStrLn $ "expr = " ++ show expr
 
-    --let ns = [NormL (AtMost 1.0) [Col "x1"], NormL (AtMost 2.0) [Col "x2"], NormL (AtMost 3.0) [Col "x3"], NormL (AtMost 1.0) [Col "x4"], NormL (AtMost 2.0) [Col "x5"]]
+    --let ns = [NormL (Exactly 1.0) [Col "x1"], NormL (Exactly 2.0) [Col "x2"], NormL (Exactly 3.0) [Col "x3"], NormL (Exactly 1.0) [Col "x4"], NormL (Exactly 2.0) [Col "x5"]]
     --let n1 = NormLInf ns
-    --let n2 = NormLInf [NormL (AtMost 1.0) [Col "x1", Col "x4"], NormL (AtMost 2.0) [Col "x2", Col "x5"], NormL (AtMost 3.0) [Col "x3"]]
+    --let n2 = NormLInf [NormL (Exactly 1.0) [Col "x1", Col "x4"], NormL (Exactly 2.0) [Col "x2", Col "x5"], NormL (Exactly 3.0) [Col "x3"]]
+    --let n1 = NormL (Exactly 6.0) [Col "x", Col "z"]
+    --let n2 = NormL (Exactly 7.0) [NormL (Exactly 5.0) [Col "x", Col "z"], Col "y"]
+    --let n1 = NormScale 0.5 (NormL (Exactly 9.0) [Col "x", Col "z"])
+    --let n2 = NormL (Exactly 7.0) [NormL (Exactly 5.0) [NormScale 10.0 (Col "x"), Col "z"], Col "y"]
     --putStrLn $ show n1
     --putStrLn $ show n2
-    --putStrLn $ show (verifyNorm n1 n2)
-    --putStrLn $ show (allNormPartitions LT 10000.0 ns)
-    --putStrLn $ show (allNormPartitions LT 2.0 ns)
-    --putStrLn $ show (allNormPartitions LT 3.0 ns)
+    --putStrLn $ show (normalizeAndVerify n1 n2)
+    --putStrLn $ show (rearrangeNorm Group LT Any ns)
+    --putStrLn $ show (rearrangeNorm Group LT (Exactly 2.0) ns)
+    --putStrLn $ show (rearrangeNorm Group LT (Exactly 3.0) ns)
     return (table,expr)
 
 

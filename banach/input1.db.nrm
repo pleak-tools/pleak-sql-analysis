@@ -1,5 +1,11 @@
-x y v;
+4 7
+x y v l;
 v1 = lp 1.0 v;
-v2 = scaleNorm 20.0 v1;
-z = lp 1.0 x y v2;
+v2 = scaleNorm 20.0 v1; //decrease sensitivity w.r.t. velocity
+ll1 = lp 1.0 l;
+ll2 = scaleNorm 1.0 ll1;
+z = lp 1.0 x y v2 ll2;
 return linf z;
+
+// the norm is ||x,y|_2, 20*|v|, l|_1
+// the sensitive rows are those listed in the first line, indexation starts from 1

@@ -3,6 +3,7 @@ module Norms where
 import Data.Graph.MaxBipartiteMatching
 import Data.List
 import Data.Map
+import Data.Maybe
 import Data.Tuple
 import qualified Data.Set as S
 import Debug.Trace
@@ -52,10 +53,14 @@ deriveTableNorm ::  [a] -> B.TableExpr -> Norm a
 deriveTableNorm colnames expr = 
     case expr of
 
-        B.SelectProd [e]     -> NormL (Exactly 1.0) [deriveNorm colnames e]
-        B.SelectMin  [e]     -> NormL Any [deriveNorm colnames e]
-        B.SelectMax  [e]     -> NormL Any [deriveNorm colnames e]
-        B.SelectL p  [e]     -> NormL (Exactly p) [deriveNorm colnames e]
+        B.SelectProd es     -> NormL (Exactly 1.0) [deriveNorm colnames (nzHead es)]
+        B.SelectMin  es     -> NormL Any [deriveNorm colnames (nzHead es)]
+        B.SelectMax  es     -> NormL Any [deriveNorm colnames (nzHead es)]
+        B.SelectL p  es     -> NormL (Exactly p) [deriveNorm colnames (nzHead es)]
+
+    -- for simplicity, we assume that the norm is the same for each row
+    -- the only difference may come from the toplevel ZeroSens coming from insensitive rows
+    where nzHead es = case (head es) of {B.ZeroSens x -> x; x -> x}
 
 -- Let p >= q. We have:
 -- ||x|_q, |y|_q, z|_p <= ||x,y|_q, z|_p
@@ -123,11 +128,11 @@ normalizeNorm x = x
 -- The counter is the first parameter, and we increase it only in the function verifyNorms,
 --       since only that function may create several branches.
 -- The second argument is the expression norm, the third is the database norm.
-verifyNorm :: (Show a, Eq a) => Int -> Norm a -> Norm a -> Bool
+verifyNorm :: (Show a, Eq a) => Int -> Norm a -> Norm a -> Maybe (Norm a)
 
 -- if there is no certain constructor decomposition, let us just compare the two terms
 verifyNorm _ (Col x) (Col y) =
-    x == y
+    if x == y then Just (Col x) else Nothing
 
 -- we have x >= ln(x)
 verifyNorm k (LN x) y = 
@@ -140,77 +145,95 @@ verifyNorm k (LN x) y =
 -- (we do not do it the other way around since it would not give additional solutions anyway).
 -- If it fails, then go deeper into both norms (if possible).
 verifyNorm k n1@(Col x) (NormLInf ns2) =
-        verifyNorms k Any Any [n1] ns2
+        fmap head (verifyNorms k Any Any [n1] ns2)
 
 verifyNorm k n1@(Col x) (NormL a2 ns2) =
-        verifyNorms k a2 a2 [n1] ns2
+        fmap head (verifyNorms k a2 a2 [n1] ns2)
 
 verifyNorm k n1@(NormLInf ns1) (NormLInf ns2) =
-        if verifyNorms k Any Any [n1] ns2 then True else
-        verifyNorms k Any Any ns1 ns2
+        let ys1 = verifyNorms k Any Any [n1] ns2 in
+        let ys = case ys1 of
+                     Just _  -> ys1
+                     Nothing -> verifyNorms k Any Any ns1 ns2
+        in fmap (\zs -> NormLInf zs) ys
 
 verifyNorm k n1@(NormL Any ns1) (NormL Any ns2) =
-        if verifyNorms k Any Any [n1] ns2 then True else
-        verifyNorms k Any Any ns1 ns2
+        let ys1 = verifyNorms k Any Any [n1] ns2 in
+        let ys = case ys1 of
+                     Just _  -> ys1
+                     Nothing -> verifyNorms k Any Any ns1 ns2
+        in fmap (\zs -> NormL Any zs) ys
 
 verifyNorm k n1@(NormL Any ns1) (NormLInf ns2) =
-        if verifyNorms k Any Any [n1] ns2 then True else
-        verifyNorms k Any Any ns1 ns2
+        let ys1 = verifyNorms k Any Any [n1] ns2 in
+        let ys = case ys1 of
+                     Just _  -> ys1
+                     Nothing -> verifyNorms k Any Any ns1 ns2
+        in fmap (\zs -> NormL Any zs) ys
 
 verifyNorm k n1@(NormLInf ns1) (NormL a2 ns2) =
-        if verifyNorms k Any Any [n1] ns2 then True else
-        verifyNorms k Any a2 ns1 ns2
+        let ys1 = verifyNorms k a2 a2 [n1] ns2 in
+        let ys = case ys1 of
+                     Just _  -> ys1
+                     Nothing -> verifyNorms k Any a2 ns1 ns2
+        in fmap (\zs -> NormLInf zs) ys
 
 verifyNorm k n1@(NormL Any ns1) (NormL a2 ns2) =
-        if verifyNorms k a2 a2 [n1] ns2 then True else
-        verifyNorms k Any a2 ns1 ns2
+        let ys1 = verifyNorms k a2 a2 [n1] ns2 in
+        let ys = case ys1 of
+                     Just _  -> ys1
+                     Nothing -> verifyNorms k Any a2 ns1 ns2
+        in fmap (\zs -> NormL Any zs) ys
 
 verifyNorm k n1@(NormL a1@(Exactly p1) ns1) (NormL a2@(Exactly p2) ns2) =
-        if verifyNorms k a2 a2 [n1] ns2 then True else
-        if (p1 >= p2) then
-            verifyNorms k a1 a2 ns1 ns2
-        else False
+        let ys1 = verifyNorms k a2 a2 [n1] ns2 in
+        let ys = case ys1 of
+                     Just _  -> ys1
+                     Nothing ->
+                        let ys2 = verifyNorms k a1 a2 ns1 ns2 in
+                            if (p1 >= p2) then ys2
+                            -- TODO check out the exact scaling here!
+                            else fmap (\zs -> Data.List.map (\z -> NormScale (p2/p1) z) zs) ys2
+        in fmap (\zs -> NormL (Exactly p1) zs) ys
 
 -- if our analyzer only computes some lp norm for p /= \infty, then it is definitely not suitable for "Any" norm
 -- however, it may still work if we compare the entire n1 with each arg of n2
-verifyNorm k n1@(NormL (Exactly _) _) (NormL Any ns2) =
-        verifyNorms k Any Any [n1] ns2
+-- TODO check if scaling is possible for l_inf
+verifyNorm k n1@(NormL (Exactly p) _) (NormL Any ns2) =
+        fmap (\x -> NormL (Exactly p) x) (verifyNorms k Any Any [n1] ns2)
 
 -- scaling
 verifyNorm k (NormScale a1 n1) (NormScale a2 n2) =
-    if (a1 <= a2) then
-        verifyNorm k n1 n2
-    else False
+    let y = verifyNorm k n1 n2 in
+    fmap (\x -> NormScale a2 x) y
 
 verifyNorm k (NormScale a1 n1) n2 =
-    if (a1 <= 1) then
-        verifyNorm k n1 n2
-    else False
+    let y = verifyNorm k n1 n2 in
+    fmap (\x -> NormScale 1.0 x) y
 
 verifyNorm k n1 (NormScale a2 n2) =
-    if (a2 >= 1) then
-        verifyNorm k n1 n2
-    else False
+    let y = verifyNorm k n1 n2 in
+    fmap (\x -> NormScale a2 x) y
 
--- this is a base case
--- TODO think about it
-verifyNorm _ (NormZero _) _ = True
-verifyNorm _ _ (NormZero _) = True
+-- this is a base case.
+-- actually, NormZero is the largest possible norm.
+-- however, we have agreed that NormZero in query norm may contain only insensitive variables.
+-- hence, the value under NormZero will always be zero in the cases that are interesting to us
+verifyNorm _ (NormZero x) _ = Just (NormZero x)
+verifyNorm _ _ _ = Nothing
 
-verifyNorm _ _ _ = False
 
-
-normalizeAndVerify :: (Show a, Eq a) => Norm a -> Norm a -> Bool
+normalizeAndVerify :: (Show a, Eq a) => Norm a -> Norm a -> Maybe (Norm a)
 normalizeAndVerify n1 n2 = 
     verifyNorm 0 (normalizeNorm n1) (normalizeNorm n2)
 
 -- here is the main step proving |x_1,...,x_n|_{px} <= |y_1,...,y_m|_{py} for (py <= px)
 -- it tries to prove that there is an injective mapping f such that |x_i| <= |y_f(i)| for all i
-verifyNorms :: (Show a, Eq a) => Int -> ADouble ->  ADouble -> [Norm a] -> [Norm a] -> Bool
-verifyNorms _ aX aY [] nsY = True
-verifyNorms _ aX aY nsX [] = False
+verifyNorms :: (Show a, Eq a) => Int -> ADouble ->  ADouble -> [Norm a] -> [Norm a] -> Maybe [Norm a]
+verifyNorms _ aX aY [] nsY = Just nsY
+verifyNorms _ aX aY nsX [] = Nothing
 verifyNorms 10 _ _ _ _     = -- the limit is reached
-    trace ("WARNING: reached the limit on recursion depth.") False
+    trace ("WARNING: reached the limit on recursion depth.") Nothing
 
 verifyNorms k aX aY nsX0 nsY0 =
 
@@ -219,8 +242,8 @@ verifyNorms k aX aY nsX0 nsY0 =
   let nsY00 = Data.List.filter (\x -> case x of {NormZero _ -> False; _ -> True}) nsY0 in
 
   -- after discarding NormZero, check the base cases again
-  if (length nsX00 == 0) then True else
-  if (length nsY00 == 0) then False else
+  if (length nsX00 == 0) then Just nsY0 else
+  if (length nsY00 == 0) then Nothing else
 
   -- normalize the norms and remove unnecessary constructors to simplify the matching
   let nsX = Data.List.map (\x -> normalizeNorm x) nsX00 in
@@ -232,7 +255,18 @@ verifyNorms k aX aY nsX0 nsY0 =
 
     -- for each nsX element, find all elements in nsY that are not smaller than it (call verifyNorm recursively)
     let ns = [ (x,[y | y <- mapY]) | x <- mapX] in
-    let edges = S.fromList (concat $ Data.List.map (\((kx,x),ys) -> Data.List.map (\(ky,_) -> (kx,ky)) (Data.List.filter (\(_,y) -> verifyNorm (k+1) x y) ys)) ns) in
+    let edgeLists = Data.List.map (\((kx,x),ys) -> 
+                        Data.List.map (\(ky,newx) -> ((kx,ky),newx))
+                            (Data.List.filter (\(_,newx) -> case newx of {Nothing -> False; _ -> True}) 
+                                (Data.List.map (\(ky,y) -> (ky,verifyNorm (k+1) x y)) ys)
+                            )
+                    ) ns
+    in
+
+    let alls = concat edgeLists in
+    let edgeMap = fromList alls in -- this maps edges to the new x that will be used if this edge is taken
+    let (edgeList,_) = Data.List.unzip alls in
+    let edges = S.fromList (edgeList) in
 
     -- get a bipartite graph of results (edges are the '<=' relations), find a maximal matching in it
     let mmapY = matching edges in
@@ -244,10 +278,12 @@ verifyNorms k aX aY nsX0 nsY0 =
 
     -- if we could match all elements of nsX, then we are done
     let b = (length mmapX) >= (length nsX) in
-
+    let maybeMatchedSubnorms = Data.List.map (\edge -> edgeMap ! edge) (toList mmapX) in
+    -- bys construction, we have not put Nothing inside, all values should be Just
+    let matchedSubnorms = Data.List.map (\x -> case x of Just y -> y) maybeMatchedSubnorms in
     -- the following operation may make the matching easier
     -- however, they may also break the previous matching, so use the next only if the previous has failed
-    if (b == True) then True else
+    if (b == True) then Just matchedSubnorms else
 
         -- if the proof failed, we may try to rearrange the terms
         -- collect only the vertices for which we did not get a matching
@@ -258,25 +294,29 @@ verifyNorms k aX aY nsX0 nsY0 =
         let nsY1 = rearrangeNorm Ungroup LT aY nsY' in
         let nsX1 = rearrangeNorm Ungroup GT aX nsX' in
 
-        let b1 = if (length nsY1 == length nsY') && (length nsX1 == length nsX') then False else verifyNorms (k+1) aX aY nsX1 nsY1 in
+        let newx1 = if (length nsY1 == length nsY') && (length nsX1 == length nsX') then Nothing else verifyNorms (k+1) aX aY nsX1 nsY1 in
+        let b1 = case newx1 of {Nothing -> False; _ -> True} in
         --trace ("b1: nsY: " ++ show(nsY) ++ " --> " ++ show(nsY1) ++ "\n    nsX: " ++ show(nsX) ++ " --> " ++ show(nsX1)) $
-        if b1 == True then True else
+        if b1 == True then fmap (matchedSubnorms ++) newx1 else
 
             -- try to ungroup the variables: nsX,nsY by aX, getting ">=" for nsY
             let nsY2 = rearrangeNorm Ungroup LT aX nsY' in
             let nsX2 = rearrangeNorm Ungroup GT aX nsX' in
 
-            let b2 = if (length nsY2 == length nsY') && (length nsX2 == length nsX') then False else verifyNorms (k+1) aX aX nsX2 nsY2 in
+            let newx2 = if (length nsY2 == length nsY') && (length nsX2 == length nsX') then Nothing else verifyNorms (k+1) aX aX nsX2 nsY2 in
+            let b2 = case newx2 of {Nothing -> False; _ -> True} in
             --trace ("b2: nsY: " ++ show(nsY) ++ " --> " ++ show(nsY2) ++ "\n    nsX: " ++ show(nsX) ++ " --> " ++ show(nsX2)) $
-            if b2 == True then True else
+            if b2 == True then fmap (matchedSubnorms ++) newx2 else
 
                 -- try to ungroup the variables: nsX,nsY by aY, getting "<=" for nsX
                 let nsY3 = rearrangeNorm Ungroup LT aY nsY' in
                 let nsX3 = rearrangeNorm Ungroup GT aY nsX' in
 
-                let b3 = if (length nsY3 == length nsY') && (length nsX3 == length nsX') then False else verifyNorms (k+1) aY aY nsX3 nsY3 in
+                let newx3 = if (length nsY3 == length nsY') && (length nsX3 == length nsX') then Nothing else verifyNorms (k+1) aY aY nsX3 nsY3 in
+
+                let b3 = case newx3 of {Nothing -> False; _ -> True} in
                 --trace ("b3: nsY: " ++ show(nsY) ++ " --> " ++ show(nsY3) ++ "\n    nsX: " ++ show(nsX) ++ " --> " ++ show(nsX3)) $
-                b3
+                fmap (matchedSubnorms ++) newx3
 
 
 

@@ -65,13 +65,13 @@ extractArg t =
         SelectMax x  -> x
         SelectL _ x  -> x
 
-queryArg :: TableExpr -> B.Expr -> B.TableExpr
-queryArg t y =
+queryArg :: TableExpr -> [B.Expr] -> B.TableExpr
+queryArg t ys =
     case t of
-        SelectProd _ -> B.SelectProd [y]
-        SelectMin _  -> B.SelectMin [y]
-        SelectMax _  -> B.SelectMax [y]
-        SelectL c _  -> B.SelectL c [y]
+        SelectProd _ -> B.SelectProd ys
+        SelectMin _  -> B.SelectMin ys
+        SelectMax _  -> B.SelectMax ys
+        SelectL c _  -> B.SelectL c ys
 
 normArg :: TableExpr -> Norm a -> Norm a
 normArg t y =
@@ -371,12 +371,14 @@ query = do
   f <- function QueryParsing
   return (P tablePath (zipWith (\x y -> (x,y)) xs [0..((length xs) - 1)]) f)
 
-norm :: Parser Program
+-- the first row in the norm file is the list of sensitive rows
+norm :: Parser ([Int],Program)
 norm = do
+  is <- many integer
   xs <- many varName
   void (delim)
   f <- function NormParsing
-  return (P "" (zipWith (\x y -> (x,y)) xs [0..((length xs) - 1)]) f)
+  return (is, P "" (zipWith (\x y -> (x,y)) xs [0..((length xs) - 1)]) f)
 
 asgnStmt :: ParserInstance -> Parser (VarName,Expr)
 asgnStmt p = do
@@ -509,18 +511,20 @@ getProgramInputs (P _ inputVarList _) = inputVarList
 getProgramDbFileName :: Program -> String
 getProgramDbFileName (P dbFileName _ _) = dbFileName
 
-program2Expr :: [VarName] -> (Map VarName B.Var) -> Program -> (S.Set B.Var, B.TableExpr)
-program2Expr usedVarList inputMap (P _ _ (F asgnMap y))  =
+program2Expr :: Int -> [VarName] -> [Int] -> (Map VarName B.Var) -> Program -> (S.Set B.Var, B.TableExpr)
+program2Expr numOfRows sensitiveVars sensitiveRows inputMap (P _ _ (F asgnMap y))  =
     let x = extractArg y in
-    let usedVars = S.fromList (Data.List.map (\x -> inputMap ! x) usedVarList) in
-    let (vars,z) = matchAsgnVariable queryExpression B.ZeroSens usedVars inputMap asgnMap x in
-    (vars, queryArg y z)
+    let sensitiveCols = S.fromList (Data.List.map (\x -> inputMap ! x) sensitiveVars) in
+    let (vars,z) = matchAsgnVariable queryExpression B.ZeroSens sensitiveCols inputMap asgnMap x in
+    -- the parameter 1 denotes that the indexation starts from 1, not from 0
+    let zs = mapNotAtIndices (\x -> B.ZeroSens x) sensitiveRows (replicate numOfRows z) 1 in
+    (vars, queryArg y zs)
 
-norm2Expr :: [VarName] -> (Map VarName B.Var) -> Program -> (S.Set B.Var, Norm B.Var)
-norm2Expr usedVarList inputMap (P _ _ (F asgnMap y)) =
+norm2Expr :: Int -> [VarName] -> [Int] -> (Map VarName B.Var) -> Program -> (S.Set B.Var, Norm B.Var)
+norm2Expr numOfRows sensitiveVars sensitiveRows inputMap (P _ _ (F asgnMap y)) =
     let x = extractArg y in
-    let usedVars = S.fromList (Data.List.map (\x -> inputMap ! x) usedVarList) in
-    let (vars,z) = matchAsgnVariable normExpression NormZero usedVars inputMap asgnMap x in
+    let sensitiveCols = S.fromList (Data.List.map (\x -> inputMap ! x) sensitiveVars) in
+    let (vars,z) = matchAsgnVariable normExpression NormZero sensitiveCols inputMap asgnMap x in
     (vars, normArg y z)
 
 processExpression :: (Show a, Ord a) => 
@@ -555,6 +559,13 @@ matchAsgnVariable f nullify usedVars inputMap asgnMap x =
         let (expVars,e) = (processExpression f nullify usedVars inputMap asgnMap expr) in
         if S.null (S.intersection expVars usedVars) then (S.empty, nullify e) else (expVars,e)
 
+-- transforms elements that are not on certain index positions, assumes that the indices are sorted
+mapNotAtIndices :: (a -> a) -> [Int] -> [a] -> Int -> [a]
+mapNotAtIndices f [] xs _ = Data.List.map f xs
+mapNotAtIndices _ _ [] _ = error ("index out of bounds")
+mapNotAtIndices f is'@(i:is) (x:xs) k =
+    if (i == k) then x:(mapNotAtIndices f is xs (k+1))
+    else (f x):(mapNotAtIndices f is' xs (k+1))
 
 -- read the DB line by line -- no speacial parsing, assume that the delimiters are whitespaces
 readInput path = do
@@ -571,35 +582,40 @@ getBanachAnalyserInput inputFile = do
     let dbFileName = getProgramDbFileName queryPr
     table   <- readDB dbFileName
     let numOfRows = length table
-    dbPr <- parseFromFile norm (dbFileName ++ ".nrm")
+    (dbSensitiveRows,dbPr) <- parseFromFile norm (dbFileName ++ ".nrm")
+    let maxIndex = Data.List.foldr max 0 dbSensitiveRows
+    putStrLn $ if (maxIndex > numOfRows) then error ("The database has only " ++ show numOfRows ++ " rows, but row " ++ show maxIndex ++ " is described as sensitive.")
+               else "Sensitive rows of the database: " ++ show dbSensitiveRows
 
     -- fix integer indices for variable names
     let inputVarList = getProgramInputs queryPr
     let inputMap = fromList inputVarList
 
     -- read db's requirements from file
-    let (dbNormVarNames, _) = Data.List.unzip (getProgramInputs dbPr)    
-    let dbNormVars = (Data.List.map (\x -> inputMap ! x) dbNormVarNames)
+    let (dbSensitiveVarNames, _) = Data.List.unzip (getProgramInputs dbPr)    
+    let dbSensitiveVars = (Data.List.map (\x -> inputMap ! x) dbSensitiveVarNames)
 
+    let (_,dbNorm) = norm2Expr numOfRows dbSensitiveVarNames dbSensitiveRows inputMap dbPr
+    let (_,expr) = program2Expr numOfRows dbSensitiveVarNames dbSensitiveRows inputMap queryPr
 
-    let (_,dbNorm) = norm2Expr dbNormVarNames inputMap dbPr
-    let (_,expr) = program2Expr dbNormVarNames inputMap queryPr
-
-    putStrLn $ "Sensitive colums of the database: " ++ show dbNormVars
+    putStrLn $ "Sensitive columns of the database: " ++ show dbSensitiveVars
     
     let queryNorm = deriveTableNorm (Data.List.map snd inputVarList) expr
     putStrLn $ "query norm = " ++ show queryNorm
     putStrLn $ "database norm = " ++ show dbNorm
 
     -- this check can be removed if something goes wrong with it
-    putStrLn $ if (verifyNorm 0 queryNorm dbNorm) then 
-            "OK: the database norm is at least as large as the query norm."
-        else
-             "WARNING: could not prove that the database norm is at least as large as the query norm."
+    let newNorm = (verifyNorm 0 queryNorm dbNorm)
+    putStrLn $ case newNorm of
+            Just _  -> "OK: the database norm is at least as large as the query norm."
+            Nothing -> "WARNING: could not prove that the database norm is at least as large as the query norm."
 
     putStrLn $ "table = " ++ show table
     putStrLn $ "expr = " ++ show expr
-
+    putStrLn $ "----------------"
+    --putStrLn $ show newNorm
+    putStrLn $ "----------------"
+    --putStrLn $ show (mapNotAtIndices (+ 11) [2,4,5] [100,200,300,400,500,600,700] 1)
     --let ns = [NormL (Exactly 1.0) [Col "x1"], NormL (Exactly 2.0) [Col "x2"], NormL (Exactly 3.0) [Col "x3"], NormL (Exactly 1.0) [Col "x4"], NormL (Exactly 2.0) [Col "x5"]]
     --let n1 = NormLInf ns
     --let n2 = NormLInf [NormL (Exactly 1.0) [Col "x1", Col "x4"], NormL (Exactly 2.0) [Col "x2", Col "x5"], NormL (Exactly 3.0) [Col "x3"]]

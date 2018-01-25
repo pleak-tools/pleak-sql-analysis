@@ -1,8 +1,9 @@
 "input.db";
 velocity latitude longitude;
 x4 = exp -0.5 velocity;
+x4a = scaleNorm 20.0 x4;
 x5 = lp 2.0 latitude longitude;
-x6 = prod x4 x5;
-return selectMax x6;
+x6 = prod x4a x5;
+return selectMin x6;
 
-//SELECT MAX e^{-0.5*velocity} * sqrt(latitude^2 + longitude^2) FROM input.db
+//SELECT MIN e^{-0.5*velocity} * sqrt(latitude^2 + longitude^2) FROM input.db

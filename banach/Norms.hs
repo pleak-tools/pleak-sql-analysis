@@ -77,9 +77,9 @@ updateExpr mapCol mapLN expr =
         B.Sigmoid a c x    -> B.ScaleNorm (mapCol ! x) (B.Sigmoid a c x)
         B.ScaleNorm a e    -> updateExpr mapCol mapLN e -- we assume that all scalings have already been taken into account in the maps
         B.ZeroSens e       -> B.ZeroSens e
-        B.L p xs           -> B.ScaleNorm (Data.List.foldr max 0 $ Data.List.map (mapCol !) xs) (B.L p xs)
+        B.L p xs           -> B.ScaleNorm (Data.List.foldr min 100000 $ Data.List.map (mapCol !) xs) (B.L p xs)
         B.ComposeL p es    -> B.ComposeL p (Data.List.map (updateExpr mapCol mapLN) es)
-        B.LInf xs          -> B.ScaleNorm (Data.List.foldr max 0 $ Data.List.map (mapCol !) xs) (B.LInf xs)
+        B.LInf xs          -> B.ScaleNorm (Data.List.foldr min 100000 $ Data.List.map (mapCol !) xs) (B.LInf xs)
         B.Prod es          -> B.Prod  (Data.List.map (updateExpr mapCol mapLN) es)
         B.Prod2 es         -> B.Prod2 (Data.List.map (updateExpr mapCol mapLN) es)
         B.Min es           -> B.Min (Data.List.map (updateExpr mapCol mapLN) es)
@@ -177,8 +177,9 @@ extractScalings norm =
             Col x                        -> (fromList [(x,1.0)], none)
             NormLN (Col x)               -> (none, fromList [(x,1.0)])
             NormZero x                   -> (none, none)
-            -- if the same variable has been used several times, take its maximum scaling
-            NormL p xs                   -> Data.List.foldr (\(x1,y1) (x2,y2) -> let f = unionWith max in (f x1 x2, f y1 y2)) (none,none) (Data.List.map extractScalings xs)
+            -- if the same variable has been used several times, take its minimum scaling
+            -- minimum scaling is the one that increases sensitivity the most
+            NormL p xs                   -> Data.List.foldr (\(x1,y1) (x2,y2) -> let f = unionWith min in (f x1 x2, f y1 y2)) (none,none) (Data.List.map extractScalings xs)
             x                            -> error ("Cannot extract scaling from: " ++ show x)
     where none = Data.Map.empty
 
@@ -191,13 +192,14 @@ scalingLpNorm (Exactly p1) (Exactly p2) n =
     if p1 >= p2 then 1.0
     else n**(1/p2 - 1/p1)
 
--- estmate the cost of an expression: we take the maximum scaling that need to be applied
+-- estmate the cost of an expression: we take the minimum scaling that need to be applied
+-- this is safe since the minimum scaling increases sensitivity the most
 exprCost :: (Show a, Ord a) => Norm a -> Double
 exprCost expr = 
     let (scalingMapCol, scalingMapLN) = extractScalings expr in
     let scalings1 = snd $ unzip (toList scalingMapCol) in
     let scalings2 = snd $ unzip (toList scalingMapCol) in
-    Data.List.foldr max 0 (scalings1 ++ scalings2)
+    Data.List.foldr min 100000 (scalings1 ++ scalings2)
 
 -- The number of recursive calls is bounded just for practical safety, there should actually be no loops.
 -- The counter is the first parameter, and we increase it only in the function verifyNorms,

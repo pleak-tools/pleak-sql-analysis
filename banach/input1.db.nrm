@@ -1,10 +1,12 @@
 4 7
 x y v l;
+u1 = lp 1.0 x y;
+u2 = scaleNorm 1.0 u1; //it is possible to rescale sensitivity w.r.t. distance here
 v1 = lp 1.0 v;
 v2 = scaleNorm 20.0 v1; //decrease sensitivity w.r.t. velocity
-ll1 = lp 1.0 l;
-ll2 = scaleNorm 1.0 ll1;
-z = lp 1.0 x y v2 ll2;
+w1 = lp 1.0 l;
+w2 = scaleNorm 1.0 w1; //it is possible to rescale sensitivity w.r.t. ship length here
+z = lp 1.0 u2 v2 w2;
 return linf z;
 
 // the norm is ||x,y|_2, 20*|v|, l|_1

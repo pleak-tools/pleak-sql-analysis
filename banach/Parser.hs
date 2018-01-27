@@ -76,9 +76,9 @@ queryArg t ys =
 normArg :: TableExpr -> Norm a -> Norm a
 normArg t y =
     case t of
-        SelectProd _ -> NormLInf [y]
-        SelectMin _  -> NormLInf [y]
-        SelectMax _  -> NormLInf [y]
+        SelectProd _ -> NormL Any [y]
+        SelectMin _  -> NormL Any [y]
+        SelectMax _  -> NormL Any [y]
         SelectL c _  -> NormL (Exactly c) [y]
 
 -- Expr constructor variable arguments can be Var, Expr
@@ -153,11 +153,11 @@ normExpression :: Expr -> [a] -> [Norm a] -> [S.Set a] -> (Norm a)
 normExpression t xs es _ =
     let zs = (Data.List.map (\ x -> Col x) xs) ++ es in
     case t of
-        PowerLN _ _      -> LN (head zs)
+        PowerLN _ _      -> NormLN (head zs)
         ScaleNorm c _    -> NormScale c (head zs)
         ZeroSens _       -> NormZero (head zs)
         L c _            -> NormL (Exactly c) zs
-        LInf _           -> NormLInf zs
+        LInf _           -> NormL Any zs
 
 pairwiseDisjoint :: [S.Set B.Var] -> Bool
 pairwiseDisjoint [] = True
@@ -604,16 +604,23 @@ getBanachAnalyserInput inputFile = do
     putStrLn $ "query norm = " ++ show queryNorm
     putStrLn $ "database norm = " ++ show dbNorm
 
-    -- this check can be removed if something goes wrong with it
-    let newNorm = (verifyNorm 0 queryNorm dbNorm)
+    let newNorm = normalizeAndVerify queryNorm dbNorm
+    let adjustedExpr = case newNorm of
+            Just norm -> updateTableExpr expr norm
+            Nothing -> expr
+
+    let newQueryNorm = deriveTableNorm (Data.List.map snd inputVarList) adjustedExpr
+    putStrLn $ "adjusted query norm = " ++ show newQueryNorm
+    putStrLn $ "variable norm scaling: " ++ case newNorm of {Nothing -> "???\n"; Just norm -> show (extractScalings norm) ++ "\n"}
+
     putStrLn $ case newNorm of
             Just _  -> "OK: the database norm is at least as large as the query norm."
             Nothing -> "WARNING: could not prove that the database norm is at least as large as the query norm."
 
-    putStrLn $ "table = " ++ show table
-    putStrLn $ "expr = " ++ show expr
     putStrLn $ "----------------"
-    --putStrLn $ show newNorm
+    putStrLn $ "table = " ++ show table
+    putStrLn $ "initial expr = " ++ show expr
+    putStrLn $ "adjusted expr = " ++ show adjustedExpr
     putStrLn $ "----------------"
     --putStrLn $ show (mapNotAtIndices (+ 11) [2,4,5] [100,200,300,400,500,600,700] 1)
     --let ns = [NormL (Exactly 1.0) [Col "x1"], NormL (Exactly 2.0) [Col "x2"], NormL (Exactly 3.0) [Col "x3"], NormL (Exactly 1.0) [Col "x4"], NormL (Exactly 2.0) [Col "x5"]]
@@ -629,6 +636,6 @@ getBanachAnalyserInput inputFile = do
     --putStrLn $ show (rearrangeNorm Group LT Any ns)
     --putStrLn $ show (rearrangeNorm Group LT (Exactly 2.0) ns)
     --putStrLn $ show (rearrangeNorm Group LT (Exactly 3.0) ns)
-    return (table,expr)
+    return (table,adjustedExpr)
 
 

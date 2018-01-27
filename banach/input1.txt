@@ -1,14 +1,11 @@
 "input1.db";
 x y v l;
 x2 = lp 2.0 x y;
-x2a = scaleNorm 1.0 x2;
 x3 = LN ^ v -1.0;
-//x3 = ^ v 1.0;
-x3a = scaleNorm 20.0 x3; //since the answer is too sensitive w.r.t. velocity, let us rescale it
-x4 = prod x2a x3a;
-b = sigmoid 0.1 100.0 l; //0.1 is needed to keep beta small, 100 m is the border value
-x5 = lp 1.0 x4 b;        //adding 1.0 (or something close to it) already makes the value non-minimal
-                         //in the database input1.db, the times are all below 1
+x4 = prod x2 x3;
+b  = sigmoid 0.1 100.0 l; //0.1 is needed to keep beta small, 100 m is the border value
+x5 = lp 1.0 x4 b;         //adding 1.0 (or something close to it) already makes the value non-minimal
+                          //in the database input1.db, the times are all below 1
 return selectMin x5;
 
 

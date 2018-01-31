@@ -17,6 +17,7 @@ data Expr = Power Var Double         -- x^r with norm | |
           | Exp Double Var           -- e^(r*x) with norm | |
           | ComposeExp Double Expr   -- e^(r*E) with norm N
           | Sigmoid Double Double Var-- s(a,c,x) = e^(a*(x-c))/(e^(a*(x-c)) + 1)
+          | ComposeSigmoid Double Double Expr-- s(a,c,E) = e^(a*(E-c))/(e^(a*(E-c)) + 1)
           | Const Double             -- constant c (real number, may be negative) in a zero-dimensional Banach space (with trivial norm)
           | ScaleNorm Double Expr    -- E with norm a * N
           | ZeroSens Expr            -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
@@ -29,6 +30,7 @@ data Expr = Power Var Double         -- x^r with norm | |
           | Max [Expr]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
           | Sump Double [Expr]       -- E1+...+En with norm ||(N1,...,Nn)||_p
           | SumInf [Expr]            -- E1+...+En with norm ||(N1,...,Nn)||_infinity
+          | Sum2 [Expr]              -- E1+...+En with norm N, where N is the common norm of all Ei
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
@@ -180,6 +182,14 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
       in AR {fx = z,
              subf = SUB (const z) a,
              sdsf = SUB (const $ a * y / (y+1)^2) a}
+    ComposeSigmoid a c e1 ->
+      let AR gx _ (SUB sdsf1g beta2) = analyzeExpr row e1
+          b = sdsf1g 0
+          y = exp (a * (gx - c))
+          z = y / (y + 1)
+      in AR {fx = z,
+             subf = SUB (const z) (a * b),
+             sdsf = SUB (const $ a * y / (y+1)^2) (a * b + beta2)}
     PowerLN i r ->
       let x = row !! i
       in AR {fx = x ** r,
@@ -218,6 +228,7 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
     ComposeL p es -> combineArsL p $ map (analyzeExpr row) es
     Sump p es -> combineArsSump p $ map (analyzeExpr row) es
     SumInf es -> combineArsSumInf $ map (analyzeExpr row) es
+    Sum2 es -> combineArsSum2 $ map (analyzeExpr row) es
 
 combineArsProd :: [AnalysisResult] -> AnalysisResult
 combineArsProd ars =
@@ -314,6 +325,19 @@ combineArsSumInf ars =
   in AR {fx = sum fxs,
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+
+combineArsSum2 :: [AnalysisResult] -> AnalysisResult
+combineArsSum2 ars =
+  let fxs = map fx ars
+      subfs = map subf ars
+      sdsfs = map sdsf ars
+      subfBetas = map subBeta subfs
+      sdsfBetas = map subBeta sdsfs
+      subgs = map subg subfs
+      sdsgs = map subg sdsfs
+  in AR {fx = sum fxs,
+         subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
+         sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
 analyzeTableExpr :: Table -> TableExpr -> AnalysisResult
 analyzeTableExpr rows te =

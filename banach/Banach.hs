@@ -15,7 +15,10 @@ data Expr = Power Var Double         -- x^r with norm | |
           | PowerLN Var Double       -- x^r with logarithmic norm: ||x|| = |ln x|, addition in Banach space is multiplication of real numbers
           | ComposePower Expr Double -- E^r with norm N
           | Exp Double Var           -- e^(r*x) with norm | |
+          | ComposeExp Double Expr   -- e^(r*E) with norm N
           | Sigmoid Double Double Var-- s(a,c,x) = e^(a*(x-c))/(e^(a*(x-c)) + 1)
+          | ComposeSigmoid Double Double Expr-- s(a,c,E) = e^(a*(E-c))/(e^(a*(E-c)) + 1)
+          | Const Double             -- constant c (real number, may be negative) in a zero-dimensional Banach space (with trivial norm)
           | ScaleNorm Double Expr    -- E with norm a * N
           | ZeroSens Expr            -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
           | L Double [Var]           -- ||(x1,...,xn)||_p with l_p-norm
@@ -25,6 +28,9 @@ data Expr = Power Var Double         -- x^r with norm | |
           | Prod2 [Expr]             -- E1*...*En with norm N, where N is the common norm of all Ei
           | Min [Expr]               -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
           | Max [Expr]               -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
+          | Sump Double [Expr]       -- E1+...+En with norm ||(N1,...,Nn)||_p
+          | SumInf [Expr]            -- E1+...+En with norm ||(N1,...,Nn)||_infinity
+          | Sum2 [Expr]              -- E1+...+En with norm N, where N is the common norm of all Ei
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
@@ -32,6 +38,8 @@ data TableExpr = SelectProd [Expr]        -- product (map E rows) with norm ||(N
                | SelectMin [Expr]         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectMax [Expr]         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectL Double [Expr]    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
+               | SelectSump Double [Expr] -- E1+...+En with norm ||(N1,...,Nn)||_p
+               | SelectSumInf [Expr]      -- E1+...+En with norm ||(N1,...,Nn)||_infinity
   deriving Show
 
 -- SUB g beta0  is a value such that
@@ -112,11 +120,19 @@ example2 = SelectMin [Prod [L 2 [0,1], ScaleNorm 20 $ PowerLN 2 (-1)]]
 
 -- compute ||(x_1,...,x_n)||_p
 lpnorm :: Double -> [Double] -> Double
-lpnorm p xs = (sum $ map (**p) xs) ** (1/p)
+lpnorm p xs = (sum $ map (**p) $ map abs xs) ** (1/p)
+
+-- compute ||(x_1,...,x_n)||_q where || ||_q is the dual norm of || ||_p
+lqnorm :: Double -> [Double] -> Double
+lqnorm 1 xs = linfnorm xs
+lqnorm p xs = lpnorm (dualnorm p) xs
 
 -- compute ||(x_1,...,x_n)||_infinity
 linfnorm :: [Double] -> Double
-linfnorm = maximum
+linfnorm = maximum . map abs
+
+dualnorm :: Double -> Double
+dualnorm p = p / (p-1)
 
 -- return xs with the element (xs !! i) removed
 skipith :: Int -> [a] -> [a]
@@ -128,11 +144,15 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
   case expr of
     Power i r ->
       let x = row !! i
-      in if r >= 1 && x > 0
-           then AR {fx = x ** r,
-                    subf = SUB (\ beta -> if x >= r/beta then x ** r else exp (beta*x - r) * (r/beta)**r) 0,
-                    sdsf = SUB (\ beta -> if x >= (r-1)/beta then r * x**(r-1) else r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1)) 0}
-           else error "analyzeExpr/Power: condition (r >= 1 && x > 0) not satisfied"
+      in if r == 1
+           then AR {fx = x,
+                    subf = SUB (\ beta -> if abs x >= 1/beta then abs x else exp (beta * abs x - 1) / beta) 0,
+                    sdsf = SUB (const 1) 0}
+           else if r >= 1 && x > 0
+             then AR {fx = x ** r,
+                      subf = SUB (\ beta -> if x >= r/beta then x ** r else exp (beta*x - r) * (r/beta)**r) 0,
+                      sdsf = SUB (\ beta -> if x >= (r-1)/beta then r * x**(r-1) else r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1)) 0}
+             else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
     ComposePower e1 r ->
       let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) = analyzeExpr row e1
           beta3 = (r-1)*beta1 + beta2
@@ -148,6 +168,13 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
       in AR {fx = exp (r * x),
              subf = SUB (const $ exp (r * x)) (abs r),
              sdsf = SUB (const $ abs r * exp (r * x)) (abs r)}
+    ComposeExp r e1 ->
+      let AR gx _ (SUB sdsf1g beta2) = analyzeExpr row e1
+          b = sdsf1g 0
+          f_x = exp (r * gx)
+      in AR {fx = f_x,
+             subf = SUB (const f_x) (abs r * b),
+             sdsf = SUB (\ beta -> abs r * f_x * sdsf1g (beta - abs r * b)) (abs r * b + beta2)}
     Sigmoid a c i ->
       let x = row !! i
           y = exp (a * (x - c))
@@ -155,11 +182,23 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
       in AR {fx = z,
              subf = SUB (const z) a,
              sdsf = SUB (const $ a * y / (y+1)^2) a}
+    ComposeSigmoid a c e1 ->
+      let AR gx _ (SUB sdsf1g beta2) = analyzeExpr row e1
+          b = sdsf1g 0
+          y = exp (a * (gx - c))
+          z = y / (y + 1)
+      in AR {fx = z,
+             subf = SUB (const z) (a * b),
+             sdsf = SUB (const $ a * y / (y+1)^2) (a * b + beta2)}
     PowerLN i r ->
       let x = row !! i
       in AR {fx = x ** r,
              subf = SUB (const $ x ** r) (abs r),
              sdsf = SUB (const $ abs r * x ** r) (abs r)}
+    Const c ->
+      AR {fx = c,
+          subf = SUB (const (abs c)) 0,
+          sdsf = SUB (const 0) 0}
     ScaleNorm a e1 ->
       let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) = analyzeExpr row e1
       in AR {fx = fx1,
@@ -187,6 +226,9 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
     Min es -> combineArsMin $ map (analyzeExpr row) es
     Max es -> combineArsMax $ map (analyzeExpr row) es
     ComposeL p es -> combineArsL p $ map (analyzeExpr row) es
+    Sump p es -> combineArsSump p $ map (analyzeExpr row) es
+    SumInf es -> combineArsSumInf $ map (analyzeExpr row) es
+    Sum2 es -> combineArsSum2 $ map (analyzeExpr row) es
 
 combineArsProd :: [AnalysisResult] -> AnalysisResult
 combineArsProd ars =
@@ -198,7 +240,7 @@ combineArsProd ars =
       subgs = map subg subfs
       sdsgs = map subg sdsfs
       n = length ars
-      c i beta = ((sdsgs !! i) beta) * product (map ($ beta) $ skipith i subgs)
+      c i beta = let s = ((sdsgs !! i) beta) in if s == 0 then 0 else s * product (map ($ beta) $ skipith i subgs)
   in AR {fx = product fxs,
          subf = SUB (\ beta -> product (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> linfnorm (map (\ i -> c i beta) [0..n-1])) (maximum (subfBetas ++ sdsfBetas))}
@@ -258,6 +300,45 @@ combineArsL p ars =
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
+combineArsSump :: Double -> [AnalysisResult] -> AnalysisResult
+combineArsSump p ars =
+  let fxs = map fx ars
+      subfs = map subf ars
+      sdsfs = map sdsf ars
+      subfBetas = map subBeta subfs
+      sdsfBetas = map subBeta sdsfs
+      subgs = map subg subfs
+      sdsgs = map subg sdsfs
+  in AR {fx = sum fxs,
+         subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
+         sdsf = SUB (\ beta -> lqnorm p (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+
+combineArsSumInf :: [AnalysisResult] -> AnalysisResult
+combineArsSumInf ars =
+  let fxs = map fx ars
+      subfs = map subf ars
+      sdsfs = map sdsf ars
+      subfBetas = map subBeta subfs
+      sdsfBetas = map subBeta sdsfs
+      subgs = map subg subfs
+      sdsgs = map subg sdsfs
+  in AR {fx = sum fxs,
+         subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
+         sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+
+combineArsSum2 :: [AnalysisResult] -> AnalysisResult
+combineArsSum2 ars =
+  let fxs = map fx ars
+      subfs = map subf ars
+      sdsfs = map sdsf ars
+      subfBetas = map subBeta subfs
+      sdsfBetas = map subBeta sdsfs
+      subgs = map subg subfs
+      sdsgs = map subg sdsfs
+  in AR {fx = sum fxs,
+         subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
+         sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+
 analyzeTableExpr :: Table -> TableExpr -> AnalysisResult
 analyzeTableExpr rows te =
   case te of
@@ -265,10 +346,14 @@ analyzeTableExpr rows te =
     SelectMax [expr] -> combineArsMax $ map (`analyzeExpr` expr) rows
     SelectProd [expr] -> combineArsProd $ map (`analyzeExpr` expr) rows
     SelectL p [expr] -> combineArsL p $ map (`analyzeExpr` expr) rows
+    SelectSump p [expr] -> combineArsSump p $ map (`analyzeExpr` expr) rows
+    SelectSumInf [expr] -> combineArsSumInf $ map (`analyzeExpr` expr) rows
     SelectMin exprs -> combineArsMin $ zipWith analyzeExpr rows exprs
     SelectMax exprs -> combineArsMax $ zipWith analyzeExpr rows exprs
     SelectProd exprs -> combineArsProd $ zipWith analyzeExpr rows exprs
     SelectL p exprs -> combineArsL p $ zipWith analyzeExpr rows exprs
+    SelectSump p exprs -> combineArsSump p $ zipWith analyzeExpr rows exprs
+    SelectSumInf exprs -> combineArsSumInf $ zipWith analyzeExpr rows exprs
 
 performAnalysis :: ProgramOptions -> Table -> TableExpr -> IO ()
 performAnalysis args rows te = do

@@ -1,4 +1,4 @@
-"input2.db";
+"input2";
 x y v;
 x2 = lp 1.0 x y;
 x3 = lp 1.0 v;

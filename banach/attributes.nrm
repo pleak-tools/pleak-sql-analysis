@@ -1,0 +1,12 @@
+3 6
+velocity length;
+v1 = lp 1.0 velocity;
+v2 = scaleNorm 20.0 v1; //decrease sensitivity w.r.t. velocity
+w1 = lp 1.0 length;
+w2 = scaleNorm 1.0 w1; //it is possible to rescale sensitivity w.r.t. ship length here
+z = lp 1.0 v2 w2;
+return linf z;
+
+// the row norm is |20*|v|, l|_1
+// the aggregation norm over all rows is linf
+// the sensitive rows are those listed in the first line, indexation starts from 1

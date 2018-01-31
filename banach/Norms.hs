@@ -1,6 +1,5 @@
 module Norms where
 
-import Data.Graph.MaxBipartiteMatching
 import qualified Data.IntMap as IntMap
 import Data.List
 import Data.Map
@@ -17,7 +16,7 @@ import qualified Banach as B
 
 -- this is a double with additional top-value "any", meaning that any double is allowed at this place
 data ADouble = Exactly Double | Any
-  deriving Show
+  deriving (Show,Ord,Eq)
 
 -- the composite norm w.r.t. which we compute our sensitivities
 -- in the norms, we can use expressions as well as variables
@@ -26,7 +25,7 @@ data Norm a = Col a                     -- a variable, if it is toplevel, is tre
           | NormL     ADouble [Norm a]  -- lp-norm
           | NormScale Double (Norm a)   -- scaled norm a * N
           | NormZero (Norm a)           -- the same as NormScale with a -> infinity
-  deriving Show
+  deriving (Show,Ord,Eq)
 
 -- we use this value as a flag for subterm grouping function
 -- TODO we are actually using only Ungroup, probably we will not need this structure at all
@@ -52,14 +51,14 @@ deriveNorm colnames expr =
         B.Min es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
         B.Max es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
 
-deriveTableNorm ::  [a] -> B.TableExpr -> Norm a
+deriveTableNorm ::  [a] -> B.TableExpr -> (Norm a, ADouble)
 deriveTableNorm colnames expr = 
     case expr of
 
-        B.SelectProd es     -> NormL (Exactly 1.0) [deriveNorm colnames (nzHead es)]
-        B.SelectMin  es     -> NormL Any [deriveNorm colnames (nzHead es)]
-        B.SelectMax  es     -> NormL Any [deriveNorm colnames (nzHead es)]
-        B.SelectL p  es     -> NormL (Exactly p) [deriveNorm colnames (nzHead es)]
+        B.SelectProd es     -> (deriveNorm colnames (nzHead es), Exactly 1.0)
+        B.SelectMin  es     -> (deriveNorm colnames (nzHead es), Any)
+        B.SelectMax  es     -> (deriveNorm colnames (nzHead es), Any)
+        B.SelectL p  es     -> (deriveNorm colnames (nzHead es), Exactly p)
 
     -- for simplicity, we assume that the norm is the same for each row
     -- the only difference may come from the toplevel ZeroSens coming from insensitive rows
@@ -146,17 +145,30 @@ rearrangeNorm grouping ord (Exactly p) xs =
     case grouping of Group -> if (length ys == 0) then zs else (NormL (Exactly p) ys):zs
                      Ungroup -> ys ++ zs
 
+
+--TODO we should put this comparison directly into Data ADouble
+takeFiner :: ADouble -> ADouble -> ADouble
+takeFiner Any         _             = Any
+takeFiner _           Any           = Any
+takeFiner (Exactly p) (Exactly q)   = Exactly (max p q)
+
 -- we do some simplifications to make the matching easier
-normalizeNorm :: Norm a -> Norm a
+normalizeNorm :: Ord a => Norm a -> Norm a
 
 -- move all scaling into the brackets as deep as possible
 normalizeNorm (NormScale 1.0 x) = normalizeNorm x
-normalizeNorm (NormScale c1 (NormScale c2 x)) = normalizeNorm (NormScale (c1*c2) x)
-normalizeNorm (NormScale c (NormL a xs))  = NormL a (Data.List.map (\x -> normalizeNorm $ NormScale c x) xs)
+normalizeNorm (NormScale c1 (NormScale c2 x)) = normalizeNorm $ NormScale (c1*c2) x
+normalizeNorm (NormScale c (NormL a xs))  = normalizeNorm $ NormL a (Data.List.map (\x -> NormScale c x) xs)
 normalizeNorm (NormScale c (NormZero x))  = NormZero x
 normalizeNorm (NormLN      (NormZero x))  = NormZero x
 normalizeNorm (NormL a xs) = 
-    let ys = Data.List.map normalizeNorm xs in
+
+    -- apply the equality ||x,y|_p, z|_p == ||x|_p, |y|_p, z|_p, normalize the result
+    let ys' = Data.List.map normalizeNorm (rearrangeNorm Ungroup EQ a xs) in
+
+    -- if any subnorm repeats, we take it only once
+    -- TODO it would be more precise to scale it by sqrt[p](n) for n copies, but current solution is safe anyway
+    let ys = S.toList (S.fromList ys') in
     let zs = Data.List.filter (\x -> case x of NormZero _ -> False; _ -> True) ys in
     -- |||x| ||_p = |x|
     case zs of
@@ -215,10 +227,14 @@ verifyNorm _ (Col x) (Col y) =
 -- we have x >= ln(x), and ax >= a ln(x) for all a
 -- we want to leave scaling out of LN, so we do not use ax >= ln(ax)
 verifyNorm k (NormLN x) (NormScale a y) = 
-    fmap (\z -> NormScale a (NormLN z)) $ verifyNorm k (normalizeNorm x) (normalizeNorm y)
+    fmap (\z -> NormScale a (NormLN z)) $ verifyNorm k x y
 
-verifyNorm k (NormLN x) y = 
-    fmap NormLN $ verifyNorm k (normalizeNorm x) (normalizeNorm y)
+-- scaling values under LN is bad in any case, let us return Nothing so that other matching could be tried
+verifyNorm k (NormLN x) y =
+    let v = verifyNorm k x y in
+    case v of
+        Just (NormScale c w) -> if c == 1.0 then Just (NormLN w) else Nothing
+        _ -> fmap NormLN $ v
 
 -- compare lp-norms
 -- if the norm is "Any", we treat as LInf
@@ -255,9 +271,10 @@ verifyNorm k n1 (NormScale a2 n2) =
 verifyNorm _ (NormZero x) _ = Just (NormZero x)
 verifyNorm _ _ _ = Nothing
 
-normalizeAndVerify :: (Show a, Eq a, Ord a) => Norm a -> Norm a -> Maybe (Norm a)
-normalizeAndVerify n1 n2 = 
-    fmap normalizeNorm $ verifyNorm 0 (normalizeNorm n1) (normalizeNorm n2)
+normalizeAndVerify :: (Show a, Eq a, Ord a) => ADouble -> ADouble -> Norm a -> Norm a -> Maybe (Norm a)
+normalizeAndVerify a1 a2 n1 n2 = 
+    if takeFiner a1 a2 /= a1 then Nothing
+    else fmap normalizeNorm $ verifyNorm 0 (normalizeNorm n1) (normalizeNorm n2)
 
 -- here is the main step proving |x_1,...,x_n|_{px} <= |y_1,...,y_m|_{py} for (py <= px)
 -- it tries to prove that there is an injective mapping f such that |x_i| <= |y_f(i)| for all i

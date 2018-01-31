@@ -1,6 +1,6 @@
-4 7
+3 6
 x y v l;
-u1 = lp 1.0 x y;
+u1 = lp 2.0 x y;
 u2 = scaleNorm 1.0 u1; //it is possible to rescale sensitivity w.r.t. distance here
 v1 = lp 1.0 v;
 v2 = scaleNorm 20.0 v1; //decrease sensitivity w.r.t. velocity

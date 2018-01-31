@@ -1,4 +1,4 @@
-"input.db";
+"input";
 velocity latitude longitude;
 x4 = exp -0.5 velocity;
 x5 = lp 2.0 latitude longitude;

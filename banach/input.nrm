@@ -1,4 +1,4 @@
-2 3
+1 2
 velocity latitude longitude;
 v = scaleNorm 20.0 velocity;
 z = lp 1.0 v latitude longitude;

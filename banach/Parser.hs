@@ -41,7 +41,7 @@ data ParserInstance = QueryParsing | NormParsing
 -- keywords
 allKeyWords :: [String] -- list of reserved "words"
 allKeyWords = ["return",
-               "^","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid",
+               "const","^","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid",
                "selectMin","selectMax","selectProd","selectL",
                "SELECT","AS","FROM","WHERE","AND"]
 
@@ -62,6 +62,7 @@ queryExpr x = powerExpr
   <|> sigmoidExpr
   <|> sumpExpr
   <|> sumInfExpr
+  <|> constExpr
 
 -- a norm expression
 normExpr :: VarName -> Parser [Expr]
@@ -72,6 +73,12 @@ normExpr _ = scaleNormExpr
   <|> lnExpr
 
 -- parsing different expressions, one by one
+constExpr :: Parser [Expr]
+constExpr = do
+  keyWord "const"
+  b <- signedFloat
+  return [Const b]
+
 powerExpr :: Parser [Expr]
 powerExpr = do
   keyWord "^"

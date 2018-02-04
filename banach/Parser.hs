@@ -9,6 +9,7 @@ import Text.Megaparsec.Expr
 import qualified Text.Megaparsec.Char as C
 import qualified Text.Megaparsec.Char.Lexer as L
 --
+import qualified Control.Exception as Exc
 import Control.Monad (void)
 import Debug.Trace
 import Data.Either
@@ -28,6 +29,11 @@ import Query
 -- 'Void' means 'no custom error messages'
 -- 'String' means 'input comes in form of a String'
 type Parser = Parsec Void String
+type TableName = String
+
+-- a small bit, denoting whether we are parsing a query or a norm
+-- we define it, since a query and a norm have very similar format
+data ParserInstance = QueryParsing | NormParsing
 
 ---------------------------------------------------------------------------------------------
 -- TODO: parsing of 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
@@ -37,7 +43,7 @@ allKeyWords :: [String] -- list of reserved "words"
 allKeyWords = ["return",
                "^","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid",
                "selectMin","selectMax","selectProd","selectL",
-               "SELECT","FROM","WHERE","AND"]
+               "SELECT","AS","FROM","WHERE","AND"]
 
 -- a query expression
 queryExpr :: VarName -> Parser [Expr]
@@ -54,6 +60,8 @@ queryExpr x = powerExpr
   <|> minExpr
   <|> maxExpr
   <|> sigmoidExpr
+  <|> sumpExpr
+  <|> sumInfExpr
 
 -- a norm expression
 normExpr :: VarName -> Parser [Expr]
@@ -153,6 +161,19 @@ sigmoidExpr = do
   x <- varName
   return [Sigmoid a c x]
 
+sumpExpr :: Parser [Expr]
+sumpExpr = do
+  keyWord "sump"
+  c <- float
+  bs <- many varName
+  return [Sump c bs]
+
+sumInfExpr :: Parser [Expr]
+sumInfExpr = do
+  keyWord "sumInf"
+  bs <- many varName
+  return [SumInf bs]
+
 -- this one is intended only for norms
 lnExpr :: Parser [Expr]
 lnExpr = do
@@ -166,6 +187,8 @@ queryTableExpr = selectProdExpr
   <|> selectMinExpr
   <|> selectMaxExpr
   <|> selectLExpr
+  <|> selectSumpExpr
+  <|> selectSumInfExpr
 
 -- a table expression for norms (which norm is applied to the rows)
 normTableExpr :: Parser TableExpr
@@ -198,6 +221,19 @@ selectLExpr = do
   c <- float
   a <- varName
   return (SelectL c a)
+
+selectSumpExpr :: Parser TableExpr
+selectSumpExpr = do
+  keyWord "selectSump"
+  c <- float
+  a <- varName
+  return (SelectSump c a)
+
+selectSumInfExpr :: Parser TableExpr
+selectSumInfExpr = do
+  keyWord "selectSumInf"
+  a <- varName
+  return (SelectSumInf a)
 
 lpTableExpr :: Parser TableExpr
 lpTableExpr = do
@@ -256,14 +292,15 @@ absEndAExpr = do
   symbol "|"
   return (AUnary AAbsEnd)
 
-scaleAExpr :: Parser (AExpr a -> AExpr a)
-scaleAExpr = do
-  c <- signedFloat
-  symbol "*"
-  return (AUnary (AScale c))
-
 aExpr :: Parser (AExpr VarName)
 aExpr = makeExprParser aTerm aOperators
+
+namedAExpr :: Parser (String, AExpr VarName)
+namedAExpr = do
+    aexpr <- aExpr
+    keyWord "AS"
+    newColName <- identifier
+    return (newColName, aexpr)
 
 aOperators :: [[Operator Parser (AExpr a)]]
 aOperators =
@@ -285,7 +322,8 @@ aOperators =
 
 aTerm :: Parser (AExpr VarName)
 aTerm = parens aExpr
-  <|> Var <$> varName
+  <|> AVar <$> varName
+  <|> AConst <$> signedFloat
 
 
 ------------------------------------------------------------
@@ -307,6 +345,7 @@ sqlAggregator :: Parser (VarName -> TableExpr)
 sqlAggregator = selectProdAExpr
   <|> selectMinAExpr
   <|> selectMaxAExpr
+  <|> selectSumAExpr
   <|> selectCountAExpr
   <|> selectAExpr
 
@@ -325,6 +364,11 @@ selectMaxAExpr = do
   keyWord "MAX"
   return SelectMax
 
+selectSumAExpr :: Parser (VarName -> TableExpr)
+selectSumAExpr = do
+  keyWord "SUM"
+  return SelectSum
+
 selectCountAExpr :: Parser (VarName -> TableExpr)
 selectCountAExpr = do
   keyWord "COUNT"
@@ -334,30 +378,68 @@ selectAExpr :: Parser (VarName -> TableExpr)
 selectAExpr = do
   return Select
 
-filterVarConst :: Parser (Filter VarName)
+filterVarConst :: Parser Function
 filterVarConst = do
-  x <- varName
+  aexpr <- aExpr
   op <- order
   c <- signedFloat
-  return (VarConst op x c)
+  let y = "filt~"
+  let as = aexprToExpr y (aexprNormalize $ aexpr)
+  let b  = Filt op y c
+  return (F as b)
 
-filterVarVar :: Parser (Filter VarName)
+filterVarVar :: Parser Function
 filterVarVar = do
-  x <- varName
+  aexpr1 <- aExpr
   op <- order
-  y <- varName
-  return (VarVar op x y)
-
+  aexpr2 <- aExpr
+  let y = "filt~"
+  let y1 = "filty1~"
+  let y2 = "filty2~"
+  let z1 = "filtz1~"
+  let z2 = "filtz2~"
+  let as1 = toList $ aexprToExpr y1 (aexprNormalize $ aexpr1)
+  let as2 = toList $ aexprToExpr y2 (aexprNormalize $ aexpr2)
+  let as = fromList (as1 ++ as2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
+  let b  = Filt op y 0.0
+  return (F as b)
 
 -- ======================================================================= --
 -----------------------------------------------------------------------------
 ----      The code below does not need to be updated with Banach.hs      ----
 -----------------------------------------------------------------------------
-sqlFilter :: Parser (Filter VarName)
+sqlFilter :: Parser Function
 sqlFilter = try filterVarConst <|> filterVarVar
+
+sqlQueries :: Parser [Query]
+sqlQueries = try sqlManyQueries <|> sqlOneQuery
+
+sqlManyQueries :: Parser [Query]
+sqlManyQueries = do
+    qs <- many sqlQuery
+    q  <- sqlAggrQuery
+    return (qs ++ [q])
+
+sqlOneQuery :: Parser [Query]
+sqlOneQuery = do
+    q  <- sqlAggrQuery
+    return [q]
 
 sqlQuery :: Parser Query
 sqlQuery = do
+  tableName <- varName
+  void (asgn)
+  keyWord "SELECT"
+  namedAExprs <- sepBy1 namedAExpr (symbol ",")
+  let (names,aexprs) = unzip namedAExprs
+  keyWord "FROM"
+  tablePaths <- sepBy1 identifier (symbol ",")
+  filters    <- sqlQueryFilter
+  let fs = zipWith (\x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (Select (tableName ++ "." ++ y))) aexprs names
+  return (P tableName names fs tablePaths filters)
+
+sqlAggrQuery :: Parser Query
+sqlAggrQuery = do
   keyWord "SELECT"
   g <- sqlAggregator
   aexpr <- aExpr
@@ -367,16 +449,16 @@ sqlQuery = do
   filters    <- sqlQueryFilter
   let as = aexprToExpr y (aexprNormalize $ aexpr)
   let b  = g y
-  return (P (F as b) tablePaths filters)
+  return (P "output" [] [F as b] tablePaths filters)
 
-sqlQueryFilter :: Parser [Filter VarName]
+sqlQueryFilter :: Parser [Function]
 sqlQueryFilter = sqlQueryWithFilter <|> sqlQueryWithoutFilter
 
-sqlQueryWithoutFilter :: Parser [Filter VarName]
+sqlQueryWithoutFilter :: Parser [Function]
 sqlQueryWithoutFilter = do
   return []
 
-sqlQueryWithFilter :: Parser [Filter VarName]
+sqlQueryWithFilter :: Parser [Function]
 sqlQueryWithFilter = do
   keyWord "WHERE"
   filters <- sepBy1 sqlFilter (keyWord "AND")
@@ -392,7 +474,7 @@ query = do
   xs <- many varName
   void (delim)
   f <- function QueryParsing
-  return (P f [tablePath] [])
+  return (P "output" [] [f] [tablePath] [])
 
 -- the first row in the norm file is the list of sensitive rows
 -- the second row in the norm file is the list of sensitive columns
@@ -401,8 +483,16 @@ norm = do
   is <- many integer
   xs <- many varName
   void (delim)
-  f <- function NormParsing
+  f <- try customNorm <|> defaultNorm xs
   return ((is, xs), f)
+
+customNorm = do
+  f <- function NormParsing
+  return f
+
+defaultNorm xs = do
+  let f = F (fromList [("z",L 1.0 xs)]) (SelectMax "z")
+  return f
 
 asgnStmt :: ParserInstance -> Parser [(VarName,Expr)]
 asgnStmt p = do
@@ -488,11 +578,12 @@ identifier = (lexeme . try) (p >>= check)
 
 alphaNumCharAndPeriod :: Parser Char
 alphaNumCharAndPeriod = C.char '.'
+    <|> C.char '_'
     <|> C.alphaNumChar
 
 -- we need to read string identifiers and afterwards map them to integers
 varName :: Parser VarName
-varName = identifier <|> constant
+varName = identifier
 
 constant :: Parser VarName
 constant = do
@@ -548,32 +639,35 @@ readDB dbFileName = do
     let table    = readDoubles (Data.List.foldr (\x y -> x ++ "\n" ++ y) "" ls)
     return (varNames, table)
 
+getQueryTableName :: Query -> TableName
+getQueryTableName (P tableName _ _ _ _) = tableName
+
 getQueryDbFileNames :: Query -> [String]
-getQueryDbFileNames (P _ dbFileNames _) = dbFileNames
+getQueryDbFileNames (P _ _ _ dbFileNames _) = dbFileNames
 
-getQueryFilters :: Query -> [Filter VarName]
-getQueryFilters (P _ _ filters) = filters
+getQueryFilters :: Query -> [Function]
+getQueryFilters (P _ _ _ _ filters) = filters
 
-getQueryFunction :: Query -> Function
-getQueryFunction (P f _ _) = f
+getQueryFunctions :: Query -> [Function]
+getQueryFunctions (P _ _ fs _ _) = fs
 
-getQueryConstants :: Query -> [String]
-getQueryConstants (P (F as _) _ _) = 
-    let cs = extractConstants $ elems as in
-    -- remove repetitions by transforming the list to set and then back from set to list
-    S.toList (S.fromList cs)
+getQueryColNames :: Query -> [String]
+getQueryColNames (P _ cs _ _ _) = cs
 
-query2Expr :: Int -> [VarName] -> [Bool] -> (Map VarName B.Var) -> Function -> Either [B.Expr] B.TableExpr
-query2Expr numOfRows sensitiveVars sensitiveRowsCV inputMap (F asgnMap y) =
+query2Expr :: [VarName] -> (Map VarName B.Var) -> Function -> ([B.Var], B.Expr)
+query2Expr sensitiveVars inputMap (F asgnMap y) =
     let x = extractArg y in
     let sensitiveCols = S.fromList (Data.List.map (\x -> inputMap ! x) sensitiveVars) in
-    let (_,z) = matchAsgnVariable "" queryExpression B.ZeroSens sensitiveCols inputMap asgnMap x in
-    -- the parameter 0 denotes that the indexation starts from 0
+    let (usedVars,z) = matchAsgnVariable "" queryExpression B.ZeroSens sensitiveCols inputMap asgnMap x in
+    (S.toList usedVars, z)
+
+queryExprAggregate :: Int -> [Bool] -> Function-> B.Expr -> B.TableExpr
+queryExprAggregate numOfRows sensitiveRowsCV  (F _ y) z = 
     let zs = zipWith (\x y -> if x then y else B.ZeroSens y) sensitiveRowsCV (replicate numOfRows z) in
     queryArg y zs
 
-norm2Expr :: String -> Int -> [VarName] -> [Int] -> (Map VarName B.Var) -> Function -> (Norm B.Var, ADouble)
-norm2Expr prefix numOfRows sensitiveVars sensitiveRows inputMap (F asgnMap y) =
+norm2Expr :: (Show a, Ord a) => String -> [VarName] -> (Map VarName a) -> Function -> (Norm a, ADouble)
+norm2Expr prefix sensitiveVars inputMap (F asgnMap y) =
     let x = extractArg y in
     let sensitiveCols = S.fromList (Data.List.map (\x -> inputMap ! x) sensitiveVars) in
     let (_,z) = matchAsgnVariable prefix normExpression NormZero sensitiveCols inputMap asgnMap x in
@@ -583,34 +677,31 @@ processExpression :: (Show a, Ord a) =>
                      String ->                                 -- the name of the database file that we prepend to all variable names
                      (Expr -> [a] -> [b] -> [S.Set a] -> b) -> -- the function that actually rewrites the term
                      (b -> b) ->                               -- applied to terms that contain only unused variables (ZeroSens, NormZero)
-                     (S.Set a) ->                              -- the set of used variables
+                     (S.Set a) ->                              -- the set of sensitive cols
                      (Map VarName a) ->                        -- input variable map
                      (Map VarName Expr) ->                     -- assigmnent variable map
                      Expr ->                                   -- the expression that we rewrite
                      (S.Set a, b)
-processExpression s f nullify usedVars inputMap asgnMap expr =
+processExpression s f nullify sensitiveCols inputMap asgnMap expr =
     let varNames = extractArgs expr in
     let usedInputVarNames = Data.List.filter (\x -> member (s ++ x) inputMap) varNames in
     let usedAsgnVarNames  = Data.List.filter (\x -> member x asgnMap)  varNames in
 
-    let inputVars       = Data.List.map (matchInputVariable s inputMap)                           usedInputVarNames in
-    let asgnInputsExprs = Data.List.map (matchAsgnVariable s f nullify usedVars inputMap asgnMap) usedAsgnVarNames  in
+
+    let inputVars        = Data.List.map (\x -> inputMap ! (s ++ x))                                    usedInputVarNames in
+    let asgnInputsExprs  = Data.List.map (matchAsgnVariable s f nullify sensitiveCols inputMap asgnMap) usedAsgnVarNames in
 
     let (asgnInputs,asgnExprs) = Data.List.unzip asgnInputsExprs in
     (S.union (S.fromList inputVars) (Data.List.foldr S.union S.empty asgnInputs), f expr inputVars asgnExprs asgnInputs)
 
---check if the variable is a keys in a map, return the corresponding value if it is
-matchInputVariable :: (Show a, Ord a) => String -> (Map VarName a) -> VarName -> a
-matchInputVariable s inputMap x = (inputMap ! (s ++ x))
-
 --check if the variable is a keys in a map, apply processExpression to the value of that key
 matchAsgnVariable :: (Show a, Ord a) => String -> (Expr -> [a] -> [b] -> [S.Set a] -> b) -> (b -> b) -> (S.Set a) -> (Map VarName a) -> (Map VarName Expr) -> VarName -> (S.Set a,b)
-matchAsgnVariable s f nullify usedVars inputMap asgnMap x =
+matchAsgnVariable s f nullify sensitiveCols inputMap asgnMap x =
 
         -- if y is an assignment variable, find its value recursively
         let expr = (asgnMap ! x) in
-        let (expVars,e) = (processExpression s f nullify usedVars inputMap asgnMap expr) in
-        if S.null (S.intersection expVars usedVars) then (S.empty, nullify e) else (expVars,e)
+        let (expVars,e) = (processExpression s f nullify sensitiveCols inputMap asgnMap expr) in
+        if S.null (S.intersection expVars sensitiveCols) then (S.empty, nullify e) else (expVars,e)
 
 -- read the DB line by line -- no speacial parsing, assume that the delimiters are whitespaces
 readInput :: String -> IO String
@@ -621,90 +712,221 @@ readInput path = do
 readDoubles :: String -> [[Double]]
 readDoubles s = fmap (Data.List.map read . words) (lines s)
 
+-- add the entire second argument to each query of the first argument list
+mergeQueryFuns :: [Function] -> [Function] -> [Function]
+mergeQueryFuns [] _ = []
+mergeQueryFuns (F as b : qs1) qs2 =
+    let as1 = concat $ Data.List.map (\(F as' _) -> toList as') qs2 in
+    let as2 = Data.Map.fromList as1 in
+    (F (Data.Map.union as as2) b) : (mergeQueryFuns qs1 qs2)
+
+-- computes full query and filter expressions (as functions), updates the corresponding maps
+processQuery :: Query -> (Map TableName [Function], Map TableName [Function]) -> (Map TableName [Function], Map TableName [Function])
+processQuery (P outputName outputColNames queryFuns inputTableNames filters) (tableQueryMap,tableFilterMap) =
+
+    --trace (show inputTableNames ++ "\n" ++ show tableQueryMap ++ "\n" ++ show tableFilterMap ++ "\n\n") $
+   
+    -- find the cross product query of all used input tables
+    let inputQFuns      = concat $ Data.List.map (\x -> tableQueryMap ! x) inputTableNames in
+    let inputFilters    = concat $ Data.List.map (\x -> tableFilterMap ! x) inputTableNames in
+
+    let outputQueryFuns = mergeQueryFuns queryFuns inputQFuns in
+    let outputFilters  = inputFilters  ++ mergeQueryFuns filters inputQFuns in
+
+    (fromList $ (outputName, outputQueryFuns) : (toList tableQueryMap), fromList $ (outputName, outputFilters) : (toList tableFilterMap))
+
+-- compute table data for a cross product
+getTableCrossProductData :: [TableName] -> Map TableName TableData -> TableData
+getTableCrossProductData tableNames tableMap =
+
+    let allInputVars       = Data.List.map (\x -> getInputVars (tableMap ! x) ) tableNames in
+    let allTables          = Data.List.map (\x -> getTableValues (tableMap ! x) ) tableNames in
+    let allExprs           = Data.List.map (\x -> getExpr (tableMap ! x) ) tableNames in
+    let allQFuns           = Data.List.map (\x -> getQFun (tableMap ! x) ) tableNames in
+    let allDbNorms         = Data.List.map (\x -> getNorm (tableMap ! x) ) tableNames in
+    let allDbSensitiveRows = Data.List.map (\x -> getSensitiveRows (tableMap ! x) ) tableNames in
+    let allDbSensitiveVars = Data.List.map (\x -> getSensitiveCols (tableMap ! x) ) tableNames in
+
+    -- the expressions are concatenated, since each of them describes a column
+    let inputVars   = concat allInputVars in
+    let exprs       = concat allExprs in
+    let qFuns       = concat allQFuns in
+    let dbNorms     = concat allDbNorms in
+    let dbSensitiveVars = concat allDbSensitiveVars in
+
+    -- find the cross product of all used tables
+    let tableCrossProduct        = tableJoin allTables in
+    let numsOfRows = Data.List.map length allTables in
+    let sensitiveRowCrossProduct = charVecJoin $ zipWith charVec numsOfRows allDbSensitiveRows in
+    let dbSensitiveRows = fromCharVec sensitiveRowCrossProduct in
+
+    T tableCrossProduct inputVars exprs qFuns dbNorms dbSensitiveRows dbSensitiveVars
+
+
+data TableData =
+    -- content columnNames exprs norms aggrNorms sensRows sensCols
+    T B.Table [VarName] [B.Expr] [Function] [(String,Function)] [Int] [VarName]
+  deriving Show
+
+getTableValues (T x _ _ _ _ _ _) = x 
+getInputVars   (T _ x _ _ _ _ _) = x 
+getExpr        (T _ _ x _ _ _ _) = x 
+getQFun        (T _ _ _ x _ _ _) = x 
+getNorm        (T _ _ _ _ x _ _) = x
+getSensitiveRows (T _ _ _ _ _ x _) = x 
+getSensitiveCols (T _ _ _ _ _ _ x) = x 
+
+readAllTables :: Bool -> [TableName] -> IO (Map TableName TableData)
+readAllTables usePrefices tableNames = do
+
+    -- collect all tables and all column names that will be used in our query
+    -- read table sensitivities from corresponding files
+    -- mapM is a standard function [IO a] -> IO [a]
+    let dbData     = mapM (\tableName -> readDB $ tableName ++ ".db") tableNames
+    let dbNormData = mapM (\tableName -> parseFromFile norm $ tableName ++ ".nrm") tableNames
+
+    (tableColNames, tableValues) <- fmap unzip dbData
+    (tableSensitives,tableNormFuns)  <- fmap unzip dbNormData
+    let (tableSensitiveRows,tableSensitiveVars) = unzip tableSensitives
+
+    -- we put column names inside variables
+    let namePrefices = Data.List.map (\tableName -> if usePrefices then tableName ++ "." else "") tableNames
+    let taggedTableColNames = zipWith (\x ys -> Data.List.map (\y -> x ++ y) ys) namePrefices tableColNames
+    let taggedSensitiveVars = zipWith (\x ys -> Data.List.map (\y -> x ++ y) ys) namePrefices tableSensitiveVars
+
+    -- put all table data together
+    let tableMap = processAllTables tableNames taggedTableColNames tableValues tableNormFuns taggedSensitiveVars tableSensitiveRows
+    return (fromList tableMap)
+
+processAllTables :: [String] -> [[VarName]] -> [B.Table] -> [Function] -> [[VarName]] -> [[Int]] -> [(TableName, TableData)]
+processAllTables [] [] [] [] [] [] = []
+processAllTables (tableName:xs1) (x2:xs2) (x3:xs3) (x4:xs4) (x5:xs5) (x6:xs6) =
+    let tableData = processOneTable tableName x2 x3 x4 x5 x6 in
+    (tableName,tableData) : (processAllTables xs1 xs2 xs3 xs4 xs5 xs6)
+
+processOneTable :: String -> [VarName] -> B.Table -> Function -> [VarName] -> [Int] -> TableData
+processOneTable tableName inputVars tableValues normFun dbSensitiveVars dbSensitiveRows =
+
+    -- initially, there are no complex functions, only initial variables
+    let qFuns = [] in
+    let exprs = [] in
+    T tableValues inputVars exprs qFuns [(tableName, normFun)] dbSensitiveRows dbSensitiveVars
+
+
 -- putting everything together
 getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
 getBanachAnalyserInput input = do
 
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
+    queries <- parseFromFile sqlQueries input
+    let lastQuery = last queries 
+    let usePrefices = True
     -- "query" parses the old format where the query function is computed line by line
-    queryPr <- parseFromFile sqlQuery input
-    --queryPr  <- parseFromFile query input
+    --lastQuery <- parseFromFile query input
+    --let queries = [lastQuery]
+    --let usePrefices = False
 
-    let tableNames = getQueryDbFileNames queryPr
-    let filters    = getQueryFilters queryPr
-    let queryFun   = getQueryFunction queryPr
+    -- collect all table names used by all queries, take those that should be read from input files
+    let allTableNames = concat $ Data.List.map getQueryDbFileNames queries
+    let intermTableNames = Data.List.map getQueryTableName queries
+    let inputTableNames = S.toList $ S.difference (S.fromList allTableNames) (S.fromList intermTableNames)
+    inputTableMap <- readAllTables usePrefices inputTableNames
 
-    -- collect all tables and all column names that will be used in our query
-    -- mapM is a standard function [IO a] -> IO [a]
-    let dbData = mapM (\tableName -> readDB $ tableName ++ ".db") tableNames
-    (allInputVars, allTables) <- fmap unzip dbData
+    -- process all queries one by one, get the map that stores final query functions and filters
+    let numOfInputTables = length inputTableNames
+    let inputQueryMap  = fromList $ zip inputTableNames (replicate numOfInputTables [])
+    let inputFilterMap = fromList $ zip inputTableNames (replicate numOfInputTables [])
 
-    -- if we have several tables, we want to add prefices to variables to distinguish them if the names repeat
-    let namePrefices = if length tableNames > 1 then Data.List.map (\tableName -> tableName ++ ".") tableNames else (replicate (length tableNames) "")
+    let (queryMap, filterMap) = Data.List.foldl (\x y -> processQuery y x) (inputQueryMap,inputFilterMap) queries
+    --putStrLn $ Data.List.foldr (\(tableName, x) y -> "TableQ " ++ tableName ++ ": " ++ show x ++ "\n\n" ++ y) "" (toList queryMap)
+    --putStrLn $ Data.List.foldr (\(tableName, x) y -> "TableF " ++ tableName ++ ": " ++ show x ++ "\n\n" ++ y) "" (toList filterMap)
 
-    -- fix an integer index for each variable name
-    -- we assume that the table name is used as a prefix to each column name
-    -- the constants are treated as special non-sensitive variables
-    let inputVars = concat $ zipWith (\namePrefix xs -> Data.List.map (\x -> namePrefix ++ x) xs) namePrefices allInputVars
-    let constVars = getQueryConstants queryPr
-    let inputVarList = zip (inputVars ++ constVars) [0..length inputVars + length constVars - 1]
-    putStrLn $ "All input variables: " ++ show inputVars
-    putStrLn $ "All constants: " ++ show constVars
-    putStrLn $ "All filters: " ++ show filters ++ "\n"
+    -- we assume that each input table is used only once, so we take the table cross product as an input
+    let (T inputTable inputVars _ _ dbNormData dbSensitiveRows dbSensitiveVars) = getTableCrossProductData inputTableNames inputTableMap
+    let numOfRows = length inputTable
+    let inputVarList = zip inputVars [0..length inputVars - 1]
     let inputMap = fromList inputVarList
-
-    -- read table sensitivities from corresponding files
-    let numsOfRows = Data.List.map length allTables
-    let dbNormData = mapM (\tableName -> parseFromFile norm $ tableName ++ ".nrm") tableNames
-    (allDbSensitives,allDbNorms) <- fmap unzip dbNormData
-    let (allDbSensitiveRows,allDbSensitiveVars) = unzip allDbSensitives
-
-    let dbSensitiveVars = concat $ zipWith (\namePrefix xs -> Data.List.map (\x -> namePrefix ++ x) xs) namePrefices allDbSensitiveVars
     let dbSensitiveCols = Data.List.map (\x -> inputMap ! x) dbSensitiveVars
+    let dbSensitiveRowsCV = charVec numOfRows dbSensitiveRows
 
-    -- find the cross product of all used tables
-    let tableCrossProduct        = tableJoin allTables
-    let sensitiveRowCrossProduct = charVecJoin $ zipWith charVec numsOfRows allDbSensitiveRows
-    let numOfCrossProdRows       = length tableCrossProduct
+    putStrLn $ "----------------"
+    putStrLn $ "All input variables:    " ++ show (toList inputMap)
+    putStrLn $ "All sensitive cols:     " ++ show dbSensitiveCols
 
-    -- add dummy columns that will represent the constants used by our query
-    let sensitiveVarSet = S.fromList dbSensitiveVars
-    let tableWithConstantCols = transpose $ (transpose tableCrossProduct) ++ 
-                                            (Data.List.map (\x -> replicate numOfCrossProdRows (read (snd $ splitAt 5 x) :: Double)) constVars)
+    -- we assume that the final table has one column (in theory, there can be more)
+    let lastQueryFunsNofilter  = queryMap ! "output"
+    let lastQueryExprsNofilter = Data.List.map (\x -> snd $ query2Expr dbSensitiveVars inputMap x) lastQueryFunsNofilter
 
-    -- now apply the filters (filter by non-sensitive conditions directly, and use sigmoids for sensitive conditions)
-    let (filteredQuery, (dbSensitiveRowsCV, table)) = applyFilters queryFun tableWithConstantCols sensitiveRowCrossProduct sensitiveVarSet inputMap filters
-    let dbSensitiveRows = fromCharVec dbSensitiveRowsCV
-    let numOfRows = length table
+    putStrLn $ "----------------"
+    --putStrLn $ "Query Funs  Nofilter: " ++ show lastQueryFunsNofilter
+    putStrLn $ "Query Exprs Nofilter: " ++ show lastQueryExprsNofilter
 
-    -- this is output about the cross product table
-    putStrLn $ "Sensitive rows of the table: " ++ show dbSensitiveRows
-    putStrLn $ "Sensitive cols of the table: " ++ show dbSensitiveCols ++ "\n"
+    -- we may now apply the filter
+    let filterFuns = filterMap ! "output"
+    let (filterVars, filterExprs) = unzip $ Data.List.map (query2Expr dbSensitiveVars inputMap) filterFuns
+    let filterValues = Data.List.map (\x -> Data.List.map B.fx $ zipWith B.analyzeExpr inputTable (replicate numOfRows x)) filterExprs
 
-    -- the crossproduct table norm is by default an l1-norm of their columns
+    putStrLn $ "----------------"
+    --putStrLn $ "All filter Funs: " ++ show filterFuns
+    putStrLn $ "All filterVars:  " ++ show filterVars
+    putStrLn $ "All filterExprs: " ++ show filterExprs
+    putStrLn $ "----------------"
+
+    -- TODO this is CHEATING!
+    -- thoretically, the best value for 'infinity' is the maximum absolute value amongst those that we aggregate
+    -- however, this is a bad idea since it depends on private data and has some sensitivity by itself; we want it to be a constant
+    let infVal = B.fx $ B.analyzeTableExpr inputTable (B.SelectMax (Data.List.map (\expr -> B.ComposeL 1.0 [expr]) lastQueryExprsNofilter))
+    --let infVal = 10000.0 -- this is more honest, but it gives very bad sensitivities
+
+    let dbSensitiveColSet = S.fromList dbSensitiveCols
+    let (lastQueryFuns, (filtSensitiveRowsCV, table)) = applyFilters infVal lastQueryFunsNofilter inputTable dbSensitiveRowsCV inputMap filterFuns filterVars filterValues
+    let numOfFiltRows = length table
+
+    -- now transform the query to a banach expression
+    let lastQueryFun = last lastQueryFuns
+    let lastQueryExpr = snd $ query2Expr dbSensitiveVars inputMap lastQueryFun
+    let lastQueryAggr = queryExprAggregate numOfFiltRows filtSensitiveRowsCV lastQueryFun lastQueryExpr
+
+    --putStrLn $ "Query function:     " ++ show lastQueryFun
+    putStrLn $ "Query expression with filter:   " ++ show lastQueryExpr
+    putStrLn $ "Query num of rows after filtering:   " ++ show numOfFiltRows
+    --putStrLn $ "Query filtSensitiveRowsCV:   " ++ show filtSensitiveRowsCV
+    putStrLn $ "Query aggr expression:   " ++ show lastQueryAggr
+
     -- the aggregation norm is equalized, and it is chosen to be the finest one if they are different
-    let (dbNorms,dbAggrNorms) = unzip $ zipWith (\x y -> norm2Expr x numOfRows dbSensitiveVars dbSensitiveRows inputMap y) namePrefices allDbNorms
+    let (dbNormTableNames, dbNormFuns) = unzip dbNormData
+    let namePrefices = Data.List.map (\tableName -> if usePrefices then tableName ++ "." else "") dbNormTableNames
+    let (dbNorms,dbAggrNorms) = unzip $ zipWith (\x y -> norm2Expr x dbSensitiveVars inputMap y) namePrefices dbNormFuns
+
     let dbNorm     = NormL (Exactly 1.0) dbNorms
     let dbAggrNorm = Data.List.foldr takeFiner (Exactly 1.0) dbAggrNorms
-    putStrLn $ "database norm = Rows: " ++ show dbAggrNorm ++ " | Cols: " ++ show dbNorm
 
-    -- the parser currently allows SELECT queries without aggregation function, but we do not process such queries yet
-    -- Left means that there is no aggregation, and Right means that there is one
-    let exprs = query2Expr numOfRows dbSensitiveVars dbSensitiveRowsCV inputMap filteredQuery
-    let (queryNorm, queryAggrNorm) = case exprs of {Left _ -> error ("The final operation should be an aggregation"); Right e -> deriveTableNorm (Data.List.map snd inputVarList) e}
-    let expr                       = case exprs of {Left _ -> error ("The final operation should be an aggregation"); Right e -> e}
+    -- here 'snd inputVarList' means that the variables are integes
+    -- 'fst' would be VarNames, which are useful for testing (if use them, then use them also in the dbNorm)
+    let queryNorm     = deriveNorm (Data.List.map snd inputVarList) lastQueryExpr
+    let queryAggrNorm = deriveTableNorm lastQueryAggr
 
-    putStrLn $ "query norm    = Rows: " ++ show queryAggrNorm ++ " | Cols: " ++ show queryNorm
-    putStrLn $ "normalized database columns norm = " ++ show (normalizeNorm dbNorm)
-    putStrLn $ "normalized query    columns norm = " ++ show (normalizeNorm queryNorm)
+    putStrLn $ "----------------"
+    putStrLn $ "database norm       = Rows: " ++ show dbAggrNorm ++ " | Cols: " ++ show dbNorm
+    putStrLn $ "query norm          = Rows: " ++ show queryAggrNorm ++ " | Cols: " ++ show queryNorm
+    --putStrLn $ "normalized database columns norm = " ++ show (normalizeNorm dbNorm)
+    --putStrLn $ "normalized query    columns norm = " ++ show (normalizeNorm queryNorm)
 
-    let newNorm = normalizeAndVerify queryAggrNorm dbAggrNorm queryNorm dbNorm
+    -- adjust the query norm to the table norm
+    let newNorm = normalizeAndVerify queryNorm dbNorm
     let adjustedExpr = case newNorm of
-            Just norm -> updateTableExpr expr norm
-            Nothing -> expr
+            Just norm -> let (mapCol,mapLN) = extractScalings norm in updateExpr mapCol mapLN lastQueryExpr
+            Nothing -> lastQueryExpr
 
-    let (newQueryNorm, newAggrNorm) = deriveTableNorm (Data.List.map snd inputVarList) adjustedExpr
-    putStrLn $ "adjusted query norm = " ++ show newQueryNorm
+    let adjustedAggrExpr = case newNorm of
+            Just norm -> let (mapCol,mapLN) = extractScalings norm in updateTableExpr lastQueryAggr mapCol mapLN queryAggrNorm dbAggrNorm numOfRows
+            Nothing -> lastQueryAggr
+
+    let newQueryNorm = deriveNorm (Data.List.map snd inputVarList) adjustedExpr
+    let newAggrNorm  = deriveTableNorm adjustedAggrExpr
+
+    putStrLn $ "adjusted query norm = Rows: " ++ show newAggrNorm ++ " | Cols: "  ++ show newQueryNorm
+    putStrLn $ "----------------"
     putStrLn $ "variable norm scaling: " ++ case newNorm of {Nothing -> "???\n"; Just norm -> show (extractScalings norm) ++ "\n"}
 
     putStrLn $ case newNorm of
@@ -713,22 +935,9 @@ getBanachAnalyserInput input = do
 
     putStrLn $ "----------------"
     putStrLn $ "table = " ++ show table ++ "\n"
-    putStrLn $ "initial expr = " ++ show expr ++ "\n"
-    putStrLn $ "adjusted expr = " ++ show adjustedExpr
+    putStrLn $ "initial expr = " ++ show lastQueryAggr ++ "\n"
+    putStrLn $ "adjusted expr = " ++ show adjustedAggrExpr
     putStrLn $ "----------------"
-    --let ns = [NormL (Exactly 1.0) [Col "x1"], NormL (Exactly 2.0) [Col "x2"], NormL (Exactly 3.0) [Col "x3"], NormL (Exactly 1.0) [Col "x4"], NormL (Exactly 2.0) [Col "x5"]]
-    --let n1 = NormLInf ns
-    --let n2 = NormLInf [NormL (Exactly 1.0) [Col "x1", Col "x4"], NormL (Exactly 2.0) [Col "x2", Col "x5"], NormL (Exactly 3.0) [Col "x3"]]
-    --let n1 = NormL (Exactly 6.0) [Col "x", Col "z"]
-    --let n2 = NormL (Exactly 7.0) [NormL (Exactly 5.0) [Col "x", Col "z"], Col "y"]
-    --let n1 = NormScale 0.5 (NormL (Exactly 9.0) [Col "x", Col "z"])
-    --let n2 = NormL (Exactly 7.0) [NormL (Exactly 5.0) [NormScale 10.0 (Col "x"), Col "z"], Col "y"]
-    --putStrLn $ show n1
-    --putStrLn $ show n2
-    --putStrLn $ show (normalizeAndVerify n1 n2)
-    --putStrLn $ show (rearrangeNorm Group LT Any ns)
-    --putStrLn $ show (rearrangeNorm Group LT (Exactly 2.0) ns)
-    --putStrLn $ show (rearrangeNorm Group LT (Exactly 3.0) ns)
-    return (table,adjustedExpr)
+    return (table,adjustedAggrExpr)
 
 

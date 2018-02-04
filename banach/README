@@ -7,6 +7,8 @@ Building for the first time:
 The executable is created in the subdirectory dist/build/banach, thus to execute it:
     dist/build/banach/banach
 
+Example: dist/build/banach/banach query.txt --epsilon 1.0 --beta 0.1, where query.txt contains the query description. The parameters wpsilon and beta are optional.
+
 Later, only
     cabal build
 is required to rebuild when files have changed.

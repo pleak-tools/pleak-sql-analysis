@@ -20,13 +20,18 @@ data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm
           | PowerLN VarName Double        -- x^r with logarithmic norm: ||x|| = |ln x|, addition in Banach space is multiplication of real numbers
           | Exp Double VarName            -- e^(r*x) with norm | |
           | Sigmoid Double Double VarName -- s(a,c,x) = e^(a*(x-c))/(e^(a*(x-c)) + 1)
+          | Const Double                  -- constant c (real number, may be negative) in a zero-dimensional Banach space (with trivial norm)
           | ScaleNorm Double VarName      -- E with norm a * N
           | ZeroSens VarName              -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
           | L Double [VarName]            -- ||(x1,...,xn)||_p with l_q-norm where q = p/(p-1)
           | LInf [VarName]                -- same with p = infinity, q = 1
-          | Prod [VarName]                -- E1*...*En with norm ||(N1,...,Nn)||_1 or N, where N is the common norm of all Ei
+          | Prod [VarName]                -- E1*...*En with norm that is not specified yet and will be derived later
           | Min [VarName]                 -- min{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
           | Max [VarName]                 -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
+          | Sump Double [VarName]         -- E1+...+En with norm ||(N1,...,Nn)||_p
+          | SumInf [VarName]              -- E1+...+En with norm ||(N1,...,Nn)||_infinity
+          | Sum [VarName]                 -- E1+...+En with norm that is not specified yet and will be derived later
+          | Id VarName                    -- identity function, used for input table values
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
@@ -35,50 +40,51 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectMin VarName         -- min (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectMax VarName         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectL Double VarName    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
+               | SelectSump Double VarName -- E1+...+En with norm ||(N1,...,Nn)||_p
+               | SelectSumInf VarName      -- E1+...+En with norm ||(N1,...,Nn)||_infinity
+               | SelectSum VarName         -- E1+...+En with norm that is not specified yet and will be derived later
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
                | Select VarName            -- does not apply aggregation, is used only for intermediate representation
+               | Filt Ordering VarName Double  -- used for filters, actually is not a "Table" expression, we just use the same data structure
   deriving Show
 
--- a function consists of unit expression assignments "Map VarName Expr" and returns a single "TableExpr"
--- an assigment is identitified by the assigned variable, we assume the variables are not reused
--- each assignment maps a variable to an expression
-data Function
-  = F (Map VarName Expr) TableExpr
-  deriving (Show)
-
--- a small bit, denoting whether we are parsing a query or a norm
--- we define it, since a query and a norm have very similar format
-data ParserInstance = QueryParsing | NormParsing
-
 -----------------------------------------------------------------------------------
--- TODO: reconstruction of terms are being synchronized with B.Expr and B.TableExpr
+-- TODO: reconstruction of terms is being synchronized with B.Expr and B.TableExpr
 
 extractArg :: TableExpr -> VarName
 extractArg t =
     case t of
-        SelectProd x -> x
-        SelectMin x  -> x
-        SelectMax x  -> x
-        SelectL _ x  -> x
-        Select x     -> x
+        SelectCount x  -> x
+        SelectProd x   -> x
+        SelectMin x    -> x
+        SelectMax x    -> x
+        SelectL _ x    -> x
+        SelectSump _ x -> x
+        SelectSumInf x -> x
+        SelectSum  x   -> x
+        Select x       -> x
+        Filt _ x _   -> x
 
-queryArg :: TableExpr -> [B.Expr] -> Either [B.Expr] B.TableExpr
+queryArg :: TableExpr -> [B.Expr] -> B.TableExpr
 queryArg t ys =
     case t of
-        SelectProd _ -> Right $ B.SelectProd ys
-        SelectMin _  -> Right $ B.SelectMin ys
-        SelectMax _  -> Right $ B.SelectMax ys
-        SelectL c _  -> Right $ B.SelectL c ys
-        Select _     -> Left  $ ys
+        SelectProd _   -> B.SelectProd ys
+        SelectMin _    -> B.SelectMin ys
+        SelectMax _    -> B.SelectMax ys
+        SelectL c _    -> B.SelectL c ys
+        SelectSump c _ -> B.SelectSump c ys
+        SelectSumInf _ -> B.SelectSumInf ys
+        -- let it be Sump 1.0 by default, we can take a coarser norm later if necessary
+        SelectSum  _   -> B.SelectSump 1.0 ys
+        -- if it turns out that SelectCount is left as it is,
+        -- then all filters are defined over non-sensitive variables, so there are no privacy issues
+        SelectCount _  -> B.SelectSump 1.0 (Data.List.map B.ZeroSens ys)
 
 normArg :: TableExpr -> ADouble
 normArg t =
     case t of
-        SelectProd _ -> Any
-        SelectMin _  -> Any
         SelectMax _  -> Any
         SelectL c _  -> Exactly c
-        Select _     -> (Exactly 0.0) -- this means that we do not compute the aggregate norm
 
 -- Expr constructor variable arguments can be Var, Expr
 -- we put all of them into one list and later check whether a variable is an input or an assignment variable
@@ -89,6 +95,7 @@ extractArgs t =
         PowerLN x _      -> [x]
         Exp _ x          -> [x]
         Sigmoid _ _ x    -> [x]
+        Const _          -> []
         ScaleNorm _ x    -> [x]
         ZeroSens x       -> [x]
         L _ xs           -> xs
@@ -96,6 +103,10 @@ extractArgs t =
         Prod xs          -> xs
         Min xs           -> xs
         Max xs           -> xs
+        Sump _ xs        -> xs
+        SumInf xs        -> xs
+        Sum xs           -> xs
+        Id  x            -> [x]
 
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa
@@ -107,10 +118,15 @@ headAsgnVar :: Expr -> [a] -> a
 headAsgnVar t [] = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Expr (assignment variable) type")
 headAsgnVar t xs = head xs
 
-onlyInputVars :: Expr -> [a] -> [b] -> [a]
-onlyInputVars t [] _ = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Var (input variable) type")
+-- if some variables are not immediate inputs, they may just be represented as (B.Power z 1.0) for inputs z, so we may try to take z
+onlyInputVars :: Expr -> [a] -> [B.Expr] -> [a]
 onlyInputVars t xs [] = xs
-onlyInputVars t _ _ = error ("Cannot substitude variables into " ++ show t ++ ",\n some arguments are not of Var (input variable) type")
+onlyInputVars t xs ys = 
+    let zs = Data.List.filter (\y -> case y of {B.Power z 1.0 -> True; _ -> False}) ys in
+    if length zs == length ys then
+        let ws = Data.List.map (\z -> case z of {B.Power w 1.0 -> w}) zs in
+        xs ++ onlyInputVars t xs zs
+    else error ("Cannot substitude variables into " ++ show t ++ ",\n some arguments are not of Var (input variable) type")
 
 onlyAsgnVars :: Expr -> [a] -> [b] -> [b]
 onlyAsgnVars t _ [] = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Expr (assignment variable) type")
@@ -123,29 +139,57 @@ onlyAsgnVars t _ _ = error ("Cannot substitude variables into " ++ show t ++ ",\
 -- arg3: used assignment variables
 -- arg4: the list of input vars in turn used by asgn variables -- needed e.g to decide whether Prod becomes B.Prod or B.Prod2
 queryExpression :: Expr -> [B.Var] -> [B.Expr] -> [S.Set B.Var] -> B.Expr
-queryExpression t xs es vss =
+queryExpression t xs es vss = 
     case t of
-        Power _ c        -> if xs /= [] then
-                                B.Power (headInputVar t xs) c
-                            else
-                                B.ComposePower (headAsgnVar t es) c
-        PowerLN _ c      -> B.PowerLN (headInputVar t xs) c
-        Exp c _          -> B.Exp c (headInputVar t xs)
-        Sigmoid a c x    -> B.Sigmoid a c (headInputVar t xs)
+        Power _ c        -> if xs /= [] then B.Power (headInputVar t xs) c
+                            else             B.ComposePower (headAsgnVar t es) c
+
+        PowerLN _ c -> if xs /= [] then B.PowerLN (headInputVar t xs) c
+                       else
+                           let e = (headAsgnVar t es) in
+                           case e of
+                               B.Power x 1.0 -> B.PowerLN x c
+                               _             -> B.PowerLN (headInputVar t xs) c
+
+        Exp c _          -> if xs /= [] then B.Exp c (headInputVar t xs)
+                            else             B.ComposeExp c (headAsgnVar t es)
+
+        Sigmoid a c x    -> if xs /= [] then B.Sigmoid a c (headInputVar t xs)
+                            else             B.ComposeSigmoid a c (headAsgnVar t es)
+
+        Const c          -> B.Const c
         ScaleNorm c _    -> B.ScaleNorm c (headAsgnVar t es)
         ZeroSens _       -> B.ZeroSens (headAsgnVar t es)
-        L c _            -> if xs /= [] then
-                                B.L c (onlyInputVars t xs es)
-                            else
-                                B.ComposeL c (onlyAsgnVars t xs es)
 
-        LInf _           -> B.LInf (onlyInputVars t xs es)
-        Prod _           -> if (pairwiseDisjoint vss) then -- checks if the variables of different args are pairwise disjoint
-                                B.Prod (onlyAsgnVars  t xs es)
-                            else
-                                B.Prod2 (onlyAsgnVars  t xs es)
-        Min _            -> B.Min  (onlyAsgnVars  t xs es)
-        Max _            -> B.Max  (onlyAsgnVars  t xs es)
+        L c _            -> if (pairwiseDisjoint vss) && (allUnique xs) then 
+                                if xs /= [] then B.L c (onlyInputVars t xs es)
+                                else             B.ComposeL c (onlyAsgnVars t xs es)
+                            else error err
+
+        LInf _           -> if (allUnique xs) then B.LInf (onlyInputVars t xs es)
+                            else error err
+
+        -- checks if the variables of different args are pairwise disjoint
+        Prod _           -> if (pairwiseDisjoint vss) then B.Prod (onlyAsgnVars  t xs es)
+                            else                           B.Prod2 (onlyAsgnVars  t xs es)
+
+        Min _            -> if (pairwiseDisjoint vss) then B.Min (onlyAsgnVars  t xs es)
+                            else error err
+        Max _            -> if (pairwiseDisjoint vss) then B.Max (onlyAsgnVars  t xs es)
+                            else error err
+        Sump c _         -> B.Sump c  (onlyAsgnVars  t xs es)
+        SumInf _         -> B.SumInf  (onlyAsgnVars  t xs es)
+
+        -- checks if the variables of different args are pairwise disjoint
+        -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
+        Sum _            -> if (pairwiseDisjoint vss) then B.Sump 1.0 (onlyAsgnVars  t xs es)
+                            else                           B.Sum2 (onlyAsgnVars  t xs es)
+
+        -- this is our reserved "identity" that does nothing
+        Id _             -> if xs /= [] then B.Power (headInputVar t xs) 1.0
+                            else             (headAsgnVar t es)
+
+   where err = "variables are repeating in different args of the term " ++ show t
 
 -- the definition of Norm allows to use any variables inside argumets (both input and assignment variables)
 normExpression :: Expr -> [a] -> [Norm a] -> [S.Set a] -> (Norm a)
@@ -158,16 +202,12 @@ normExpression t xs es _ =
         L c _            -> NormL (Exactly c) zs
         LInf _           -> NormL Any zs
 
--- extracts all variables of the form "const:X" for a double X
-extractConstants :: [Expr] -> [String]
-extractConstants [] = []
-extractConstants (t:ts) =
-    let xs = extractArgs t in
-    let xs' = Data.List.filter (\x -> if fst (splitAt 5 x) == "const" then True else False) xs in
-    xs' ++ (extractConstants ts)
+allUnique :: Ord a => [a] -> Bool
+allUnique xs =
+    let ys = S.fromList xs in
+    S.size ys == length xs
 
------------------------------------------------
-pairwiseDisjoint :: [S.Set B.Var] -> Bool
+pairwiseDisjoint :: Ord a => [S.Set a] -> Bool
 pairwiseDisjoint [] = True
 pairwiseDisjoint (vs:vss) =
     let n = length $ Data.List.filter (\vs' -> not (S.null (S.intersection vs vs'))) vss in

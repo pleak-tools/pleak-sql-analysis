@@ -1,0 +1,1 @@
+SELECT SUM berth.berthlength FROM berth WHERE berth.berthlength <= 50.0

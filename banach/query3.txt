@@ -1,0 +1,1 @@
+SELECT COUNT feasible_ports.port_id FROM berth, feasible_ports WHERE feasible_ports.port_id - berth.port_id == 0.0 AND berth.berthlength >= 50.0

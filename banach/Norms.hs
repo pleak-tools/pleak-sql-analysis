@@ -25,6 +25,7 @@ data Norm a = Col a                     -- a variable, if it is toplevel, is tre
           | NormL     ADouble [Norm a]  -- lp-norm
           | NormScale Double (Norm a)   -- scaled norm a * N
           | NormZero (Norm a)           -- the same as NormScale with a -> infinity
+          | Dummy
   deriving (Show,Ord,Eq)
 
 -- we use this value as a flag for subterm grouping function
@@ -40,30 +41,37 @@ deriveNorm colnames expr =
         B.Power x _        -> NormL (Exactly 1.0) [Col (colnames !! x)]
         B.ComposePower e c -> deriveNorm colnames e
         B.Exp _ x          -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposeExp c e   -> deriveNorm colnames e
         B.Sigmoid _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposeSigmoid _ _ e -> deriveNorm colnames e
+        B.Const a          -> NormZero Dummy
         B.ScaleNorm a e    -> NormScale a (deriveNorm colnames e)
         B.ZeroSens e       -> NormZero (deriveNorm colnames e)
+        -- TODO should we use p or dual norm here?
         B.L p xs           -> NormL (Exactly p) (Data.List.map (\x -> Col (colnames !! x)) xs)
         B.ComposeL p es    -> NormL (Exactly p) (Data.List.map (deriveNorm colnames) es)
         B.LInf xs          -> NormL Any (Data.List.map (\x -> Col (colnames !! x)) xs)
+
         B.Prod es          -> NormL (Exactly 1.0) (Data.List.map (deriveNorm colnames) es)
-        B.Prod2 es         -> deriveNorm colnames (head es) -- we assume that equality of subnorms has been already checked
+        B.Prod2 es         -> let subNorms = Data.List.map (deriveNorm colnames) es in
+                              Data.List.foldr upperBoundNorm (NormZero Dummy) subNorms
         B.Min es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
         B.Max es           -> NormL Any (Data.List.map (deriveNorm colnames) es)
+        B.Sump p es        -> NormL (Exactly p) (Data.List.map (deriveNorm colnames) es)
+        B.SumInf es        -> NormL Any (Data.List.map (deriveNorm colnames) es)
+        B.Sum2 es          -> let subNorms = Data.List.map (deriveNorm colnames) es in
+                              Data.List.foldr upperBoundNorm (NormZero Dummy) subNorms
 
-deriveTableNorm ::  [a] -> B.TableExpr -> (Norm a, ADouble)
-deriveTableNorm colnames expr = 
+deriveTableNorm :: B.TableExpr -> ADouble
+deriveTableNorm expr = 
     case expr of
 
-        B.SelectProd es     -> (deriveNorm colnames (nzHead es), Exactly 1.0)
-        B.SelectMin  es     -> (deriveNorm colnames (nzHead es), Any)
-        B.SelectMax  es     -> (deriveNorm colnames (nzHead es), Any)
-        B.SelectL p  es     -> (deriveNorm colnames (nzHead es), Exactly p)
-
-    -- for simplicity, we assume that the norm is the same for each row
-    -- the only difference may come from the toplevel ZeroSens coming from insensitive rows
-    where nzHead es = case (head es) of {B.ZeroSens x -> x; x -> x}
-
+        B.SelectProd _     -> Exactly 1.0
+        B.SelectMin  _     -> Any
+        B.SelectMax  _     -> Any
+        B.SelectL p  _     -> Exactly p
+        B.SelectSump p _   -> Exactly p
+        B.SelectSumInf _   -> Any
 
 -- takes into account modifications in the norm and applies them to the query expression
 updateExpr :: Map B.Var Double -> Map B.Var Double -> B.Expr -> B.Expr
@@ -73,31 +81,57 @@ updateExpr mapCol mapLN expr =
         B.Power x c        -> B.ScaleNorm (mapCol ! x) (B.Power x c)
         B.ComposePower e c -> B.ComposePower (updateExpr mapCol mapLN e) c
         B.Exp c x          -> B.ScaleNorm (mapCol ! x) (B.Exp c x)
+        B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN e)
         B.Sigmoid a c x    -> B.ScaleNorm (mapCol ! x) (B.Sigmoid a c x)
+        B.ComposeSigmoid a c e -> B.ComposeSigmoid a c (updateExpr mapCol mapLN e)
+        -- the constants are currently all below zeroSens, so we do not need a special case for them
         B.ScaleNorm a e    -> updateExpr mapCol mapLN e -- we assume that all scalings have already been taken into account in the maps
         B.ZeroSens e       -> B.ZeroSens e
         B.L p xs           -> B.ScaleNorm (Data.List.foldr min 100000 $ Data.List.map (mapCol !) xs) (B.L p xs)
         B.ComposeL p es    -> B.ComposeL p (Data.List.map (updateExpr mapCol mapLN) es)
         B.LInf xs          -> B.ScaleNorm (Data.List.foldr min 100000 $ Data.List.map (mapCol !) xs) (B.LInf xs)
         B.Prod es          -> B.Prod  (Data.List.map (updateExpr mapCol mapLN) es)
-        B.Prod2 es         -> B.Prod2 (Data.List.map (updateExpr mapCol mapLN) es)
+        B.Prod2 es         -> B.Prod2 (Data.List.map (updateExpr mapCol mapLN) es) -- we assume that equality of subnorms has been already checked
         B.Min es           -> B.Min (Data.List.map (updateExpr mapCol mapLN) es)
         B.Max es           -> B.Max (Data.List.map (updateExpr mapCol mapLN) es)
+        B.Sump p es        -> B.Sump p (Data.List.map (updateExpr mapCol mapLN) es)
+        B.SumInf es        -> B.SumInf (Data.List.map (updateExpr mapCol mapLN) es)
+        B.Sum2 es          -> B.Sum2   (Data.List.map (updateExpr mapCol mapLN) es) -- we assume that equality of subnorms has been already checked
 
-updateTableExpr :: B.TableExpr -> Norm B.Var -> B.TableExpr
-updateTableExpr expr norm = 
-    let (map,mapLN) = extractScalings norm in
+updateTableExpr :: B.TableExpr -> Map B.Var Double -> Map B.Var Double -> ADouble -> ADouble -> Int -> B.TableExpr
+updateTableExpr expr mapCol mapLN queryAggrNorm dbAggrNorm numOfRows =
+    let n = fromIntegral numOfRows in
+    let a = scalingLpNorm queryAggrNorm dbAggrNorm n in
+    let g = updateExpr mapCol mapLN in
     case expr of
-        B.SelectProd es    -> B.SelectProd (Data.List.map (updateExpr map mapLN) es)
-        B.SelectMin  es    -> B.SelectMin  (Data.List.map (updateExpr map mapLN) es)
-        B.SelectMax  es    -> B.SelectMax  (Data.List.map (updateExpr map mapLN) es)
-        B.SelectL p  es    -> B.SelectL p  (Data.List.map (updateExpr map mapLN) es)
+        B.SelectProd es    -> B.SelectProd   $ Data.List.map g $ Data.List.map (B.ScaleNorm a) es
+        B.SelectL p  es    -> B.SelectL p    $ Data.List.map g $ Data.List.map (B.ScaleNorm a) es
+        B.SelectMin  es    -> B.SelectMin    $ Data.List.map g es
+        B.SelectMax  es    -> B.SelectMax    $ Data.List.map g es
+        B.SelectSump _ es  -> case dbAggrNorm of
+                                  Any       -> B.SelectSumInf $ Data.List.map g es
+                                  Exactly p -> B.SelectSump p $ Data.List.map g es
+        B.SelectSumInf es  -> B.SelectSumInf $ Data.List.map g es
 
 -- Let p >= q. We have:
 -- ||x|_q, |y|_q, z|_p <= ||x,y|_q, z|_p
 -- ||x|_p, |y|_p, z|_q <= ||x,y|_p, z|_q
 -- these equalities hold for all x,y,z
 -- hence, it holds also if we scale some variables by the same value in the terms on both sides
+
+-- find a norm that is an upper bound for both input norms
+-- use the inequality |x|_p <= |y|_q for q <= p and |x|_q <= |x,y|_q
+upperBoundNorm :: Norm a -> Norm a -> Norm a
+
+-- NormZero is actually the largest, but we assume that the change of sensitive vars is always 0
+upperBoundNorm x (NormZero _) = x
+upperBoundNorm (NormZero _) y = y
+
+upperBoundNorm (NormL a1 xs) (NormL a2 ys) = NormL (takeCoarser a1 a2) (xs ++ ys)
+upperBoundNorm (NormL a1 xs) y = NormL a1 (y : xs)
+upperBoundNorm x (NormL a2 ys) = NormL a2 (x : ys)
+upperBoundNorm (NormScale a1 x) (NormScale a2 y) = NormScale (max a1 a2) (upperBoundNorm x y)
+upperBoundNorm x y = NormL (Exactly 1.0) [x,y]
 
 -- the function groups/ungroups as many subterms are possible
 rearrangeNormRec :: Grouping -> Ordering -> ADouble -> [Norm a] -> ([Norm a],[Norm a])
@@ -151,6 +185,11 @@ takeFiner :: ADouble -> ADouble -> ADouble
 takeFiner Any         _             = Any
 takeFiner _           Any           = Any
 takeFiner (Exactly p) (Exactly q)   = Exactly (max p q)
+
+takeCoarser :: ADouble -> ADouble -> ADouble
+takeCoarser Any         x             = x
+takeCoarser x           Any           = x
+takeCoarser (Exactly p) (Exactly q)   = Exactly (min p q)
 
 -- we do some simplifications to make the matching easier
 normalizeNorm :: Ord a => Norm a -> Norm a
@@ -271,10 +310,9 @@ verifyNorm k n1 (NormScale a2 n2) =
 verifyNorm _ (NormZero x) _ = Just (NormZero x)
 verifyNorm _ _ _ = Nothing
 
-normalizeAndVerify :: (Show a, Eq a, Ord a) => ADouble -> ADouble -> Norm a -> Norm a -> Maybe (Norm a)
-normalizeAndVerify a1 a2 n1 n2 = 
-    if takeFiner a1 a2 /= a1 then Nothing
-    else fmap normalizeNorm $ verifyNorm 0 (normalizeNorm n1) (normalizeNorm n2)
+normalizeAndVerify :: (Show a, Eq a, Ord a) => Norm a -> Norm a -> Maybe (Norm a)
+normalizeAndVerify n1 n2 = 
+    fmap normalizeNorm $ verifyNorm 0 (normalizeNorm n1) (normalizeNorm n2)
 
 -- here is the main step proving |x_1,...,x_n|_{px} <= |y_1,...,y_m|_{py} for (py <= px)
 -- it tries to prove that there is an injective mapping f such that |x_i| <= |y_f(i)| for all i

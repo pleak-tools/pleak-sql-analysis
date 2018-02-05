@@ -160,7 +160,7 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
           b2 = if beta3 > 0 then beta2 / beta3 else 1/r
       in if r >= 1 && gx > 0
            then AR {fx = gx ** r,
-                    subf = SUB (\ beta -> subf1g (beta / r)) (r*beta1),
+                    subf = SUB (\ beta -> subf1g (beta / r) ** r) (r*beta1),
                     sdsf = SUB (\ beta -> r * (subf1g (b1 * beta))**(r-1) * sdsf1g (b2 * beta)) beta3}
            else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
     Exp r i ->
@@ -179,22 +179,26 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
       let x = row !! i
           y = exp (a * (x - c))
           z = y / (y + 1)
+          a' = abs a
       in AR {fx = z,
-             subf = SUB (const z) a,
-             sdsf = SUB (const $ a * y / (y+1)^2) a}
+             subf = SUB (const z) a',
+             sdsf = SUB (const $ a' * y / (y+1)^2) a'}
     ComposeSigmoid a c e1 ->
       let AR gx _ (SUB sdsf1g beta2) = analyzeExpr row e1
           b = sdsf1g 0
           y = exp (a * (gx - c))
           z = y / (y + 1)
+          a' = abs a
       in AR {fx = z,
-             subf = SUB (const z) (a * b),
-             sdsf = SUB (const $ a * y / (y+1)^2) (a * b + beta2)}
+             subf = SUB (const z) (a' * b),
+             sdsf = SUB (const $ a' * y / (y+1)^2) (a' * b + beta2)}
     PowerLN i r ->
       let x = row !! i
-      in AR {fx = x ** r,
-             subf = SUB (const $ x ** r) (abs r),
-             sdsf = SUB (const $ abs r * x ** r) (abs r)}
+      in if x > 0
+           then AR {fx = x ** r,
+                    subf = SUB (const $ x ** r) (abs r),
+                    sdsf = SUB (const $ abs r * x ** r) (abs r)}
+           else error "analyzeExpr/PowerLN: condition (x > 0) not satisfied"
     Const c ->
       AR {fx = c,
           subf = SUB (const (abs c)) 0,

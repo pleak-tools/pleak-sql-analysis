@@ -78,7 +78,7 @@ queryArg t ys =
         SelectSum  _   -> B.SelectSump 1.0 ys
         -- if it turns out that SelectCount is left as it is,
         -- then all filters are defined over non-sensitive variables, so there are no privacy issues
-        SelectCount _  -> B.SelectSump 1.0 (Data.List.map B.ZeroSens ys)
+        SelectCount _  -> B.SelectSump 1.0 (Data.List.map (\_ -> B.ZeroSens (B.Const 1.0)) ys)
 
 normArg :: TableExpr -> ADouble
 normArg t =

@@ -5,5 +5,6 @@ import ProgramOptions
 main :: IO ()
 main = do
   args <- getProgramOptions
-  (table,expr) <- P.getBanachAnalyserInput (inputFp args)
-  B.performAnalysis args table expr
+  let debug = not (alternative args)
+  (table,tableExprData) <- P.getBanachAnalyserInput debug (inputFp args)
+  B.performAnalyses args table tableExprData

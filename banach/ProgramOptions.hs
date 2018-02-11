@@ -8,6 +8,7 @@ import Data.Semigroup ((<>))
 data ProgramOptions
   = ProgramOptions {
     inputFp          :: FilePath,
+    alternative       :: Bool,
     getEpsilon       :: Double,
     getBeta          :: Maybe Double
   }
@@ -15,6 +16,7 @@ data ProgramOptions
 programArgs :: Parser ProgramOptions
 programArgs = ProgramOptions
   <$> strArgument (metavar "INPUT" <> help "Input file")
+  <*> switch (short 'a' <> long "alternative" <> hidden <> help "Use alternative input and output format")
   <*> option auto (short 'e' <> long "epsilon" <> value 1.0 <> help "Specify epsilon (default is 1)")
   <*> optional (option auto (short 'B' <> long "beta" <> help "Specify beta (default is to choose automatically)"))
 

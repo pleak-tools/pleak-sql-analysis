@@ -3,6 +3,8 @@ module Banach where
 
 import ProgramOptions
 
+import Data.List
+import Data.Char
 import Text.Printf
 import Debug.Trace
 import Control.Monad
@@ -59,6 +61,9 @@ data AnalysisResult = AR {
   subf :: SmoothUpperBound, -- smooth upper bound of the absolute value of the analyzed function itself
   sdsf :: SmoothUpperBound} -- smooth upper bound of the derivative sensitivity of the analyzed function
   deriving Show
+
+unitSeparator :: Char
+unitSeparator = chr 31
 
 epsilon :: Double
 epsilon = 1.0
@@ -343,8 +348,12 @@ combineArsSum2 ars =
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
-analyzeTableExpr :: Table -> TableExpr -> AnalysisResult
-analyzeTableExpr rows te =
+-- the parameter cs sets each row into a class,
+-- the rows in the same class must be combined with l_infinity norm,
+-- different classes are combined with the specified norm,
+-- rows in class -1 are nonsensitive
+analyzeTableExpr :: Table -> [Int] -> TableExpr -> AnalysisResult
+analyzeTableExpr rows cs te =
   case te of
     SelectMin [expr] -> combineArsMin $ map (`analyzeExpr` expr) rows
     SelectMax [expr] -> combineArsMax $ map (`analyzeExpr` expr) rows
@@ -356,27 +365,60 @@ analyzeTableExpr rows te =
     SelectMax exprs -> combineArsMax $ zipWith analyzeExpr rows exprs
     SelectProd exprs -> combineArsProd $ zipWith analyzeExpr rows exprs
     SelectL p exprs -> combineArsL p $ zipWith analyzeExpr rows exprs
-    SelectSump p exprs -> combineArsSump p $ zipWith analyzeExpr rows exprs
+    SelectSump p exprs ->
+      combineArsSump p $
+        flip map (groupRows rows exprs cs) $ \ (c,re) ->
+          combineArsSumInf $ map (\ (r,e) -> analyzeExpr r (if c == -1 then ZeroSens e else e)) re
     SelectSumInf exprs -> combineArsSumInf $ zipWith analyzeExpr rows exprs
+  where
+    groupRows :: Table -> [Expr] -> [Int] -> [(Int, [(Row,Expr)])]
+    groupRows rows es cs = map (\ g -> (fst (head g), map snd g)) $ groupBy (\ x y -> fst x == fst y) $ sortBy (\ x y -> compare (fst x) (fst y)) $ zip cs (zip rows es)
 
-performAnalysis :: ProgramOptions -> Table -> TableExpr -> IO ()
-performAnalysis args rows te = do
-  let ar = analyzeTableExpr rows te
-  putStrLn $ "Analysis result: " ++ show ar
+-- simulate the old behavior of analyzeTableExpr
+analyzeTableExprOld :: Table -> TableExpr -> AnalysisResult
+analyzeTableExprOld rows te = analyzeTableExpr rows [0..length rows - 1] te
+
+--intercalate :: Char -> [String] -> String
+--intercalate c [] = ""
+--intercalate c [s] = s
+--intercalate c (s:ss) = s ++ c : intercalate c ss
+
+performAnalyses :: ProgramOptions -> Table -> [(String, [Int], TableExpr)] -> IO ()
+performAnalyses args rows tableExprData = do
+  let debug = not (alternative args)
+  res <- forM tableExprData $ \ (tableName, cs, te) -> do
+    when debug $ putStrLn ""
+    when debug $ putStrLn "--------------------------------"
+    when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="
+    sds <- performAnalysis args rows cs te
+    return (tableName, sds)
+  when debug $ putStrLn ""
+  when debug $ putStrLn "--------------------------------"
+  when debug $ putStrLn "Analysis summary (sensitivities w.r.t. each table):"
+  if alternative args
+    then putStr $ intercalate [unitSeparator] $ concat $ map (\ (tableName, sds) -> [tableName, show sds]) res
+    else forM_ res $ \ (tableName, sds) -> printf "%s: %0.6f\n" tableName sds
+
+performAnalysis :: ProgramOptions -> Table -> [Int] -> TableExpr -> IO Double
+performAnalysis args rows cs te = do
+  let debug = not (alternative args)
+  let ar = analyzeTableExpr rows cs te
+  when debug $ putStrLn $ "Analysis result: " ++ show ar
   let epsilon = getEpsilon args
-  printf "epsilon = %0.6f\n" epsilon
-  printf "gamma = %0.6f\n" gamma
+  when debug $ printf "epsilon = %0.6f\n" epsilon
+  when debug $ printf "gamma = %0.6f\n" gamma
   let defaultBeta = epsilon / (2 * (gamma + 1))
   let fixedBeta = getBeta args
   let beta = chooseSUBBeta defaultBeta fixedBeta (sdsf ar)
-  printf "beta = %0.6f\n" beta
+  when debug $ printf "beta = %0.6f\n" beta
   let b = epsilon / (gamma + 1) - beta
-  printf "b = %0.6f\n" b
+  when debug $ printf "b = %0.6f\n" b
   let sds = subg (sdsf ar) beta
-  printf "beta-smooth derivative sensitivity: %0.6f\n" sds
+  when debug $ printf "beta-smooth derivative sensitivity: %0.6f\n" sds
   let qr = fx ar
-  printf "query result: %0.6f\n" qr
+  when debug $ printf "query result: %0.6f\n" qr
   let nl = sds / b
-  printf "noise level: %0.6f\n" nl
-  printf "relative error from noise: %0.3f%%\n" (nl / qr * 100)
-  when (nl < 0) $ putStrLn "NEGATIVE NOISE LEVEL - differential privacy could not be achieved, try to increase epsilon!"
+  when debug $ printf "noise level: %0.6f\n" nl
+  when debug $ printf "relative error from noise: %0.3f%%\n" (nl / qr * 100)
+  when debug $ when (nl < 0) $ putStrLn "NEGATIVE NOISE LEVEL - differential privacy could not be achieved, try to increase epsilon!"
+  return sds

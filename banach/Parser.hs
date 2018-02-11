@@ -934,8 +934,9 @@ sensitiveOR (row:rows) =
     else True : sensitiveOR rows
 
 -- putting everything together
-getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput input = do
+--getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
+getBanachAnalyserInput :: Bool -> String -> IO (B.Table, [(String, [Int], B.TableExpr)])
+getBanachAnalyserInput debug input = do
 
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
     queries <- parseSqlQueryFromFile input
@@ -989,7 +990,7 @@ getBanachAnalyserInput input = do
     -- TODO this is CHEATING! thoretically, the best value for 'infinity' is the maximum absolute value amongst those that we aggregate
     -- however, this is a bad idea since it depends on private data and has some sensitivity by itself; we want it to be a constant
     -- let infVal = 10000.0 -- this is more honest, but it gives very bad sensitivities
-    let infVal = B.fx $ B.analyzeTableExpr crossProductTable (B.SelectMax (map (\expr -> B.ComposeL 1.0 [expr]) outputQueryExprs))
+    let infVal = B.fx $ B.analyzeTableExprOld crossProductTable (B.SelectMax (map (\expr -> B.ComposeL 1.0 [expr]) outputQueryExprs))
 
     -- we may now apply the filter
     let (filteredQueryFuns, filteredSensRowMatrix, filteredTable) = filteredExpr crossProductTable infVal filterMap inputMap sensitiveRowMatrix allSensitiveCols outputQueryFuns
@@ -1019,24 +1020,24 @@ getBanachAnalyserInput input = do
     let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else warning_verifyNorm ++ tableName ++ "\n") goodNorms tableExprData
     putStrLn $ possibleErrMsg
 
-    -- return (filteredTable, tableExprData)
-    -- TODO comment out all following lines at some point
+    return (filteredTable, tableExprData)
+    -- -- TODO comment out all following lines at some point
 
-    let numOfRows = length filteredTable
-    let (adjustedQueryExpr, adjustedQueryAggr, goodNorm) = deriveExprNorm usePrefices numOfRows inputMap allSensitiveCols allTableNorms mainQueryExpr mainQueryAggr
+    -- let numOfRows = length filteredTable
+    -- let (adjustedQueryExpr, adjustedQueryAggr, goodNorm) = deriveExprNorm usePrefices numOfRows inputMap allSensitiveCols allTableNorms mainQueryExpr mainQueryAggr
 
-    let goodNormMsg = "OK: the database norm is at least as large as the query norm."
-    let badNormMsg  = "WARNING: could not prove that the database norm is at least as large as the query norm."
-    traceIO $ if goodNorm then goodNormMsg else badNormMsg
+    -- let goodNormMsg = "OK: the database norm is at least as large as the query norm."
+    -- let badNormMsg  = "WARNING: could not prove that the database norm is at least as large as the query norm."
+    -- traceIO $ if goodNorm then goodNormMsg else badNormMsg
 
-    --traceIO $ "----------------"
-    --traceIO $ "filtered table = " ++ show filteredTable ++ "\n"
-    --traceIO $ "initial expr = " ++ show mainQueryAggr ++ "\n"
-    --traceIO $ "adjusted expr = " ++ show adjustedQueryAggr
-    --traceIO $ "----------------"
+    -- --traceIO $ "----------------"
+    -- --traceIO $ "filtered table = " ++ show filteredTable ++ "\n"
+    -- --traceIO $ "initial expr = " ++ show mainQueryAggr ++ "\n"
+    -- --traceIO $ "adjusted expr = " ++ show adjustedQueryAggr
+    -- --traceIO $ "----------------"
 
-    let sensitiveRowsCV = sensitiveOR filteredSensRowMatrix
-    let adjustedQueryAggrWithSensRows = queryExprAggregateSensRows numOfRows sensitiveRowsCV mainQueryFun adjustedQueryExpr
-    return (filteredTable, adjustedQueryAggrWithSensRows)
+    -- let sensitiveRowsCV = sensitiveOR filteredSensRowMatrix
+    -- let adjustedQueryAggrWithSensRows = queryExprAggregateSensRows numOfRows sensitiveRowsCV mainQueryFun adjustedQueryExpr
+    -- return (filteredTable, adjustedQueryAggrWithSensRows)
 
 

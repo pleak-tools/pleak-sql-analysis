@@ -1,12 +1,12 @@
 module Expr where
 
 import Data.List
-import Data.Map
 import Debug.Trace
 import qualified Data.Set as S
 
 -- import Expr from Banach.hs
 import qualified Banach as B
+import ErrorMsg
 import Norms
 
 -- let the variable names be alphanumeric strings starting with a character
@@ -78,7 +78,7 @@ queryArg t ys =
         SelectSum  _   -> B.SelectSump 1.0 ys
         -- if it turns out that SelectCount is left as it is,
         -- then all filters are defined over non-sensitive variables, so there are no privacy issues
-        SelectCount _  -> B.SelectSump 1.0 (Data.List.map (\_ -> B.ZeroSens (B.Const 1.0)) ys)
+        SelectCount _  -> B.SelectSump 1.0 $ map (\_ -> B.ZeroSens (B.Const 1.0)) ys
 
 normArg :: TableExpr -> ADouble
 normArg t =
@@ -108,30 +108,77 @@ extractArgs t =
         Sum xs           -> xs
         Id  x            -> [x]
 
+-- puts zeroSens in front of all sensitive variables
+markExprCols :: S.Set B.Var -> B.Expr -> B.Expr
+markExprCols sensitiveVars expr =
+    case expr of
+        B.PowerLN x c      -> if S.member x sensitiveVars then expr else B.ZeroSens expr
+        B.Power x c        -> if S.member x sensitiveVars then expr else B.ZeroSens expr
+        B.ComposePower e c -> B.ComposePower (markExprCols sensitiveVars e) c
+        B.Exp c x          -> if S.member x sensitiveVars then expr else B.ZeroSens expr
+        B.ComposeExp c e   -> B.ComposeExp c (markExprCols sensitiveVars e)
+        B.Sigmoid a c x    -> if S.member x sensitiveVars then expr else B.ZeroSens expr
+        B.ComposeSigmoid a c e -> B.ComposeSigmoid a c $ markExprCols sensitiveVars e
+        B.Const c          -> B.Const c
+        B.ScaleNorm a e    -> B.ScaleNorm a $ markExprCols sensitiveVars e
+        B.ZeroSens e       -> B.ZeroSens e
+        B.ComposeL p es    -> B.ComposeL p $ map (markExprCols sensitiveVars) es
+
+        B.L p xs           -> let allSensitive = foldr (\x y -> if S.member x sensitiveVars then True && y else False) True xs in
+                              if allSensitive then
+                                  B.L p xs
+                              else
+                                  B.ComposeL p $ map (\x -> let z = B.Power x 1.0 in if S.member x sensitiveVars then z else B.ZeroSens z) xs
+
+        B.LInf xs          -> let allInsensitive = foldr (\x y -> if S.member x sensitiveVars then False else True && y) True xs in
+                              if allInsensitive then B.ZeroSens (B.LInf xs) else B.LInf xs
+
+        B.Prod es          -> B.Prod   $ map (markExprCols sensitiveVars) es
+        B.Prod2 es         -> B.Prod2  $ map (markExprCols sensitiveVars) es
+        B.Min es           -> B.Min    $ map (markExprCols sensitiveVars) es
+        B.Max es           -> B.Max    $ map (markExprCols sensitiveVars) es
+        B.Sump p es        -> B.Sump p $ map (markExprCols sensitiveVars) es
+        B.SumInf es        -> B.SumInf $ map (markExprCols sensitiveVars) es
+        B.Sum2 es          -> B.Sum2   $ map (markExprCols sensitiveVars) es
+
+markTableExprCols :: S.Set B.Var -> B.TableExpr -> B.TableExpr
+markTableExprCols sensitiveVars expr =
+    case expr of
+        B.SelectProd es    -> B.SelectProd   $ map (markExprCols sensitiveVars) es
+        B.SelectL p  es    -> B.SelectL p    $ map (markExprCols sensitiveVars) es
+        B.SelectMin  es    -> B.SelectMin    $ map (markExprCols sensitiveVars) es
+        B.SelectMax  es    -> B.SelectMax    $ map (markExprCols sensitiveVars) es
+        B.SelectSump p es  -> B.SelectSump p $ map (markExprCols sensitiveVars) es
+        B.SelectSumInf es  -> B.SelectSumInf $ map (markExprCols sensitiveVars) es
+
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa
-headInputVar :: Expr -> [a] -> a
-headInputVar t [] = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Var (input variable) type")
-headInputVar t xs = head xs
+headInputVar :: Expr -> [a] -> [b] -> a
+headInputVar t [] [] = error (error_queryExpr ++ show t ++ ",\n some if its arguments are undefined.")
+headInputVar t [] _  = error (error_queryExpr ++ show t ++ ",\n the inputs have to be input table columns.")
+headInputVar t xs _  = head xs
 
-headAsgnVar :: Expr -> [a] -> a
-headAsgnVar t [] = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Expr (assignment variable) type")
-headAsgnVar t xs = head xs
+headAsgnVar :: Expr -> [a] -> [b] -> b
+headAsgnVar t [] [] = error (error_queryExpr ++ show t ++ ",\n some if its arguments are undefined.")
+headAsgnVar t _  []  = error (error_queryExpr ++ show t ++ ",\n the inputs have to be expressions, not input table columns.")
+headAsgnVar t _  xs  = head xs
 
 -- if some variables are not immediate inputs, they may just be represented as (B.Power z 1.0) for inputs z, so we may try to take z
 onlyInputVars :: Expr -> [a] -> [B.Expr] -> [a]
+onlyInputVars t [] [] = error (error_queryExpr ++ show t ++ ",\n some if its arguments are undefined.")
 onlyInputVars t xs [] = xs
 onlyInputVars t xs ys = 
-    let zs = Data.List.filter (\y -> case y of {B.Power z 1.0 -> True; _ -> False}) ys in
+    let zs = filter (\y -> case y of {B.Power z 1.0 -> True; _ -> False}) ys in
     if length zs == length ys then
-        let ws = Data.List.map (\z -> case z of {B.Power w 1.0 -> w}) zs in
+        let ws = map (\z -> case z of {B.Power w 1.0 -> w}) zs in
         xs ++ onlyInputVars t xs zs
-    else error ("Cannot substitude variables into " ++ show t ++ ",\n some arguments are not of Var (input variable) type")
+    else error (error_queryExpr ++ show t ++ ",\n all the inputs have to be input table columns.")
 
 onlyAsgnVars :: Expr -> [a] -> [b] -> [b]
-onlyAsgnVars t _ [] = error ("Cannot substitude variables into " ++ show t ++ ",\n the arguments are not of Expr (assignment variable) type")
+onlyAsgnVars t [] [] = error (error_queryExpr ++ show t ++ ",\n some if its arguments are undefined.")
+onlyAsgnVars t _ [] = error (error_queryExpr ++ show t ++ ",\n the inputs have to be expressions, not input table columns.")
 onlyAsgnVars t [] xs = xs
-onlyAsgnVars t _ _ = error ("Cannot substitude variables into " ++ show t ++ ",\n some arguments are not of Expr (assignment variable) type")
+onlyAsgnVars t _ _ = error (error_queryExpr ++ show t ++ ",\n all the inputs have to be expressions, not input table columns.")
 
 -- the constructor may depend on whether the arguments are input variables or expressions
 -- arg1: the term
@@ -141,25 +188,25 @@ onlyAsgnVars t _ _ = error ("Cannot substitude variables into " ++ show t ++ ",\
 queryExpression :: Expr -> [B.Var] -> [B.Expr] -> [S.Set B.Var] -> B.Expr
 queryExpression t xs es vss = 
     case t of
-        Power _ c        -> if xs /= [] then B.Power (headInputVar t xs) c
-                            else             B.ComposePower (headAsgnVar t es) c
+        Power _ c        -> if xs /= [] then B.Power (headInputVar t xs es) c
+                            else             B.ComposePower (headAsgnVar t xs es) c
 
-        PowerLN _ c -> if xs /= [] then B.PowerLN (headInputVar t xs) c
+        PowerLN _ c -> if xs /= [] then B.PowerLN (headInputVar t xs es) c
                        else
-                           let e = (headAsgnVar t es) in
+                           let e = (headAsgnVar t xs es) in
                            case e of
                                B.Power x 1.0 -> B.PowerLN x c
-                               _             -> B.PowerLN (headInputVar t xs) c
+                               _             -> B.PowerLN (headInputVar t xs es) c
 
-        Exp c _          -> if xs /= [] then B.Exp c (headInputVar t xs)
-                            else             B.ComposeExp c (headAsgnVar t es)
+        Exp c _          -> if xs /= [] then B.Exp c (headInputVar t xs es)
+                            else             B.ComposeExp c (headAsgnVar t xs es)
 
-        Sigmoid a c x    -> if xs /= [] then B.Sigmoid a c (headInputVar t xs)
-                            else             B.ComposeSigmoid a c (headAsgnVar t es)
+        Sigmoid a c x    -> if xs /= [] then B.Sigmoid a c (headInputVar t xs es)
+                            else             B.ComposeSigmoid a c (headAsgnVar t xs es)
 
         Const c          -> B.Const c
-        ScaleNorm c _    -> B.ScaleNorm c (headAsgnVar t es)
-        ZeroSens _       -> B.ZeroSens (headAsgnVar t es)
+        ScaleNorm c _    -> B.ScaleNorm c (headAsgnVar t xs es)
+        ZeroSens _       -> B.ZeroSens (headAsgnVar t xs es)
 
         L c _            -> if (pairwiseDisjoint vss) && (allUnique xs) then 
                                 if xs /= [] then B.L c (onlyInputVars t xs es)
@@ -186,19 +233,19 @@ queryExpression t xs es vss =
                             else                           B.Sum2 (onlyAsgnVars  t xs es)
 
         -- this is our reserved "identity" that does nothing
-        Id _             -> if xs /= [] then B.Power (headInputVar t xs) 1.0
-                            else             (headAsgnVar t es)
+        Id _             -> if xs /= [] then B.Power (headInputVar t xs es) 1.0
+                            else             (headAsgnVar t xs es)
 
-   where err = "variables are repeating in different args of the term " ++ show t
+   where err = error_queryExpr  ++ show t ++ ", variables are repeating in different args of the term "
 
 -- the definition of Norm allows to use any variables inside argumets (both input and assignment variables)
 normExpression :: Expr -> [a] -> [Norm a] -> [S.Set a] -> (Norm a)
 normExpression t xs es _ =
-    let zs = (Data.List.map (\ x -> Col x) xs) ++ es in
+    let zs = (map (\ x -> Col x) xs) ++ es in
     case t of
         PowerLN _ _      -> NormLN (head zs)
         ScaleNorm c _    -> NormScale c (head zs)
-        ZeroSens _       -> NormZero (head zs)
+        ZeroSens _       -> NormZero
         L c _            -> NormL (Exactly c) zs
         LInf _           -> NormL Any zs
 
@@ -210,6 +257,6 @@ allUnique xs =
 pairwiseDisjoint :: Ord a => [S.Set a] -> Bool
 pairwiseDisjoint [] = True
 pairwiseDisjoint (vs:vss) =
-    let n = length $ Data.List.filter (\vs' -> not (S.null (S.intersection vs vs'))) vss in
+    let n = length $ filter (\vs' -> not (S.null (S.intersection vs vs'))) vss in
     if (n == 0) then pairwiseDisjoint vss else False
 

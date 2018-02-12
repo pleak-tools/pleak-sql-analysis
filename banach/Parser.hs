@@ -337,20 +337,31 @@ aTerm :: Parser (AExpr VarName)
 aTerm = parens aExpr
   <|> AVar <$> varName
   <|> AConst <$> signedFloat
+  <|> aDummy
+
+aDummy = do
+  symbol "*"
+  return (AConst 0.0)
 
 
 ------------------------------------------------------------
 ---- Parsing SQL query (simlpified, could be delegated) ----
 ------------------------------------------------------------
 order :: Parser Ordering
-order = ordLT <|> ordEQ <|> ordGT
+order = ordLE <|> ordLT <|> ordEQ <|> ordGE <|> ordGT
 ordLT = do
+  symbol "<"
+  return LT
+ordLE = do
   symbol "<="
   return LT
 ordEQ = do
-  symbol "=="
+  symbol "==" <|> symbol "="
   return EQ
 ordGT = do
+  symbol ">"
+  return GT
+ordGE = do
   symbol ">="
   return GT
 
@@ -636,11 +647,11 @@ integer = lexeme L.decimal
 
 -- reads a double
 float :: Parser Double
-float = lexeme L.float
+float = try (lexeme L.float) <|> fmap fromIntegral integer
 
 -- reads a signed double
 signedFloat :: Parser Double
-signedFloat = L.signed spaceConsumer float
+signedFloat = try (L.signed spaceConsumer float) <|> fmap fromIntegral (L.signed spaceConsumer integer)
 
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
@@ -741,8 +752,6 @@ mergeQueryFuns (F as b : qs1) qs2 =
 -- computes full query and filter expressions (as functions), updates the corresponding maps
 processQuery :: Query -> (M.Map TableName [Function], M.Map TableName [Function]) -> (M.Map TableName [Function], M.Map TableName [Function])
 processQuery (P outputName outputColNames queryFuns inputTableNames filters) (tableQueryMap,tableFilterMap) =
-
-    --trace (show inputTableNames ++ "\n" ++ show tableQueryMap ++ "\n" ++ show tableFilterMap ++ "\n\n") $
    
     -- find the cross product query of all used input tables
     let inputQFuns      = concat $ map (\x -> tableQueryMap ! x) inputTableNames in
@@ -847,8 +856,8 @@ processOneTable tableName inputVars tableValues normFun dbSensitiveVars dbSensit
     T tableValues inputVars exprs qFuns [(tableName, normFun)] extendedSensitiveRows dbSensitiveVars
 
 
-deriveExprNorm :: Bool -> Int -> (M.Map VarName B.Var) -> S.Set B.Var -> [(String,Function)] -> B.Expr -> B.TableExpr -> (B.Expr,B.TableExpr,Bool)
-deriveExprNorm usePrefices numOfRows inputMap sensitiveCols allTableNorms queryExpr queryAggr =
+deriveExprNorm :: Bool -> Bool -> Int -> (M.Map VarName B.Var) -> S.Set B.Var -> [(String,Function)] -> B.Expr -> B.TableExpr -> (B.Expr,B.TableExpr,Bool)
+deriveExprNorm debug usePrefices numOfRows inputMap sensitiveCols allTableNorms queryExpr queryAggr =
 
     let (dbNormTableNames, dbNormFuns) = unzip allTableNorms in
     let namePrefices = map (\tableName -> if usePrefices then tableName ++ "." else "") dbNormTableNames in
@@ -880,12 +889,12 @@ deriveExprNorm usePrefices numOfRows inputMap sensitiveCols allTableNorms queryE
     let newQueryNorm = deriveNorm [0..M.size inputMap] adjustedQueryExpr in
     let newAggrNorm  = deriveTableNorm adjustedQueryAggr in
 
-    trace ("----------------") $
-    trace ("database norm     = Rows: " ++ show dbAggrNorm    ++ " | Cols: "  ++ show (normalizeNorm dbExprNorm)) $
-    trace ("intial query norm = Rows: " ++ show queryAggrNorm ++ " | Cols: "  ++ show (normalizeNorm queryExprNorm)) $
-    trace ("adjust query norm = Rows: " ++ show newAggrNorm   ++ " | Cols: "  ++ show (normalizeNorm newQueryNorm)) $
-    trace ("variable norm scaling: " ++ case newQueryExprNorm of {Nothing -> "???\n"; Just norm -> show (extractScalings norm) ++ "\n"}) $
-    trace ("----------------") $
+    traceIfDebug debug ("----------------") $
+    traceIfDebug debug ("database norm     = Rows: " ++ show dbAggrNorm    ++ " | Cols: "  ++ show (normalizeNorm dbExprNorm)) $
+    traceIfDebug debug ("intial query norm = Rows: " ++ show queryAggrNorm ++ " | Cols: "  ++ show (normalizeNorm queryExprNorm)) $
+    traceIfDebug debug ("adjust query norm = Rows: " ++ show newAggrNorm   ++ " | Cols: "  ++ show (normalizeNorm newQueryNorm)) $
+    traceIfDebug debug ("variable norm scaling: " ++ case newQueryExprNorm of {Nothing -> "???\n"; Just norm -> show (extractScalings norm) ++ "\n"}) $
+    traceIfDebug debug ("----------------") $
     (adjustedQueryExpr, adjustedQueryAggr, goodNorm)
 
 
@@ -904,25 +913,27 @@ filteredExpr table infVal filterMap inputMap sensRowMatrix sensitiveCols unfilte
 
 
 -- construct input for multitable Banach analyser
-inputForSensWrtTable :: Bool -> B.Expr -> B.TableExpr -> [(String,Function)] -> [[Int]] -> (M.Map VarName B.Var) -> (M.Map String TableData) -> [(Bool, (String, [Int], B.TableExpr))]
-inputForSensWrtTable usePrefices queryExpr queryAggr allTableNorms sensitiveRowMatrix inputMap tableMap =
+inputForSensWrtTable :: Bool -> Bool -> B.Expr -> B.TableExpr -> [(String,Function)] -> [[Int]] -> (M.Map VarName B.Var) -> (M.Map String TableData) -> [(Bool, (String, [Int], B.TableExpr))]
+inputForSensWrtTable debug usePrefices queryExpr queryAggr allTableNorms [] inputMap tableMap =
+    error (error_emptyTable)
+inputForSensWrtTable debug usePrefices queryExpr queryAggr allTableNorms sensitiveRowMatrix inputMap tableMap =
     let sensitiveRowMatrixColumns = transpose sensitiveRowMatrix in
     let tableMapList = M.toList tableMap in
-    inputForSensWrtTableRec usePrefices inputMap queryExpr queryAggr allTableNorms sensitiveRowMatrixColumns tableMapList
+    inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms sensitiveRowMatrixColumns tableMapList
 
-inputForSensWrtTableRec :: Bool -> (M.Map VarName B.Var) -> B.Expr -> B.TableExpr -> [(String,Function)] -> [[Int]] -> [(String,TableData)] -> [(Bool, (String, [Int], B.TableExpr))]
-inputForSensWrtTableRec _ _ _ _ _ [] [] = []
-inputForSensWrtTableRec usePrefices inputMap queryExpr queryAggr allTableNorms (col:cols) ((tableName, tableData) : ts) =
+inputForSensWrtTableRec :: Bool -> Bool -> (M.Map VarName B.Var) -> B.Expr -> B.TableExpr -> [(String,Function)] -> [[Int]] -> [(String,TableData)] -> [(Bool, (String, [Int], B.TableExpr))]
+inputForSensWrtTableRec _ _ _ _ _ _ [] [] = []
+inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms (col:cols) ((tableName, tableData) : ts) =
     let tableSensVars = getSensitiveCols tableData in
     let tableSensCols = S.fromList $ map (\x -> inputMap ! x) tableSensVars in
     let newQueryExpr = markExprCols      tableSensCols queryExpr in
     let newQueryAggr = markTableExprCols tableSensCols queryAggr in
 
     let numOfRows = length col in
-    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm usePrefices numOfRows inputMap tableSensCols allTableNorms newQueryExpr newQueryAggr in
-    (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec usePrefices inputMap queryExpr queryAggr allTableNorms cols ts
+    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfRows inputMap tableSensCols allTableNorms newQueryExpr newQueryAggr in
+    (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms cols ts
 
-inputForSensWrtTableRec _ _ _ _ _ _ _ = error (error_internal ++ "table sensitivity matrix and the table map do not match")
+inputForSensWrtTableRec _ _ _ _ _ _ _ _ = error (error_internal ++ "table sensitivity matrix and the table map do not match")
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
 -- we use the structure that marks all insensitive entries with '-1'
@@ -932,6 +943,17 @@ sensitiveOR (row:rows) =
     let rowSet = S.fromList row in
     if S.member (-1) rowSet then False : sensitiveOR rows
     else True : sensitiveOR rows
+
+-- this outputs a trace message only if the flag debug=True is set
+traceIfDebug :: Bool -> String -> (a -> a)
+traceIfDebug debug msg =
+    if debug then trace msg
+    else id
+
+traceIOIfDebug :: Bool -> String -> IO ()
+traceIOIfDebug debug msg = do
+    if debug then traceIO msg
+    else return ()
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
@@ -962,9 +984,9 @@ getBanachAnalyserInput debug input = do
     -- filterMap maps table names to columnwise filter expressions
     let (queryMap, filterMap) = Data.List.foldl (\x y -> processQuery y x) (inputQueryMap,inputFilterMap) queries
 
-    --traceIO $ "----------------"
-    --traceIO $ Data.List.foldr (\(tableName, x) y -> "TableQ " ++ tableName ++ ": " ++ show x ++ "\n\n" ++ y) "" (M.toList queryMap)
-    --traceIO $ Data.List.foldr (\(tableName, x) y -> "TableF " ++ tableName ++ ": " ++ show x ++ "\n\n" ++ y) "" (M.toList filterMap)
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ Data.List.foldr (\(tableName, x) y -> "TableQ " ++ tableName ++ ": " ++ show x ++ "\n\n" ++ y) "" (M.toList queryMap)
+    traceIOIfDebug debug $ Data.List.foldr (\(tableName, x) y -> "TableF " ++ tableName ++ ": " ++ show x ++ "\n\n" ++ y) "" (M.toList filterMap)
 
     -- we assume that each input table is used only once, so we take the table cross product as an input
     let (T crossProductTable allInputVars _ _ allTableNorms sensitiveRowMatrix allSensitiveVars) = getTableCrossProductData inputTableNames inputTableMap
@@ -972,20 +994,21 @@ getBanachAnalyserInput debug input = do
     let inputMap = M.fromList inputVarList
     let allSensitiveCols = S.fromList $ map (\x -> inputMap ! x) allSensitiveVars
 
-    traceIO $ "----------------"
-    traceIO $ "All input variables:    " ++ show (M.toList inputMap)
-    traceIO $ "All sensitive cols:     " ++ show allSensitiveCols
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "All input variables:    " ++ show (M.toList inputMap)
+    traceIOIfDebug debug $ "All sensitive cols:     " ++ show allSensitiveCols
 
-    --traceIO $ "----------------"
-    --traceIO $ "Sensitive row matrix: " ++ show sensitiveRowMatrix
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "List of tables: " ++ show (M.keys inputTableMap)
+    traceIOIfDebug debug $ "Sensitive row matrix: " ++ show sensitiveRowMatrix
 
     -- we assume that the final table has one column (in theory, there can be more)
     let outputQueryFuns  = queryMap ! "output"
     let outputQueryExprs = map (\x -> markExprCols allSensitiveCols $ snd (query2Expr inputMap x)) outputQueryFuns
 
-    --traceIO $ "----------------"
-    --traceIO $ "Query funs (w/o filter) = " ++ show outputQueryFuns
-    --traceIO $ "Query expr (w/o filter) = " ++ show outputQueryExprs
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Query funs (w/o filter) = " ++ show outputQueryFuns
+    traceIOIfDebug debug $ "Query expr (w/o filter) = " ++ show outputQueryExprs
 
     -- TODO this is CHEATING! thoretically, the best value for 'infinity' is the maximum absolute value amongst those that we aggregate
     -- however, this is a bad idea since it depends on private data and has some sensitivity by itself; we want it to be a constant
@@ -995,46 +1018,47 @@ getBanachAnalyserInput debug input = do
     -- we may now apply the filter
     let (filteredQueryFuns, filteredSensRowMatrix, filteredTable) = filteredExpr crossProductTable infVal filterMap inputMap sensitiveRowMatrix allSensitiveCols outputQueryFuns
 
-    --traceIO $ "----------------"
-    --traceIO $ "Num of rows after filtering:   " ++ show (length filteredTable)
-    --traceIO $ "Filtered sensitive row matrix: " ++ show filteredSensRowMatrix
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Num of rows after filtering:   " ++ show (length filteredTable)
+    traceIOIfDebug debug $ "Filtered sensitive row matrix: " ++ show filteredSensRowMatrix
 
     -- now transform the main query to a banach expression
     let mainQueryFun = last filteredQueryFuns
     let mainQueryExpr = markExprCols allSensitiveCols $ snd $ query2Expr inputMap mainQueryFun
     let mainQueryAggr = queryExprAggregate mainQueryFun mainQueryExpr
 
-    --traceIO ("----------------")
-    --traceIO ("Query funs (w/ filter) = " ++ show (last filteredQueryFuns))
-    --traceIO ("Query expr (w/ filter) = " ++ show mainQueryExpr)
-    --traceIO ("Query aggr (w/ filter) = " ++ show mainQueryAggr)
+    traceIOIfDebug debug ("----------------")
+    traceIOIfDebug debug ("Query funs (w/ filter) = " ++ show (last filteredQueryFuns))
+    traceIOIfDebug debug ("Query expr (w/ filter) = " ++ show mainQueryExpr)
+    traceIOIfDebug debug ("Query aggr (w/ filter) = " ++ show mainQueryAggr)
     
     --bring the input to the form [(String, [Int], TableExpr)]
-    let (goodNorms, tableExprData) = unzip $ inputForSensWrtTable usePrefices mainQueryExpr mainQueryAggr allTableNorms filteredSensRowMatrix inputMap inputTableMap
+    let (goodNorms, tableExprData) = unzip $ inputForSensWrtTable debug usePrefices mainQueryExpr mainQueryAggr allTableNorms filteredSensRowMatrix inputMap inputTableMap
 
-    traceIO ( "----------------")
-    traceIO ( "good table norms:" ++ show goodNorms)
-    traceIO ( "tableExprData:" ++ show tableExprData)
-    traceIO ( "----------------")
+    traceIOIfDebug debug ( "----------------")
+    traceIOIfDebug debug ( "good table norms:" ++ show goodNorms)
+    traceIOIfDebug debug ( "tableExprData:" ++ show tableExprData)
+    traceIOIfDebug debug ( "----------------")
 
     let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else warning_verifyNorm ++ tableName ++ "\n") goodNorms tableExprData
     putStrLn $ possibleErrMsg
 
     return (filteredTable, tableExprData)
-    -- -- TODO comment out all following lines at some point
+
+    -- Below is the old solution that does not consider sensitivities w.r.t. each table
 
     -- let numOfRows = length filteredTable
-    -- let (adjustedQueryExpr, adjustedQueryAggr, goodNorm) = deriveExprNorm usePrefices numOfRows inputMap allSensitiveCols allTableNorms mainQueryExpr mainQueryAggr
+    -- let (adjustedQueryExpr, adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfRows inputMap allSensitiveCols allTableNorms mainQueryExpr mainQueryAggr
 
     -- let goodNormMsg = "OK: the database norm is at least as large as the query norm."
     -- let badNormMsg  = "WARNING: could not prove that the database norm is at least as large as the query norm."
-    -- traceIO $ if goodNorm then goodNormMsg else badNormMsg
+    -- traceIOIfDebug debug $ if goodNorm then goodNormMsg else badNormMsg
 
-    -- --traceIO $ "----------------"
-    -- --traceIO $ "filtered table = " ++ show filteredTable ++ "\n"
-    -- --traceIO $ "initial expr = " ++ show mainQueryAggr ++ "\n"
-    -- --traceIO $ "adjusted expr = " ++ show adjustedQueryAggr
-    -- --traceIO $ "----------------"
+    -- traceIOIfDebug debug $ "----------------"
+    -- traceIOIfDebug debug $ "filtered table = " ++ show filteredTable ++ "\n"
+    -- traceIOIfDebug debug $ "initial expr = " ++ show mainQueryAggr ++ "\n"
+    -- traceIOIfDebug debug $ "adjusted expr = " ++ show adjustedQueryAggr
+    -- traceIOIfDebug debug $ "----------------"
 
     -- let sensitiveRowsCV = sensitiveOR filteredSensRowMatrix
     -- let adjustedQueryAggrWithSensRows = queryExprAggregateSensRows numOfRows sensitiveRowsCV mainQueryFun adjustedQueryExpr

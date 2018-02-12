@@ -11,6 +11,8 @@ error_parseData     = "ERROR: Could not parse the data table from file "
 error_queryExpr     = "ERROR: Unsupported term in the expression "
 error_filterExpr    = "ERROR: Unsupported filter "
 
+error_emptyTable    = "ERROR: Cannot analyse sensitivity of an empty table"
+
 error_internal      = "INTERNAL ERROR: Some internal analyser problem: "
 
 warning_verifyNorm  = "WARNING: Could not prove that the db norm is at least as large as the query norm for sensitivity w.r.t. "

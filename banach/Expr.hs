@@ -1,7 +1,6 @@
 module Expr where
 
 import Data.List
-import Debug.Trace
 import qualified Data.Set as S
 
 -- import Expr from Banach.hs

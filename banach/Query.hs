@@ -1,6 +1,5 @@
 module Query where
 
-import Debug.Trace
 import Control.Monad (void)
 import Data.Either
 import Data.List

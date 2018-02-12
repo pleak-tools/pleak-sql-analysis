@@ -2,7 +2,6 @@ module Aexpr where
 
 import Data.List
 import qualified Data.Map as M
-import Debug.Trace
 
 import ErrorMsg
 import Expr

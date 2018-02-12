@@ -360,8 +360,8 @@ normalizeAndVerify n1 n2 =
 verifyNorms :: (Show a, Eq a, Ord a) => Int -> ADouble ->  ADouble -> [Norm a] -> [Norm a] -> Maybe [Norm a]
 verifyNorms _ aX aY [] nsY = Just nsY
 verifyNorms _ aX aY nsX [] = Nothing
-verifyNorms 10 _ _ _ _     = -- the limit is reached
-    trace ("WARNING: reached the limit on recursion depth.") Nothing
+verifyNorms 10 _ _ _ _     = Nothing -- the limit is reached
+   -- trace ("WARNING: reached the limit on recursion depth.") Nothing
 
 verifyNorms k aX aY nsX nsY =
 

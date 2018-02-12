@@ -10,7 +10,7 @@ import qualified Text.Megaparsec.Char as C
 import qualified Text.Megaparsec.Char.Lexer as L
 --
 import qualified Control.Exception as Exc
-import Control.Monad (void)
+import Control.Monad (void,when)
 import Debug.Trace
 
 import Data.Char
@@ -1065,7 +1065,7 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug ( "----------------")
 
     let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else warning_verifyNorm ++ tableName ++ "\n") goodNorms tableExprData
-    putStrLn $ possibleErrMsg
+    when (debug || not (null possibleErrMsg)) $ putStrLn $ possibleErrMsg
 
     return (filteredTable, tableExprData)
 

@@ -142,18 +142,18 @@ aexprToExpr y aexpr@(AUnary (ARoot p) (ASum xs)) =
                 M.fromList[(y, L p zs)]
 
         -- otherwise, we fail since we do not know how to compute root sensitivities yet
-        else error (error_queryExpr ++ show aexpr)
+        else error $ error_queryExpr aexpr
 
 aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) (AAbs (AVar x)))) =
     if p == q then
         M.fromList [(y, L p [x])]
-    else error (error_queryExpr ++ show aexpr)
+    else error $ error_queryExpr aexpr
 
 aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) (AAbs x))) =
     if p == q then
         let z = y ++ "~1" in
         M.union (M.fromList [(y, L p [z])]) (aexprToExpr z x)
-    else error (error_queryExpr ++ show aexpr)
+    else error $ error_queryExpr aexpr
 
 -- l1-norm and sum
 aexprToExpr y aexpr@(ASum xs) =
@@ -214,5 +214,5 @@ aexprToExpr y (AProd xs) =
     M.union (M.fromList [(y, Prod zs)]) $ foldr M.union M.empty ws
 
 -- we may possibly add more interesting expressions that can be reduced to Expr
-aexprToExpr y aexpr = error (error_queryExpr ++  show aexpr)
+aexprToExpr y aexpr = error $ error_queryExpr aexpr
 

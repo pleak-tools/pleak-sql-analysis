@@ -28,24 +28,9 @@ data Function
   = F (M.Map VarName Expr) TableExpr
   deriving (Show)
 
--- transforms elements that are not on certain index positions, assumes that the indices are sorted
-mapNotAtIndices :: (a -> a) -> [Int] -> [a] -> Int -> [a]
-mapNotAtIndices f [] xs _ = map f xs
-mapNotAtIndices _ _ [] _  = error (error_internal ++ "index out of bounds in function mapNotAtIndices")
-mapNotAtIndices f is'@(i:is) (x:xs) k =
-    if (i == k) then x:(mapNotAtIndices f is xs (k+1))
-    else (f x):(mapNotAtIndices f is' xs (k+1))
-
 ------------------------------------------------
 ---- Executing public parts of an SQL query ----
 ------------------------------------------------
-
--- characteristic vector of a vector of indices, bounded by n
-charVec :: Int -> [Int] -> [Bool]
-charVec n indices = mapNotAtIndices (\x -> False) indices (replicate n True) 0
-
-fromCharVec :: [Bool] -> [Int]
-fromCharVec bs = fst $ unzip $ filter (\(x,y) -> y) (zip [0..length bs - 1] bs)
 
 -- finds a cross product of N lists, applies the operation 'f' to elements that come together
 crossProduct :: (a -> a -> a) -> [a] -> [[a]] -> [a]
@@ -180,7 +165,7 @@ rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
 
                 _ -> error err
     else query
-    where err = error_filterExpr ++ ": filter for sensitive vars, relation " ++ show ord ++ " and aggregator " ++ show b ++ " has not been added yet."
+    where err = error_filterExpr ord b
 
 
 

@@ -1,9 +1,9 @@
 module Norms where
 
+import Prelude hiding ((!!))
+import Data.List hiding ((!!))
 import qualified Data.IntMap as IntMap
-import Data.List
 import qualified Data.Map as M
-import Data.Map ((!))
 import Data.Maybe
 import Data.Tuple
 import qualified Data.Set as S
@@ -16,7 +16,7 @@ import ToySolver.Combinatorial.BipartiteMatching
 import qualified Banach as B
 import ErrorMsg
 
--- this is a double with additional top-value "any", meaning that any double is allowed at this place
+-- this is a double with additional top-value 'any', meaning that any double is allowed at this place
 data ADouble = Exactly Double | Any
   deriving (Show,Ord,Eq)
 
@@ -35,7 +35,7 @@ data Grouping = Group | Ungroup
 
 ---------------------------------------------------------------------------------------------
 -- TODO: deriveNorm, deriveTableNorm, updateExpr, updateTableExpr are being synchronized with B.Expr and B.TableExpr
-deriveNorm :: [a] -> B.Expr -> Norm a
+deriveNorm :: (Show a) => [a] -> B.Expr -> Norm a
 deriveNorm colnames expr = 
     case expr of
         B.PowerLN x _      -> NormLN (Col (colnames !! x))
@@ -86,7 +86,7 @@ markNormCols sensitiveVars expr =
           NormZero       -> NormZero
 
 -- if x belongs to the map, take map[x], otherwise take a default value y
-takeIfExists :: Ord a => M.Map a b -> a -> b -> b
+takeIfExists :: (Show a, Show b, Ord a) => M.Map a b -> a -> b -> b
 takeIfExists mapX x y =
     if M.member x mapX then (mapX ! x)
     else y
@@ -163,7 +163,7 @@ rearrangeNormRec _ _ _ [] = ([],[])
 rearrangeNormRec grouping ord (Exactly p) xs@(x'@(NormL (Exactly q) z):xs') =
     if (compare q p == ord || compare q p == EQ) then
         let (ys1,ys2) = partition (\x -> (case x of {NormL (Exactly q') _ -> (if q == q' then True else False); Col y -> True;  _ -> False})) xs in
-        let ys1'    = concat $ map (\x -> (case x of {NormL (Exactly q') vs -> vs; Col y -> [Col y]; _ -> error (error_internal ++ "norm regroup problem")})) ys1 in
+        let ys1'    = concat $ map (\x -> (case x of {NormL (Exactly q') vs -> vs; Col y -> [Col y]; _ -> error (error_internal_normRegroup)})) ys1 in
         let (ys,zs) = rearrangeNormRec grouping ord (Exactly p) ys2 in
         case grouping of Group -> if (length ys1' == 0) then (ys,zs) else ((NormL (Exactly q) ys1'):ys,zs)
                          Ungroup -> (ys1' ++ ys, zs)
@@ -173,21 +173,21 @@ rearrangeNormRec grouping ord (Exactly p) xs@(x'@(NormL (Exactly q) z):xs') =
 
 rearrangeNormRec grouping GT (Exactly p) xs@((NormL Any z):_) =
         let (ys1,ys2) = partition (\x -> (case x of {NormL Any _ -> True; Col y -> True;  _ -> False})) xs in
-        let ys1'    = concat $ map (\x -> (case x of {NormL Any vs -> vs;  Col y -> [Col y]; _ -> error (error_internal ++ "norm regroup problem")})) ys1 in
+        let ys1'    = concat $ map (\x -> (case x of {NormL Any vs -> vs;  Col y -> [Col y]; _ -> error (error_internal_normRegroup)})) ys1 in
         let (ys,zs) = rearrangeNormRec grouping GT (Exactly p) ys2 in
         case grouping of Group -> if (length ys1' == 0) then (ys,zs) else ((NormL Any ys1'):ys,zs)
                          Ungroup -> (ys1' ++ ys, zs)
 
 rearrangeNormRec grouping LT Any xs@((NormL (Exactly q) z):_) =
         let (ys1,ys2) = partition (\x -> (case x of {NormL (Exactly q') _ -> (if q == q' then True else False); Col y -> True;  _ -> False})) xs in
-        let ys1' = concat $ map (\x -> (case x of {NormL (Exactly q') vs -> vs; Col y -> [Col y]; _ -> error (error_internal ++ "norm regroup problem")})) ys1 in
+        let ys1' = concat $ map (\x -> (case x of {NormL (Exactly q') vs -> vs; Col y -> [Col y]; _ -> error (error_internal_normRegroup)})) ys1 in
         let (ys,zs) = rearrangeNormRec grouping LT Any ys2 in
         case grouping of Group -> if (length ys1' == 0) then (ys,zs) else ((NormL (Exactly q) ys1'):ys,zs)
                          Ungroup -> (ys1' ++ ys, zs)
 
 rearrangeNormRec grouping ord Any xs@((NormL Any z):_) =
         let (ys1,ys2) = partition (\x -> (case x of {NormL Any _ -> True; Col y -> True;  _ -> False})) xs in
-        let ys1' = concat $ map (\x -> (case x of {NormL Any vs -> vs;  Col y -> [Col y]; _ -> error (error_internal ++ "norm regroup problem")})) ys1 in
+        let ys1' = concat $ map (\x -> (case x of {NormL Any vs -> vs;  Col y -> [Col y]; _ -> error (error_internal_normRegroup)})) ys1 in
         let (ys,zs) = rearrangeNormRec grouping ord Any ys2 in
         case grouping of Group -> if (length ys1' == 0) then (ys,zs) else ((NormL Any ys1'):ys,zs)
                          Ungroup -> (ys1' ++ ys, zs)
@@ -255,7 +255,7 @@ extractScalings norm =
             -- if the same variable has been used several times, take its minimum scaling
             -- minimum scaling is the one that increases sensitivity the most
             NormL p xs                   -> foldr (\(x1,y1) (x2,y2) -> let f = M.unionWith min in (f x1 x2, f y1 y2)) (none,none) $ map extractScalings xs
-            x                            -> error (error_internal ++ "cannot extract scaling from: " ++ show x)
+            x                            -> error $ error_internal_extractScaling x
     where none = M.empty
 
 -- compares two LP-norms, uses norm equivalence and scales if necessary
@@ -307,7 +307,7 @@ verifyNorm k (NormLN x) y =
         _ -> fmap NormLN $ v
 
 -- compare lp-norms
--- if the norm is "Any", we treat as LInf
+-- if the norm is 'Any', we treat as LInf
 -- First, compare the entire first norm with all args of the second norm
 -- (we do not do it the other way around since it would not give additional solutions anyway).
 -- If it fails, then go deeper into both norms, applying scaling if necessary

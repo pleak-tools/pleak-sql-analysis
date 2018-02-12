@@ -17,7 +17,6 @@ import Data.Char
 import Data.Either
 import Data.List
 import qualified Data.Map as M
-import Data.Map ((!))
 import qualified Data.Set as S
 import Data.Void
 
@@ -440,40 +439,64 @@ sqlQueries = try sqlManyQueries <|> sqlOneQuery
 
 sqlManyQueries :: Parser [Query]
 sqlManyQueries = do
-    qs <- many sqlQuery
-    q  <- sqlAggrQuery
-    return (qs ++ [q])
+    qs1 <- many sqlAsgnQuery
+    qs2  <- sqlAggrQuery
+    return $ (concat qs1) ++ qs2
 
 sqlOneQuery :: Parser [Query]
 sqlOneQuery = do
-    q  <- sqlAggrQuery
-    return [q]
+    qs  <- sqlAggrQuery
+    return qs
 
-sqlQuery :: Parser Query
-sqlQuery = do
+sqlAsgnQuery :: Parser [Query]
+sqlAsgnQuery = do
   tableName <- varName
   void (asgn)
+  (names,aexprs,tablePaths,filters,internalQueries) <- sqlQuery
+  let fs = zipWith (\x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (Select (tableName ++ "." ++ y))) aexprs names
+  let subquery = P tableName names fs tablePaths filters
+  return $ internalQueries ++ [subquery]
+
+sqlQuery :: Parser ([String],[AExpr VarName],[String],[Function],[Query])
+sqlQuery = do
   caseInsensKeyWord "select"
   namedAExprs <- sepBy1 namedAExpr (symbol ",")
   let (names,aexprs) = unzip namedAExprs
   caseInsensKeyWord "from"
-  tablePaths <- sepBy1 identifier (symbol ",")
-  filters    <- sqlQueryFilter
-  let fs = zipWith (\x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (Select (tableName ++ "." ++ y))) aexprs names
-  return (P tableName names fs tablePaths filters)
+  internalTableData <- sepBy1 internalTable (symbol ",")
+  let (tablePaths,internalQueries) = unzip internalTableData
+  filters <- sqlQueryFilter
+  return (names,aexprs,tablePaths,filters,concat internalQueries)
 
-sqlAggrQuery :: Parser Query
+sqlAggrQuery :: Parser [Query]
 sqlAggrQuery = do
   caseInsensKeyWord "select"
   g <- sqlAggregator
   aexpr <- aExpr
   let y = "y~"
   caseInsensKeyWord "from"
-  tablePaths <- sepBy1 identifier (symbol ",")
-  filters    <- sqlQueryFilter
+  internalTableData <- sepBy1 internalTable (symbol ",")
+  let (tablePaths,internalQueries) = unzip internalTableData
+  filters <- sqlQueryFilter
   let as = aexprToExpr y (aexprNormalize $ aexpr)
   let b  = g y
-  return (P "output" [] [F as b] tablePaths filters)
+  let subquery = P "output" [] [F as b] tablePaths filters
+  return $ (concat internalQueries) ++ [subquery]
+
+internalTable :: Parser (String, [Query])
+internalTable = internalTableQuery <|> internalTableName 
+
+internalTableQuery = do
+    (names,aexprs,tablePaths,filters,internalQueries) <- parens sqlQuery
+    caseInsensKeyWord "as"
+    tableName <- identifier
+    let fs = zipWith (\x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (Select (tableName ++ "." ++ y))) aexprs names
+    let subquery = P tableName names fs tablePaths filters
+    return (tableName, internalQueries ++ [subquery])
+
+internalTableName = do
+    tableName <- identifier
+    return (tableName, [])
 
 sqlQueryFilter :: Parser [Function]
 sqlQueryFilter = sqlQueryWithFilter <|> sqlQueryWithoutFilter
@@ -573,15 +596,15 @@ blockCommentEnd = "*/"
 
 -- this is to extract the actual parsed data
 -- seems very ugly, there should be some easier way to extract data from "Either"
-parseData :: (Parser a) -> String -> String -> a
+parseData :: (Parser a) -> (String -> String) -> String -> a
 parseData p err s = 
     let res = parse p "" s in
     case res of
-        Left  x -> error (err ++ "\nParse error details:\n" ++ (parseErrorPretty x))
+        Left  x -> error $ err (parseErrorPretty x)
         Right x -> x
 
-parseFromFile :: (Parser a) -> String -> String -> IO a
-parseFromFile p err s = fmap (parseData p (err ++ s)) (readInput s)
+parseFromFile :: (Parser a) -> (String -> String -> String) -> String -> IO a
+parseFromFile p err s = fmap (parseData p (err s)) (readInput s)
 
 parseTestFromFile :: (Show a, ShowErrorComponent e) => Parsec e String a -> FilePath -> IO ()
 parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
@@ -770,7 +793,7 @@ fillMissingWithRec (x:xs) y n i =
     if (i == n) then []
     else if (x == i) then x : fillMissingWithRec xs y  n(i+1)
     else if (x > i) then y : fillMissingWithRec (x:xs) y n (i+1)
-    else error (error_internal ++ "case x < i in fillMissing: " ++ show x ++ " " ++ show i ++ " " ++ show xs)
+    else error $ error_internal_fillMissing x i xs
 
 -- compute table data for a cross product
 getTableCrossProductData :: [TableName] -> M.Map TableName TableData -> TableData
@@ -915,14 +938,17 @@ filteredExpr table infVal filterMap inputMap sensRowMatrix sensitiveCols unfilte
 -- construct input for multitable Banach analyser
 inputForSensWrtTable :: Bool -> Bool -> B.Expr -> B.TableExpr -> [(String,Function)] -> [[Int]] -> (M.Map VarName B.Var) -> (M.Map String TableData) -> [(Bool, (String, [Int], B.TableExpr))]
 inputForSensWrtTable debug usePrefices queryExpr queryAggr allTableNorms [] inputMap tableMap =
-    error (error_emptyTable)
+    error $ error_emptyTable
 inputForSensWrtTable debug usePrefices queryExpr queryAggr allTableNorms sensitiveRowMatrix inputMap tableMap =
     let sensitiveRowMatrixColumns = transpose sensitiveRowMatrix in
     let tableMapList = M.toList tableMap in
+    let n1 = length sensitiveRowMatrixColumns in
+    let n2 = length tableMapList in
+    if n1 /= n2 then error $ error_internal_sensitivityMatrix n1 n2 else
     inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms sensitiveRowMatrixColumns tableMapList
 
 inputForSensWrtTableRec :: Bool -> Bool -> (M.Map VarName B.Var) -> B.Expr -> B.TableExpr -> [(String,Function)] -> [[Int]] -> [(String,TableData)] -> [(Bool, (String, [Int], B.TableExpr))]
-inputForSensWrtTableRec _ _ _ _ _ _ [] [] = []
+inputForSensWrtTableRec _ _ _ _ _ _ _ [] = []
 inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms (col:cols) ((tableName, tableData) : ts) =
     let tableSensVars = getSensitiveCols tableData in
     let tableSensCols = S.fromList $ map (\x -> inputMap ! x) tableSensVars in
@@ -932,8 +958,6 @@ inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableN
     let numOfRows = length col in
     let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfRows inputMap tableSensCols allTableNorms newQueryExpr newQueryAggr in
     (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms cols ts
-
-inputForSensWrtTableRec _ _ _ _ _ _ _ _ = error (error_internal ++ "table sensitivity matrix and the table map do not match")
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
 -- we use the structure that marks all insensitive entries with '-1'

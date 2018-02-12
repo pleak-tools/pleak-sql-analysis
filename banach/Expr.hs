@@ -44,7 +44,7 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectSum VarName         -- E1+...+En with norm that is not specified yet and will be derived later
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
                | Select VarName            -- does not apply aggregation, is used only for intermediate representation
-               | Filt Ordering VarName Double  -- used for filters, actually is not a "Table" expression, we just use the same data structure
+               | Filt Ordering VarName Double  -- used for filters, actually is not a 'Table' expression, we just use the same data structure
   deriving Show
 
 -----------------------------------------------------------------------------------
@@ -153,31 +153,30 @@ markTableExprCols sensitiveVars expr =
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa
 headInputVar :: Expr -> [a] -> [b] -> a
-headInputVar t [] [] = error (error_queryExpr ++ show t ++ ",\n some if its arguments are undefined.")
-headInputVar t [] _  = error (error_queryExpr ++ show t ++ ",\n the inputs have to be input table columns.")
+headInputVar t [] [] = error $ error_queryExpr_undefinedVars t
+headInputVar t [] _  = error $ error_queryExpr_missingInputVars t
 headInputVar t xs _  = head xs
 
 headAsgnVar :: Expr -> [a] -> [b] -> b
-headAsgnVar t [] [] = error (error_queryExpr ++ show t ++ ",\n some if its arguments are undefined.")
-headAsgnVar t _  []  = error (error_queryExpr ++ show t ++ ",\n the inputs have to be expressions, not input table columns.")
-headAsgnVar t _  xs  = head xs
+headAsgnVar t [] [] = error $ error_queryExpr_undefinedVars t
+headAsgnVar t _  [] = error $ error_queryExpr_missingAsgnVars t
+headAsgnVar t _  xs = head xs
 
 -- if some variables are not immediate inputs, they may just be represented as (B.Power z 1.0) for inputs z, so we may try to take z
 onlyInputVars :: Expr -> [a] -> [B.Expr] -> [a]
-onlyInputVars t [] [] = error (error_queryExpr ++ show t ++ ",\n some if its arguments are undefined.")
+onlyInputVars t [] [] = error $ error_queryExpr_undefinedVars t
 onlyInputVars t xs [] = xs
 onlyInputVars t xs ys = 
     let zs = filter (\y -> case y of {B.Power z 1.0 -> True; _ -> False}) ys in
     if length zs == length ys then
         let ws = map (\z -> case z of {B.Power w 1.0 -> w}) zs in
         xs ++ onlyInputVars t xs zs
-    else error (error_queryExpr ++ show t ++ ",\n all the inputs have to be input table columns.")
+    else error $ error_queryExpr_notAllInputVars t
 
 onlyAsgnVars :: Expr -> [a] -> [b] -> [b]
-onlyAsgnVars t [] [] = error (error_queryExpr ++ show t ++ ",\n some if its arguments are undefined.")
-onlyAsgnVars t _ [] = error (error_queryExpr ++ show t ++ ",\n the inputs have to be expressions, not input table columns.")
+onlyAsgnVars t [] [] = error $ error_queryExpr_undefinedVars t
 onlyAsgnVars t [] xs = xs
-onlyAsgnVars t _ _ = error (error_queryExpr ++ show t ++ ",\n all the inputs have to be expressions, not input table columns.")
+onlyAsgnVars t _ _   = error $ error_queryExpr_notAllAsgnVars t
 
 -- the constructor may depend on whether the arguments are input variables or expressions
 -- arg1: the term
@@ -231,11 +230,11 @@ queryExpression t xs es vss =
         Sum _            -> if (pairwiseDisjoint vss) then B.Sump 1.0 (onlyAsgnVars  t xs es)
                             else                           B.Sum2 (onlyAsgnVars  t xs es)
 
-        -- this is our reserved "identity" that does nothing
+        -- this is our reserved 'identity' that does nothing
         Id _             -> if xs /= [] then B.Power (headInputVar t xs es) 1.0
                             else             (headAsgnVar t xs es)
 
-   where err = error_queryExpr  ++ show t ++ ", variables are repeating in different args of the term "
+   where err = error_queryExpr_repeatingVars t
 
 -- the definition of Norm allows to use any variables inside argumets (both input and assignment variables)
 normExpression :: Expr -> [a] -> [Norm a] -> [S.Set a] -> (Norm a)

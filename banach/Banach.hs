@@ -20,6 +20,8 @@ data Expr = Power Var Double         -- x^r with norm | |
           | ComposeExp Double Expr   -- e^(r*E) with norm N
           | Sigmoid Double Double Var-- s(a,c,x) = e^(a*(x-c))/(e^(a*(x-c)) + 1)
           | ComposeSigmoid Double Double Expr-- s(a,c,E) = e^(a*(E-c))/(e^(a*(E-c)) + 1)
+          | Tauoid Double Double Var -- t(a,c,x) = 2/(e^(-a*(x-c)) + e^(a*(x-c)))
+          | ComposeTauoid Double Double Expr-- t(a,c,E) = 2/(e^(-a*(E-c)) + e^(a*(E-c)))
           | Const Double             -- constant c (real number, may be negative) in a zero-dimensional Banach space (with trivial norm)
           | ScaleNorm Double Expr    -- E with norm a * N
           | ZeroSens Expr            -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
@@ -196,7 +198,26 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
           a' = abs a
       in AR {fx = z,
              subf = SUB (const z) (a' * b),
-             sdsf = SUB (const $ a' * y / (y+1)^2) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> a' * y / (y+1)^2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+    Tauoid a c i ->
+      let x = row !! i
+          y1 = exp (-a * (x - c))
+          y2 = exp (a * (x - c))
+          z = 2 / (y1 + y2)
+          a' = abs a
+      in AR {fx = z,
+             subf = SUB (const z) a',
+             sdsf = SUB (const $ a' * z) a'}
+    ComposeTauoid a c e1 ->
+      let AR gx _ (SUB sdsf1g beta2) = analyzeExpr row e1
+          b = sdsf1g 0
+          y1 = exp (-a * (gx - c))
+          y2 = exp (a * (gx - c))
+          z = 2 / (y1 + y2)
+          a' = abs a
+      in AR {fx = z,
+             subf = SUB (const z) (a' * b),
+             sdsf = SUB (\ beta -> a' * z * sdsf1g (beta - a' * b)) (a' * b + beta2)}
     PowerLN i r ->
       let x = row !! i
       in if x > 0

@@ -1,0 +1,4 @@
+0 1 2
+value;
+z = scaleNorm 1.0 value;
+return lp 1.0 z;

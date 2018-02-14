@@ -309,6 +309,20 @@ combineArsL p ars =
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
+-- the computed function is l_p-norm but the norm is l_infinity
+combineArsLpInf :: Double -> [AnalysisResult] -> AnalysisResult
+combineArsLpInf p ars =
+  let fxs = map fx ars
+      subfs = map subf ars
+      sdsfs = map sdsf ars
+      subfBetas = map subBeta subfs
+      sdsfBetas = map subBeta sdsfs
+      subgs = map subg subfs
+      sdsgs = map subg sdsfs
+  in AR {fx = lpnorm p fxs,
+         subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
+         sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+
 combineArsSump :: Double -> [AnalysisResult] -> AnalysisResult
 combineArsSump p ars =
   let fxs = map fx ars
@@ -355,33 +369,32 @@ combineArsSum2 ars =
 analyzeTableExpr :: Table -> [Int] -> TableExpr -> AnalysisResult
 analyzeTableExpr rows cs te =
   case te of
-    SelectMin [expr] -> combineArsMin $ map (`analyzeExpr` expr) rows
-    SelectMax [expr] -> combineArsMax $ map (`analyzeExpr` expr) rows
-    SelectProd [expr] -> combineArsProd $ map (`analyzeExpr` expr) rows
-    SelectL p [expr] -> combineArsL p $ map (`analyzeExpr` expr) rows
-    SelectSump p [expr] -> combineArsSump p $ map (`analyzeExpr` expr) rows
-    SelectSumInf [expr] -> combineArsSumInf $ map (`analyzeExpr` expr) rows
+    SelectMin [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectMin $ map (const expr) rows)
+    SelectMax [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectMax $ map (const expr) rows)
+    SelectProd [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectProd $ map (const expr) rows)
+    SelectL p [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectL p $ map (const expr) rows)
+    SelectSump p [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectSump p $ map (const expr) rows)
+    SelectSumInf [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectSumInf $ map (const expr) rows)
     SelectMin exprs -> combineArsMin $ zipWith analyzeExpr rows exprs
     SelectMax exprs -> combineArsMax $ zipWith analyzeExpr rows exprs
     SelectProd exprs -> combineArsProd $ zipWith analyzeExpr rows exprs
-    SelectL p exprs -> combineArsL p $ zipWith analyzeExpr rows exprs
+    SelectL p exprs ->
+      combineArsL p $
+        flip map (groupRows rows exprs cs) $ \ (c,re) ->
+          combineArsLpInf p $ map (\ (r,e) -> analyzeExpr r (if c == -1 then ZeroSens e else e)) re
     SelectSump p exprs ->
       combineArsSump p $
         flip map (groupRows rows exprs cs) $ \ (c,re) ->
           combineArsSumInf $ map (\ (r,e) -> analyzeExpr r (if c == -1 then ZeroSens e else e)) re
     SelectSumInf exprs -> combineArsSumInf $ zipWith analyzeExpr rows exprs
   where
+    n = length rows
     groupRows :: Table -> [Expr] -> [Int] -> [(Int, [(Row,Expr)])]
     groupRows rows es cs = map (\ g -> (fst (head g), map snd g)) $ groupBy (\ x y -> fst x == fst y) $ sortBy (\ x y -> compare (fst x) (fst y)) $ zip cs (zip rows es)
 
 -- simulate the old behavior of analyzeTableExpr
 analyzeTableExprOld :: Table -> TableExpr -> AnalysisResult
 analyzeTableExprOld rows te = analyzeTableExpr rows [0..length rows - 1] te
-
---intercalate :: Char -> [String] -> String
---intercalate c [] = ""
---intercalate c [s] = s
---intercalate c (s:ss) = s ++ c : intercalate c ss
 
 performAnalyses :: ProgramOptions -> Table -> [(String, [Int], TableExpr)] -> IO ()
 performAnalyses args rows tableExprData = do

@@ -1,0 +1,1 @@
+SELECT SUM input5a.value FROM input5a, input5b WHERE input5a.id - input5b.a == 0.0

@@ -913,6 +913,7 @@ deriveExprNorm debug usePrefices numOfRows inputMap sensitiveCols allTableNorms 
     let newAggrNorm  = deriveTableNorm adjustedQueryAggr in
 
     traceIfDebug debug ("----------------") $
+    traceIfDebug debug (show dbAggrNorms) $
     traceIfDebug debug ("database norm     = Rows: " ++ show dbAggrNorm    ++ " | Cols: "  ++ show (normalizeNorm dbExprNorm)) $
     traceIfDebug debug ("intial query norm = Rows: " ++ show queryAggrNorm ++ " | Cols: "  ++ show (normalizeNorm queryExprNorm)) $
     traceIfDebug debug ("adjust query norm = Rows: " ++ show newAggrNorm   ++ " | Cols: "  ++ show (normalizeNorm newQueryNorm)) $
@@ -945,19 +946,22 @@ inputForSensWrtTable debug usePrefices queryExpr queryAggr allTableNorms sensiti
     let n1 = length sensitiveRowMatrixColumns in
     let n2 = length tableMapList in
     if n1 /= n2 then error $ error_internal_sensitivityMatrix n1 n2 else
-    inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms sensitiveRowMatrixColumns tableMapList
+    let tableNormMap = M.fromList allTableNorms in
+    inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr tableNormMap sensitiveRowMatrixColumns tableMapList
 
-inputForSensWrtTableRec :: Bool -> Bool -> (M.Map VarName B.Var) -> B.Expr -> B.TableExpr -> [(String,Function)] -> [[Int]] -> [(String,TableData)] -> [(Bool, (String, [Int], B.TableExpr))]
+inputForSensWrtTableRec :: Bool -> Bool -> (M.Map VarName B.Var) -> B.Expr -> B.TableExpr -> (M.Map String Function) -> [[Int]] -> [(String,TableData)] -> [(Bool, (String, [Int], B.TableExpr))]
 inputForSensWrtTableRec _ _ _ _ _ _ _ [] = []
-inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms (col:cols) ((tableName, tableData) : ts) =
+inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr tableNormMap (col:cols) ((tableName, tableData) : ts) =
     let tableSensVars = getSensitiveCols tableData in
     let tableSensCols = S.fromList $ map (\x -> inputMap ! x) tableSensVars in
+    let tableNorm = (tableName, tableNormMap ! tableName) in
+
     let newQueryExpr = markExprCols      tableSensCols queryExpr in
     let newQueryAggr = markTableExprCols tableSensCols queryAggr in
 
     let numOfRows = length col in
-    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfRows inputMap tableSensCols allTableNorms newQueryExpr newQueryAggr in
-    (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms cols ts
+    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfRows inputMap tableSensCols [tableNorm] newQueryExpr newQueryAggr in
+    (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr tableNormMap cols ts
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
 -- we use the structure that marks all insensitive entries with '-1'

@@ -19,6 +19,7 @@ data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm
           | PowerLN VarName Double        -- x^r with logarithmic norm: ||x|| = |ln x|, addition in Banach space is multiplication of real numbers
           | Exp Double VarName            -- e^(r*x) with norm | |
           | Sigmoid Double Double VarName -- s(a,c,x) = e^(a*(x-c))/(e^(a*(x-c)) + 1)
+          | Tauoid Double Double VarName  -- t(a,c,x) = 2/(e^(-a*(x-c)) + e^(a*(x-c)))
           | Const Double                  -- constant c (real number, may be negative) in a zero-dimensional Banach space (with trivial norm)
           | ScaleNorm Double VarName      -- E with norm a * N
           | ZeroSens VarName              -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
@@ -94,6 +95,7 @@ extractArgs t =
         PowerLN x _      -> [x]
         Exp _ x          -> [x]
         Sigmoid _ _ x    -> [x]
+        Tauoid _ _ x     -> [x]
         Const _          -> []
         ScaleNorm _ x    -> [x]
         ZeroSens x       -> [x]
@@ -118,6 +120,8 @@ markExprCols sensitiveVars expr =
         B.ComposeExp c e   -> B.ComposeExp c (markExprCols sensitiveVars e)
         B.Sigmoid a c x    -> if S.member x sensitiveVars then expr else B.ZeroSens expr
         B.ComposeSigmoid a c e -> B.ComposeSigmoid a c $ markExprCols sensitiveVars e
+        B.Tauoid a c x     -> if S.member x sensitiveVars then expr else B.ZeroSens expr
+        B.ComposeTauoid a c e  -> B.ComposeTauoid a c $ markExprCols sensitiveVars e
         B.Const c          -> B.Const c
         B.ScaleNorm a e    -> B.ScaleNorm a $ markExprCols sensitiveVars e
         B.ZeroSens e       -> B.ZeroSens e
@@ -201,6 +205,9 @@ queryExpression t xs es vss =
 
         Sigmoid a c x    -> if xs /= [] then B.Sigmoid a c (headInputVar t xs es)
                             else             B.ComposeSigmoid a c (headAsgnVar t xs es)
+
+        Tauoid a c x     -> if xs /= [] then B.Tauoid a c (headInputVar t xs es)
+                            else             B.ComposeTauoid a c (headAsgnVar t xs es)
 
         Const c          -> B.Const c
         ScaleNorm c _    -> B.ScaleNorm c (headAsgnVar t xs es)

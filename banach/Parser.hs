@@ -44,7 +44,7 @@ data ParserInstance = QueryParsing | NormParsing
 -- keywords
 allKeyWords :: S.Set String -- set of reserved "words"
 allKeyWords = S.fromList ["return",
-               "const","^","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid",
+               "const","^","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid","tauoid",
                "selectMin","selectMax","selectProd","selectL"]
 
 allCaseInsensKeyWords :: S.Set String -- set of reserved "words"
@@ -65,6 +65,7 @@ queryExpr x = powerExpr
   <|> minExpr
   <|> maxExpr
   <|> sigmoidExpr
+  <|> tauoidExpr
   <|> sumpExpr
   <|> sumInfExpr
   <|> constExpr
@@ -172,6 +173,14 @@ sigmoidExpr = do
   c <- float
   x <- varName
   return [Sigmoid a c x]
+
+tauoidExpr :: Parser [Expr]
+tauoidExpr = do
+  keyWord "tauoid"
+  a <- float
+  c <- float
+  x <- varName
+  return [Tauoid a c x]
 
 sumpExpr :: Parser [Expr]
 sumpExpr = do

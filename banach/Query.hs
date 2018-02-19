@@ -97,51 +97,50 @@ rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
 
     -- check if the filter "contains at least one sensitive var"
     if (length fvar > 0) then
-
+            let f = case ord of
+                   EQ -> Tauoid a
+                   LT -> Sigmoid (-a)
+                   GT -> Sigmoid a
+            in
             case b of
 
                 -- for counting, take the sigmoid output and compute l1-norm of the results
                 SelectCount y ->
-                     let a'  = case ord of {LT -> -a; GT -> a; EQ -> error err} in
-                     let asRw = \xs -> M.union xs (M.fromList [(z, Sigmoid a' c x)]) in
-                     let bRw  = \x ->  SelectL 1.0 z in
-                     F (M.union fas (asRw as)) (bRw b)
+                         let asRw = \xs -> M.union xs (M.fromList [(z, f c x)]) in
+                         let bRw  = \x ->  SelectL 1.0 z in
+                         F (M.union fas (asRw as)) (bRw b)
 
                 -- for sum and L-norms, we just multiply the value by the sigmoid output
                 SelectSum y ->
-                    let a' = case ord of {LT -> -a; GT -> a; EQ -> error err} in
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Prod [y,z1]), (z1, Sigmoid a' c x)]) in
+                    let asRw = \xs -> M.union xs (M.fromList [(z, Prod [y,z1]), (z1, f c x)]) in
                     let bRw  = \x ->  SelectSum z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 SelectL p y ->
                     let a' = case ord of {LT -> -a;  GT -> a; EQ -> error err} in
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Prod [y,z1]), (z1, Sigmoid a' c x)]) in
+                    let asRw = \xs -> M.union xs (M.fromList [(z, Prod [y,z1]), (z1, f c x)]) in
                     let bRw  = \x ->  SelectL p z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 -- for product, we take 1 + b*(y - 1), where b is the sigmoid output, so the values that are filtered out become 1
                 -- this is not good to be sigmoid-approximated since the error becomes too large with multiplication
                 SelectProd y ->
-                    let a' = case ord of {LT -> -a; GT -> a; EQ -> error err} in
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Sum [one, z0]), (z0, Prod [z1,z2]), (z1, Sum [y,oneNeg]), (z2, Sigmoid a' c x),
+                    let asRw = \xs -> M.union xs (M.fromList [(z, Sum [one, z0]), (z0, Prod [z1,z2]), (z1, Sum [y,oneNeg]), (z2, f c x),
                                                               (oneNeg, oneNegVal), (one, oneVal)]) in
                     let bRw  = \x ->  SelectProd z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 -- for min/max, could we add/subtract a large quantity from the values that are filtered out, so that they would be ignored
                 -- this does not work well since if the quantity does not depend on the input, it may be too large
-                -- take 'min(y, 2b*inf - inf)' for SelectMax, and 'max(y, 2b*inf - inf)' for SelectMin, where b is flipped for SelectMin
+                -- take 'min(y, 2b*inf - inf)' for SelectMax, and 'max(y, 2b*(-inf) - inf)' for SelectMin
                 SelectMax y ->
-                    let a' = case ord of {LT -> -a;  GT -> a; EQ -> error err} in
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Min [y,z0]), (z0, Sum [z1,infNeg]), (z1, Prod [two,z2,infPos]), (z2, Sigmoid a' c x),
+                    let asRw = \xs -> M.union xs (M.fromList [(z, Min [y,z0]), (z0, Sum [z1,infNeg]), (z1, Prod [two,z2,infPos]), (z2, f c x),
                                                               (infNeg, infNegVal), (infPos, infPosVal), (two, twoVal)]) in
                     let bRw  = \x ->  SelectMax z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 SelectMin y ->
-                    let a'  = case ord of {LT -> a; GT -> -a; EQ -> error err} in
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Max [y,z0]), (z0, Sum [z1,infNeg]), (z1, Prod [two,z2,infPos]), (z2, Sigmoid a' c x),
+                    let asRw = \xs -> M.union xs (M.fromList [(z, Max [y,z0]), (z0, Sum [z1,infPos]), (z1, Prod [two,z2,infNeg]), (z2, f c x),
                                                               (infNeg, infNegVal), (infPos, infPosVal), (two, twoVal)]) in
                     let bRw  = \x ->  SelectMin z in
                     F (M.union fas (asRw as)) (bRw b)
@@ -156,7 +155,7 @@ rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
 
                 -- for min, we first transform x to exp^{-x} and then find the maximum
                 -- this assumes that in the end "ln" should be applied in the end, but sensitivity remains the same
-                -- TODO the analyser should probably assume that y >= 0, otherwise we get infinite sensitivity
+                -- TODO this is not good since we do not actually apply 'ln', and the error estimation is not correct
                 -- SelectMin y ->
                 --    let a'  = case ord of {LT -> a; GT -> -a; EQ -> error err} in
                 --    let asRw = \xs -> M.union xs (M.fromList [(z0, Exp (-1.0) y), (z, Prod [z0,z1]), (z1, Sigmoid a' c x)]) in

@@ -45,6 +45,8 @@ deriveNorm colnames expr =
         B.ComposeExp c e   -> deriveNorm colnames e
         B.Sigmoid _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
         B.ComposeSigmoid _ _ e -> deriveNorm colnames e
+        B.Tauoid  _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposeTauoid  _ _ e -> deriveNorm colnames e
         B.Const a          -> NormZero
         B.ScaleNorm a e    -> NormScale a (deriveNorm colnames e)
         B.ZeroSens e       -> NormZero
@@ -105,6 +107,8 @@ updateExpr mapCol mapLN expr =
         B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN e)
         B.Sigmoid a c x    -> B.ScaleNorm (scale mapCol x) (B.Sigmoid a c x)
         B.ComposeSigmoid a c e -> B.ComposeSigmoid a c (updateExpr mapCol mapLN e)
+        B.Tauoid a c x    -> B.ScaleNorm (scale mapCol x) (B.Tauoid a c x)
+        B.ComposeTauoid a c e -> B.ComposeTauoid a c (updateExpr mapCol mapLN e)
         B.Const a          -> B.Const a
         B.ScaleNorm a e    -> updateExpr mapCol mapLN e -- we assume that all scalings have already been taken into account in the maps
         B.ZeroSens e       -> B.ZeroSens e

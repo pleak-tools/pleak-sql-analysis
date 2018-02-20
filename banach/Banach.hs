@@ -398,7 +398,10 @@ analyzeTableExpr rows cs te =
     SelectSumInf [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectSumInf $ map (const expr) rows)
     SelectMin exprs -> combineArsMin $ zipWith analyzeExpr rows exprs
     SelectMax exprs -> combineArsMax $ zipWith analyzeExpr rows exprs
-    SelectProd exprs -> combineArsProd $ zipWith analyzeExpr rows exprs
+    SelectProd exprs ->
+      combineArsProd $
+        flip map (groupRows rows exprs cs) $ \ (c,re) ->
+          combineArsProd2 $ map (\ (r,e) -> analyzeExpr r (if c == -1 then ZeroSens e else e)) re
     SelectL p exprs ->
       combineArsL p $
         flip map (groupRows rows exprs cs) $ \ (c,re) ->

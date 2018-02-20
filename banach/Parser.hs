@@ -13,6 +13,7 @@ import qualified Control.Exception as Exc
 import Control.Monad (void,when)
 import Debug.Trace
 
+import Data.Bits
 import Data.Char
 import Data.Either
 import Data.List
@@ -48,7 +49,7 @@ allKeyWords = S.fromList ["return",
                "selectMin","selectMax","selectProd","selectL"]
 
 allCaseInsensKeyWords :: S.Set String -- set of reserved "words"
-allCaseInsensKeyWords = S.fromList ["select","as","from","where","and","min","max","sum","product","count"]
+allCaseInsensKeyWords = S.fromList ["select","as","from","where","and","min","max","sum","product","count","distinct","group","by","between"]
 
 -- a query expression
 queryExpr :: VarName -> Parser [Expr]
@@ -316,12 +317,19 @@ absEndAExpr = do
 aExpr :: Parser (AExpr VarName)
 aExpr = makeExprParser aTerm aOperators
 
-namedAExpr :: Parser (String, AExpr VarName)
+namedAExpr :: Parser (String, VarName -> TableExpr, AExpr VarName)
 namedAExpr = do
+    g <- sqlAggregator
     aexpr <- aExpr
     caseInsensKeyWord "as"
     newColName <- identifier
-    return (newColName, aexpr)
+    return (newColName, g, aexpr)
+
+unnamedAExpr :: Parser (VarName -> TableExpr, AExpr VarName)
+unnamedAExpr = do
+    g <- sqlAggregator
+    aexpr <- aExpr
+    return (g, aexpr)
 
 aOperators :: [[Operator Parser (AExpr a)]]
 aOperators =
@@ -379,6 +387,7 @@ sqlAggregator = selectProdAExpr
   <|> selectMaxAExpr
   <|> selectSumAExpr
   <|> selectCountAExpr
+  <|> selectDistinctAExpr
   <|> selectAExpr
 
 selectProdAExpr :: Parser (VarName -> TableExpr)
@@ -406,11 +415,16 @@ selectCountAExpr = do
   caseInsensKeyWord "count"
   return SelectCount
 
+selectDistinctAExpr :: Parser (VarName -> TableExpr)
+selectDistinctAExpr = do
+  caseInsensKeyWord "distinct"
+  return SelectDistinct
+
 selectAExpr :: Parser (VarName -> TableExpr)
 selectAExpr = do
   return Select
 
-filterVarConst :: Parser Function
+filterVarConst :: Parser [Function]
 filterVarConst = do
   aexpr <- aExpr
   op <- order
@@ -418,30 +432,57 @@ filterVarConst = do
   let y = "filt~"
   let as = aexprToExpr y (aexprNormalize $ aexpr)
   let b  = Filt op y c
-  return (F as b)
+  return [F as b]
 
-filterVarVar :: Parser Function
+filterVarVar :: Parser [Function]
 filterVarVar = do
   aexpr1 <- aExpr
   op <- order
   aexpr2 <- aExpr
-  let y = "filt~"
+  let y  = "filt~"
   let y1 = "filty1~"
   let y2 = "filty2~"
   let z1 = "filtz1~"
   let z2 = "filtz2~"
+
   let as1 = M.toList $ aexprToExpr y1 (aexprNormalize $ aexpr1)
   let as2 = M.toList $ aexprToExpr y2 (aexprNormalize $ aexpr2)
+
   let as = M.fromList (as1 ++ as2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
   let b  = Filt op y 0.0
-  return (F as b)
+  return [F as b]
+
+filterBetween :: Parser [Function]
+filterBetween = do
+  aexpr   <- aExpr
+  caseInsensKeyWord "between"
+  aexprLB <- aExpr
+  caseInsensKeyWord "and"
+  aexprUB <- aExpr
+
+  let y  = "filt~"
+  let y1 = "filty1~"
+  let y2 = "filty2~"
+  let z1 = "filtz1~"
+  let z2 = "filtz2~"
+
+  let as1   = M.toList $ aexprToExpr y1 (aexprNormalize $ aexpr)
+  let asLB2 = M.toList $ aexprToExpr y2 (aexprNormalize $ aexprLB)
+  let asUB2 = M.toList $ aexprToExpr y2 (aexprNormalize $ aexprUB)
+
+  let asLB  = M.fromList (as1 ++ asLB2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
+  let asUB  = M.fromList (as1 ++ asUB2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
+
+  let bLB  = Filt GT y 0.0
+  let bUB  = Filt LT y 0.0
+  return [F asLB bLB, F asUB bUB]
 
 -- ======================================================================= --
 -----------------------------------------------------------------------------
 ----      The code below does not need to be updated with Banach.hs      ----
 -----------------------------------------------------------------------------
-sqlFilter :: Parser Function
-sqlFilter = try filterVarConst <|> filterVarVar
+sqlFilter :: Parser [Function]
+sqlFilter = try filterBetween <|> try filterVarConst <|> filterVarVar
 
 sqlQueries :: Parser [Query]
 sqlQueries = try sqlManyQueries <|> sqlOneQuery
@@ -461,46 +502,51 @@ sqlAsgnQuery :: Parser [Query]
 sqlAsgnQuery = do
   tableName <- varName
   void (asgn)
-  (names,aexprs,tablePaths,filters,internalQueries) <- sqlQuery
-  let fs = zipWith (\x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (Select (tableName ++ "." ++ y))) aexprs names
-  let subquery = P tableName names fs tablePaths filters
+  (gs,names,groups,aexprs,tablePaths,filters,internalQueries) <- sqlQuery
+  let fs = zipWith3 (\g x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (g (tableName ++ "." ++ y))) gs aexprs names
+  let subquery = P tableName names groups fs tablePaths filters
   return $ internalQueries ++ [subquery]
 
-sqlQuery :: Parser ([String],[AExpr VarName],[String],[Function],[Query])
+sqlQuery :: Parser ([VarName -> TableExpr],[String],[String],[AExpr VarName],[String],[Function],[Query])
 sqlQuery = do
   caseInsensKeyWord "select"
   namedAExprs <- sepBy1 namedAExpr (symbol ",")
-  let (names,aexprs) = unzip namedAExprs
+  let (names, gs, aexprs) = unzip3 namedAExprs
+
   caseInsensKeyWord "from"
   internalTableData <- sepBy1 internalTable (symbol ",")
   let (tablePaths,internalQueries) = unzip internalTableData
   filters <- sqlQueryFilter
-  return (names,aexprs,tablePaths,filters,concat internalQueries)
+  groups  <- sqlQueryGroupBy
+
+  return (gs,names,groups,aexprs,tablePaths,filters,concat internalQueries)
 
 sqlAggrQuery :: Parser [Query]
 sqlAggrQuery = do
   caseInsensKeyWord "select"
-  g <- sqlAggregator
-  aexpr <- aExpr
-  let y = "y~"
+  unnamedAExprs <- sepBy1 unnamedAExpr (symbol ",")
+  let (gs, aexprs) = unzip unnamedAExprs
+
   caseInsensKeyWord "from"
   internalTableData <- sepBy1 internalTable (symbol ",")
   let (tablePaths,internalQueries) = unzip internalTableData
   filters <- sqlQueryFilter
-  let as = aexprToExpr y (aexprNormalize $ aexpr)
-  let b  = g y
-  let subquery = P "output" [] [F as b] tablePaths filters
+  groups  <- sqlQueryGroupBy
+
+  let ys = map (\i -> "y~" ++ show i) [0..length gs - 1]
+  let queryFuns = zipWith3 (\g aexpr y -> F (aexprToExpr y (aexprNormalize $ aexpr)) (g y)) gs aexprs ys
+  let subquery = P "output" [] groups queryFuns tablePaths filters
   return $ (concat internalQueries) ++ [subquery]
 
 internalTable :: Parser (String, [Query])
 internalTable = internalTableQuery <|> internalTableName 
 
 internalTableQuery = do
-    (names,aexprs,tablePaths,filters,internalQueries) <- parens sqlQuery
+    (gs,names,groups,aexprs,tablePaths,filters,internalQueries) <- parens sqlQuery
     caseInsensKeyWord "as"
     tableName <- identifier
-    let fs = zipWith (\x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (Select (tableName ++ "." ++ y))) aexprs names
-    let subquery = P tableName names fs tablePaths filters
+    let fs = zipWith3 (\g x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (g (tableName ++ "." ++ y))) gs aexprs names
+    let subquery = P tableName names groups fs tablePaths filters
     return (tableName, internalQueries ++ [subquery])
 
 internalTableName = do
@@ -518,7 +564,21 @@ sqlQueryWithFilter :: Parser [Function]
 sqlQueryWithFilter = do
   caseInsensKeyWord "where"
   filters <- sepBy1 sqlFilter (caseInsensKeyWord "and")
-  return filters
+  return (concat $ filters)
+
+sqlQueryGroupBy :: Parser [String]
+sqlQueryGroupBy = sqlQueryWithGroupBy <|> sqlQueryWithoutGroupBy
+
+sqlQueryWithoutGroupBy :: Parser [String]
+sqlQueryWithoutGroupBy = do
+  return []
+
+sqlQueryWithGroupBy :: Parser [String]
+sqlQueryWithGroupBy = do
+  caseInsensKeyWord "group"
+  caseInsensKeyWord "by"
+  colnames <- sepBy1 identifier (symbol ",")
+  return colnames
 
 --------------------------------------
 ---- Parsing general input format ----
@@ -530,7 +590,7 @@ query = do
   xs <- many varName
   void (delim)
   f <- function QueryParsing
-  return (P "output" [] [f] [tablePath] [])
+  return (P "output" [] [] [f] [tablePath] [])
 
 -- the first row in the norm file is the list of sensitive rows
 -- the second row in the norm file is the list of sensitive columns
@@ -703,19 +763,22 @@ readDB dbFileName = do
     return (varNames, table)
 
 getQueryTableName :: Query -> TableName
-getQueryTableName (P tableName _ _ _ _) = tableName
+getQueryTableName (P tableName _ _ _ _ _) = tableName
 
 getQueryDbFileNames :: Query -> [String]
-getQueryDbFileNames (P _ _ _ dbFileNames _) = dbFileNames
+getQueryDbFileNames (P _ _ _ _ dbFileNames _) = dbFileNames
 
 getQueryFilters :: Query -> [Function]
-getQueryFilters (P _ _ _ _ filters) = filters
+getQueryFilters (P _ _ _ _ _ filters) = filters
 
 getQueryFunctions :: Query -> [Function]
-getQueryFunctions (P _ _ fs _ _) = fs
+getQueryFunctions (P _ _ _ fs _ _) = fs
 
 getQueryColNames :: Query -> [String]
-getQueryColNames (P _ cs _ _ _) = cs
+getQueryColNames (P _ cs _ _ _ _) = cs
+
+getQueryGroupNames :: Query -> [String]
+getQueryGroupNames (P _ _ gs _ _ _) = gs
 
 query2Expr :: (M.Map VarName B.Var) -> Function -> (S.Set B.Var, B.Expr)
 query2Expr inputMap (F asgnMap y) =
@@ -770,8 +833,29 @@ readInput path = do
    content <- readFile path
    return content
 
+readEither :: (Read a) => String -> Either a String
+readEither s = case reads s of
+              [(x, "")] -> Left x
+              _ -> Right s
+
+-- djb2 hash
+hash :: String -> Double
+hash = fromIntegral . foldl' (\h c -> xor (33*h) (ord c)) 5381
+
+-- tries to read an integer, then a boolean, and if fails, returns the hash of the input string
+readIntBoolString :: String -> Double
+readIntBoolString s =
+    let a = readEither s :: Either Double String in
+    case a of
+        Left  x -> x
+        Right x ->
+            let b = readEither s :: Either Bool String in
+            case b of
+                Left  x -> fromIntegral $ fromEnum x
+                Right x -> hash s
+
 readDoubles :: String -> [[Double]]
-readDoubles s = fmap (map read . words) (lines s)
+readDoubles s = fmap (map readIntBoolString . words) (lines s)
 
 -- add the entire second argument to each query of the first argument list
 mergeQueryFuns :: [Function] -> [Function] -> [Function]
@@ -781,14 +865,25 @@ mergeQueryFuns (F as b : qs1) qs2 =
     let as2 = M.fromList as1 in
     (F (M.union as as2) b) : (mergeQueryFuns qs1 qs2)
 
+badInputQFuns :: [Function] -> (Bool, String)
+badInputQFuns [] = (False,"")
+badInputQFuns (F _ b : qs) =
+    case b of
+        Select _ -> badInputQFuns qs
+        _        -> (True, error_queryExpr_aggrInterm b)
+
 -- computes full query and filter expressions (as functions), updates the corresponding maps
 processQuery :: Query -> (M.Map TableName [Function], M.Map TableName [Function]) -> (M.Map TableName [Function], M.Map TableName [Function])
-processQuery (P outputName outputColNames queryFuns inputTableNames filters) (tableQueryMap,tableFilterMap) =
-   
+processQuery (P outputName outputColNames groupColnames queryFuns inputTableNames filters) (tableQueryMap,tableFilterMap) =
+
+    if length groupColnames > 0 then error $ error_queryExpr_groupBy else
+
     -- find the cross product query of all used input tables
     let inputQFuns      = concat $ map (\x -> tableQueryMap ! x) inputTableNames in
     let inputFilters    = concat $ map (\x -> tableFilterMap ! x) inputTableNames in
 
+    let (b, err) = badInputQFuns inputQFuns in
+    if b then error $ err else
     let outputQueryFuns = mergeQueryFuns queryFuns inputQFuns in
     let outputFilters  = inputFilters  ++ mergeQueryFuns filters inputQFuns in
 
@@ -889,7 +984,7 @@ processOneTable tableName inputVars tableValues normFun dbSensitiveVars dbSensit
 
 
 deriveExprNorm :: Bool -> Bool -> Int -> (M.Map VarName B.Var) -> S.Set B.Var -> [(String,Function)] -> B.Expr -> B.TableExpr -> (B.Expr,B.TableExpr,Bool)
-deriveExprNorm debug usePrefices numOfRows inputMap sensitiveCols allTableNorms queryExpr queryAggr =
+deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols allTableNorms queryExpr queryAggr =
 
     let (dbNormTableNames, dbNormFuns) = unzip allTableNorms in
     let namePrefices = map (\tableName -> if usePrefices then tableName ++ "." else "") dbNormTableNames in
@@ -898,7 +993,6 @@ deriveExprNorm debug usePrefices numOfRows inputMap sensitiveCols allTableNorms 
 
     -- if there are several tables, we assume that we compute sensitivity w.r.t. max of them
     -- alternatively, we could assign different sensitivity weights to different tables
-    -- TODO check why it does not work correctly with 'Any'
     let dbExprNorm = NormL Any dbNorms in
     let dbAggrNorm = Data.List.foldr takeFiner (Exactly 1.0) dbAggrNorms in
 
@@ -916,7 +1010,7 @@ deriveExprNorm debug usePrefices numOfRows inputMap sensitiveCols allTableNorms 
     in
 
     let adjustedQueryExpr = updateExpr mapCol mapLN queryExpr in
-    let adjustedQueryAggr = updateTableExpr queryAggr mapCol mapLN queryAggrNorm dbAggrNorm numOfRows in
+    let adjustedQueryAggr = updateTableExpr queryAggr mapCol mapLN queryAggrNorm dbAggrNorm numOfSensRows in
 
     let newQueryNorm = deriveNorm [0..M.size inputMap] adjustedQueryExpr in
     let newAggrNorm  = deriveTableNorm adjustedQueryAggr in
@@ -969,7 +1063,12 @@ inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr tableNorm
     let newQueryAggr = markTableExprCols tableSensCols queryAggr in
 
     let numOfRows = length col in
-    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfRows inputMap tableSensCols [tableNorm] newQueryExpr newQueryAggr in
+    let numOfSensRows = length $ filter (>= 0) col in
+
+    traceIfDebug debug ("num of rows: " ++ show numOfRows) $
+    traceIfDebug debug ("num of Sens rows: " ++ show numOfSensRows) $
+
+    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfSensRows inputMap tableSensCols [tableNorm] newQueryExpr newQueryAggr in
     (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr tableNormMap cols ts
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
@@ -1041,6 +1140,7 @@ getBanachAnalyserInput debug input = do
 
     -- we assume that the final table has one column (in theory, there can be more)
     let outputQueryFuns  = queryMap ! "output"
+    when (length outputQueryFuns > 1) $ error $ error_queryExpr_singleColumn
     let outputQueryExprs = map (\x -> markExprCols allSensitiveCols $ snd (query2Expr inputMap x)) outputQueryFuns
 
     traceIOIfDebug debug $ "----------------"

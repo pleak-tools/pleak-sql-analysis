@@ -107,10 +107,10 @@ updateExpr mapCol mapLN expr =
         B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN e)
         B.Sigmoid a c x    -> B.ScaleNorm (scale mapCol x) (B.Sigmoid a c x)
         B.ComposeSigmoid a c e -> B.ComposeSigmoid a c (updateExpr mapCol mapLN e)
-        B.Tauoid a c x    -> B.ScaleNorm (scale mapCol x) (B.Tauoid a c x)
+        B.Tauoid a c x     -> B.ScaleNorm (scale mapCol x) (B.Tauoid a c x)
         B.ComposeTauoid a c e -> B.ComposeTauoid a c (updateExpr mapCol mapLN e)
         B.Const a          -> B.Const a
-        B.ScaleNorm a e    -> updateExpr mapCol mapLN e -- we assume that all scalings have already been taken into account in the maps
+        B.ScaleNorm a e    -> B.ScaleNorm a $ updateExpr mapCol mapLN e
         B.ZeroSens e       -> B.ZeroSens e
         B.L p xs           -> B.ScaleNorm (foldr min 100000 $ map (scale mapCol) xs) (B.L p xs)
         B.ComposeL p es    -> B.ComposeL p $ map (updateExpr mapCol mapLN) es
@@ -124,8 +124,8 @@ updateExpr mapCol mapLN expr =
         B.Sum2 es          -> B.Sum2   $ map (updateExpr mapCol mapLN) es -- we assume that equality of subnorms has been already checked
 
 updateTableExpr :: B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> Int -> B.TableExpr
-updateTableExpr expr mapCol mapLN queryAggrNorm dbAggrNorm numOfRows =
-    let n = fromIntegral numOfRows in
+updateTableExpr expr mapCol mapLN queryAggrNorm dbAggrNorm numOfSensRows =
+    let n = fromIntegral numOfSensRows in
     let a = scalingLpNorm queryAggrNorm dbAggrNorm n in
     let g = updateExpr mapCol mapLN in
     case expr of

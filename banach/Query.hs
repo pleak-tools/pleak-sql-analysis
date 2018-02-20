@@ -14,11 +14,12 @@ import Expr
 -- the format of the query
 --   String             is the name of the resulting table
 --   "[String]"         is the list of names assigned to the resulting columns
+--   "[String]"         is the list of columns by which the result should be grouped
 --   "[Function]"       is the list of the queried function itself (SELECT)
 --   "[String]"         is the list of table names that are used in the query (FROM)
 --   "[Function]"       is the list of filters used in the query (WHERE)
 data Query
-  = P String [String] [Function] [String] [Function]
+  = P String [String] [String] [Function] [String] [Function]
   deriving (Show)
 
 -- a function consists of unit expression assignments "Map VarName Expr" and returns a single "TableExpr"
@@ -132,20 +133,33 @@ rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
 
                 -- for min/max, could we add/subtract a large quantity from the values that are filtered out, so that they would be ignored
                 -- this does not work well since if the quantity does not depend on the input, it may be too large
-                -- take 'min(y, 2b*inf - inf)' for SelectMax, and 'max(y, 2b*(-inf) - inf)' for SelectMin
                 SelectMax y ->
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Min [y,z0]), (z0, Sum [z1,infNeg]), (z1, Prod [two,z2,infPos]), (z2, f c x),
-                                                              (infNeg, infNegVal), (infPos, infPosVal), (two, twoVal)]) in
+                    let asRw = \xs -> M.union xs (M.fromList [(z, Sum [y,z1]), (z1, Prod [z2,infNeg]), (z2, f c x), (infNeg, infNegVal)]) in
                     let bRw  = \x ->  SelectMax z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 SelectMin y ->
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Max [y,z0]), (z0, Sum [z1,infPos]), (z1, Prod [two,z2,infNeg]), (z2, f c x),
-                                                              (infNeg, infNegVal), (infPos, infPosVal), (two, twoVal)]) in
+                    let asRw = \xs -> M.union xs (M.fromList [(z, Sum [y,z1]), (z1, Prod [z2,infPos]), (z2, f c x), (infPos, infPosVal)]) in
                     let bRw  = \x ->  SelectMin z in
                     F (M.union fas (asRw as)) (bRw b)
 
-                -- TODO currently, max supports filters only if they are computed over positive values
+                -- TODO this seems better than the previous, but it does not work if the filtered variable is used multiple times, due to Min and Max
+                -- for min/max, could we add/subtract a large quantity from the values that are filtered out, so that they would be ignored
+                -- this does not work well since if the quantity does not depend on the input, it may be too large
+                -- take 'min(y, 2b*inf - inf)' for SelectMax, and 'max(y, 2b*(-inf) + inf)' for SelectMin
+                --SelectMax y ->
+                --    let asRw = \xs -> M.union xs (M.fromList [(z, Min [y,z0]), (z0, Sum [z1,infNeg]), (z1, Prod [two,z2,infPos]), (z2, f c x),
+                --                                              (infNeg, infNegVal), (infPos, infPosVal), (two, twoVal)]) in
+                --    let bRw  = \x ->  SelectMax z in
+                --    F (M.union fas (asRw as)) (bRw b)
+
+                --SelectMin y ->
+                --    let asRw = \xs -> M.union xs (M.fromList [(z, Max [y,z0]), (z0, Sum [z1,infPos]), (z1, Prod [two,z2,infNeg]), (z2, f c x),
+                --                                              (infNeg, infNegVal), (infPos, infPosVal), (two, twoVal)]) in
+                --    let bRw  = \x ->  SelectMin z in
+                --    F (M.union fas (asRw as)) (bRw b)
+
+                -- TODO the following realization of max supports filters only if they are computed over positive values
                 -- similarly to sum, we may just multiply the value by the sigmoid output in this case to compute max
                 --SelectMax y ->
                 --    let a' = case ord of {LT -> -a; GT -> a; EQ -> error err} in
@@ -154,7 +168,7 @@ rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
                 --    F (M.union fas (asRw as)) (bRw b)
 
                 -- for min, we first transform x to exp^{-x} and then find the maximum
-                -- this assumes that in the end "ln" should be applied in the end, but sensitivity remains the same
+                -- this assumes that in the end "ln" should be applied, but sensitivity remains the same
                 -- TODO this is not good since we do not actually apply 'ln', and the error estimation is not correct
                 -- SelectMin y ->
                 --    let a'  = case ord of {LT -> a; GT -> -a; EQ -> error err} in

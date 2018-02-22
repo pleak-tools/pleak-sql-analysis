@@ -420,15 +420,19 @@ analyzeTableExpr rows cs te =
 analyzeTableExprOld :: Table -> TableExpr -> AnalysisResult
 analyzeTableExprOld rows te = analyzeTableExpr rows [0..length rows - 1] te
 
+sumGroupsWith :: (Ord a, Ord b) => ([b] -> b) -> [(a,b)] -> [(a,b)]
+sumGroupsWith sumf = map (\ g -> (fst (head g), sumf (map snd g))) . groupBy (\ x y -> fst x == fst y) . sort
+
 performAnalyses :: ProgramOptions -> Table -> [(String, [Int], TableExpr)] -> IO ()
 performAnalyses args rows tableExprData = do
   let debug = not (alternative args)
-  res <- forM tableExprData $ \ (tableName, cs, te) -> do
+  res0 <- forM tableExprData $ \ (tableName, cs, te) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="
     sds <- performAnalysis args rows cs te
     return (tableName, sds)
+  let res = sumGroupsWith sum res0
   when debug $ putStrLn ""
   when debug $ putStrLn "--------------------------------"
   when debug $ putStrLn "Analysis summary (sensitivities w.r.t. each table):"

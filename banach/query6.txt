@@ -1,0 +1,1 @@
+SELECT SUM tab.c2 FROM t AS tab

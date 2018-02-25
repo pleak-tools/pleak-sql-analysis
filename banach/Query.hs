@@ -11,16 +11,6 @@ import qualified Banach as B
 import ErrorMsg
 import Expr
 
--- the format of the query
---   String             is the name of the resulting table
---   "[String]"         is the list of names assigned to the resulting columns
---   "[String]"         is the list of columns by which the result should be grouped
---   "[Function]"       is the list of the queried function itself (SELECT)
---   "[String]"         is the list of table names that are used in the query (FROM)
---   "[Function]"       is the list of filters used in the query (WHERE)
-data Query
-  = P String [String] [String] [Function] [String] [Function]
-  deriving (Show)
 
 -- a function consists of unit expression assignments "Map VarName Expr" and returns a single "TableExpr"
 -- an assigment is identitified by the assigned variable, we assume the variables are not reused
@@ -46,31 +36,31 @@ vectorJoin xss = crossProduct (++) [[]] xss
 charVecJoin :: [[Bool]] -> [Bool]
 charVecJoin xs = crossProduct (||) [False] xs
 
--- applies the list of filters to a table (computes AND of all filters)
+-- applies the list of filters to a table (computes AND of all filters for each row)
 -- if all variables that are used in the filter are non-sensitive, apply the filter directly
 -- if at least one variable is sensitive, use a sigmoid or something similar, it depends on the filter and the aggregating function
-applyFilters :: Double -> [Function] -> B.Table -> [a] -> M.Map VarName Int -> [Function] -> [[B.Var]] -> [[Double]] -> ([Function],([a],B.Table))
-applyFilters _ queries table sensitiveRows _ [] [] [] = (queries, (sensitiveRows, table))
-applyFilters infVal queries table sensitiveRows inputVarMap (f:fs) (fvar:fvars) (fcol:fcols) =
+applyFilters :: [Bool]-> Double -> [Function] -> [[Int]] -> [Function] -> [S.Set B.Var] -> [[Double]] -> ([Function],[Bool])
+applyFilters bs _      queries _             [] [] [] = (queries, bs)
+applyFilters bs infVal queries sensRowMatrix (filt:filts) (fvar:fvars) (fcol:fcols) =
 
-    let tag = show (length fs) ++ "~" in -- use this to ensure that we assing unique new variables to each filter
-    let nq       = map (rewriteQuery f infVal tag fvar) queries in
-    let (nf, nt) = rewriteTable f inputVarMap sensitiveRows fvar table fcol in
+    let tag = show (length filts) ++ "~" in -- use this to ensure that we assing unique new variables to each filter
+    let newQueries = map (rewriteQuery filt infVal tag fvar) queries in
+    let goodRows = markGoodRows sensRowMatrix filt fvar fcol in
 
-    --apply the rest of the filters
-    applyFilters infVal nq nt nf inputVarMap fs fvars fcols
+    --apply the rest of the filters, take AND of row goodness for each row
+    let newBs = zipWith (&&) bs goodRows in
+    applyFilters newBs infVal newQueries sensRowMatrix filts fvars fcols
 
-rewriteTable :: Function -> M.Map VarName Int -> [a] -> [B.Var] -> B.Table -> [Double] -> ([a], B.Table)
-rewriteTable (F _ (Filt ord x c)) inputVarMap sensitiveRows fvar table fcol =
+markGoodRows :: [[Int]] -> Function ->  S.Set B.Var -> [Double] -> [Bool]
+markGoodRows sensRowMatrix (F _ (Filt ord x c)) fvar fcol =
 
     -- check if the filter "contains at least one sensitive var"
-    -- if it does not, then we remove the rows not satisfying the filter immediately
-    if (length fvar > 0) then (sensitiveRows, table)
-    else 
-        let (zs1,zs2,_) = unzip3 $ filter (\(y,z,xvalue) -> (ord == compare xvalue c)) (zip3 sensitiveRows table fcol) in
-        (zs1, zs2)
+    -- if it does not, then we may publicly mark the rows that do satisfy the filter
+    if (S.size fvar == 0) then  map (\xvalue -> (ord == compare xvalue c)) fcol
+    -- if it does, then we may still publicly mark the insensitive rows, i.e rows that only contain values -1
+    else zipWith (\xs xvalue -> if length (filter (< 0) xs) == length xs then (ord == compare xvalue c) else True) sensRowMatrix fcol
 
-rewriteQuery :: Function -> Double -> String -> [B.Var] -> Function -> Function
+rewriteQuery :: Function -> Double -> String ->  S.Set B.Var -> Function -> Function
 rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
 
     --we will introduce some new temporary variables
@@ -97,7 +87,7 @@ rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
     let twoVal    = Const   2.0  in
 
     -- check if the filter "contains at least one sensitive var"
-    if (length fvar > 0) then
+    if (S.size fvar > 0) then
             let f = case ord of
                    EQ -> Tauoid a
                    LT -> Sigmoid (-a)

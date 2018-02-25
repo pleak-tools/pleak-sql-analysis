@@ -2,6 +2,7 @@ module Expr where
 
 import Data.List
 import qualified Data.Set as S
+import qualified Data.Map as M
 
 -- import Expr from Banach.hs
 import qualified Banach as B
@@ -158,6 +159,56 @@ markTableExprCols sensitiveVars expr =
         B.SelectMax  es    -> B.SelectMax    $ map (markExprCols sensitiveVars) es
         B.SelectSump p es  -> B.SelectSump p $ map (markExprCols sensitiveVars) es
         B.SelectSumInf es  -> B.SelectSumInf $ map (markExprCols sensitiveVars) es
+
+
+-- updates variable names
+updatePrefices :: VarName -> (VarName, VarName) -> VarName -> VarName
+updatePrefices bigPrefix (target,source) var =
+
+    let prefix = takeWhile (\x -> x /= '.') var in
+    let suffix = dropWhile (\x -> x /= '.') var in
+    let newPrefix = if prefix == source then target else prefix in
+    if newPrefix == bigPrefix then 
+        newPrefix ++ suffix
+    else
+        bigPrefix ++ newPrefix ++ suffix
+
+updatePreficesExpr :: VarName -> (VarName, VarName) -> Expr -> Expr
+updatePreficesExpr prefix subst expr =
+    case expr of
+        Power x c        -> Power (updatePrefices prefix subst x) c
+        PowerLN x c      -> PowerLN (updatePrefices prefix subst x) c
+        Exp c x          -> Exp c (updatePrefices prefix subst x)
+        Sigmoid a c x    -> Sigmoid a c (updatePrefices prefix subst x)
+        Tauoid a c x     -> Tauoid a c (updatePrefices prefix subst x)
+        Const c          -> Const c
+        ScaleNorm a x    -> ScaleNorm a (updatePrefices prefix subst x)
+        ZeroSens x       -> ZeroSens (updatePrefices prefix subst x)
+        L p xs           -> L p $ map (updatePrefices prefix subst) xs
+        LInf xs          -> LInf $ map (updatePrefices prefix subst) xs
+        Prod xs          -> Prod $ map (updatePrefices prefix subst) xs
+        Min xs           -> Min $ map (updatePrefices prefix subst) xs
+        Max xs           -> Max $ map (updatePrefices prefix subst) xs
+        Sump p xs        -> Sump p $ map (updatePrefices prefix subst) xs
+        SumInf xs        -> SumInf $ map (updatePrefices prefix subst) xs
+        Sum xs           -> Sum $ map (updatePrefices prefix subst) xs
+        Id  x            -> Id (updatePrefices prefix subst x)
+
+
+updatePreficesTableExpr :: VarName -> (VarName, VarName) -> TableExpr -> TableExpr
+updatePreficesTableExpr prefix subst expr =
+    case expr of
+        SelectProd x   -> SelectProd (updatePrefices prefix subst x)
+        SelectMin x    -> SelectMin (updatePrefices prefix subst x)
+        SelectMax x    -> SelectMax (updatePrefices prefix subst x)
+        SelectL p x    -> SelectL p (updatePrefices prefix subst x)
+        SelectSump p x -> SelectSump p (updatePrefices prefix subst x)
+        SelectSumInf x -> SelectSumInf (updatePrefices prefix subst x)
+        SelectSum  x   -> SelectSum (updatePrefices prefix subst x)
+        SelectCount x  -> SelectSum (updatePrefices prefix subst x)
+        SelectDistinct x -> Select (updatePrefices prefix subst x)
+        Select x       -> Select (updatePrefices prefix subst x)
+        Filt a x c     -> Filt a (updatePrefices prefix subst x) c
 
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa

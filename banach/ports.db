@@ -1,6 +1,6 @@
 port_id name latitude longitude offloadcapacity offloadtime harbordepth available
-1       0    0.0      0.0       10.0            10.0        3.0         1.0
-2       1    0.0      1.0       10.0            10.0        3.0         1.0
-3       2    1.0      0.0       10.0            10.0        3.0         1.0
-4       3    10.0     10.0       10.0            10.0        3.0         0.0
-5       4    20.0     20.0       10.0            10.0        3.0         0.0
+1       alma    0.0      0.0       10.0            10.0        3.0         True
+2       cow     0.0      1.0       10.0            10.0        3.0         True
+3       lehm    1.0      0.0       10.0            10.0        3.0         True
+4       milk    10.0     10.0      10.0            10.0        3.0         False
+5       piim    20.0     20.0      10.0            10.0        3.0         False

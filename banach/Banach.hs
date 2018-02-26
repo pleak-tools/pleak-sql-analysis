@@ -396,8 +396,8 @@ analyzeTableExpr rows cs te =
     SelectL p [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectL p $ map (const expr) rows)
     SelectSump p [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectSump p $ map (const expr) rows)
     SelectSumInf [expr] | n /= 1 -> analyzeTableExpr rows cs (SelectSumInf $ map (const expr) rows)
-    SelectMin exprs -> combineArsMin $ zipWith analyzeExpr rows exprs
-    SelectMax exprs -> combineArsMax $ zipWith analyzeExpr rows exprs
+    SelectMin exprs -> combineArsMin $ zipWith analyzeExpr rows (addZeroSens exprs)
+    SelectMax exprs -> combineArsMax $ zipWith analyzeExpr rows (addZeroSens exprs)
     SelectProd exprs ->
       combineArsProd $
         flip map (groupRows rows exprs cs) $ \ (c,re) ->
@@ -410,11 +410,12 @@ analyzeTableExpr rows cs te =
       combineArsSump p $
         flip map (groupRows rows exprs cs) $ \ (c,re) ->
           combineArsSumInf $ map (\ (r,e) -> analyzeExpr r (if c == -1 then ZeroSens e else e)) re
-    SelectSumInf exprs -> combineArsSumInf $ zipWith analyzeExpr rows exprs
+    SelectSumInf exprs -> combineArsSumInf $ zipWith analyzeExpr rows (addZeroSens exprs)
   where
     n = length rows
     groupRows :: Table -> [Expr] -> [Int] -> [(Int, [(Row,Expr)])]
     groupRows rows es cs = map (\ g -> (fst (head g), map snd g)) $ groupBy (\ x y -> fst x == fst y) $ sortBy (\ x y -> compare (fst x) (fst y)) $ zip cs (zip rows es)
+    addZeroSens exprs = zipWith (\ c e -> if c == -1 then ZeroSens e else e) cs exprs
 
 -- simulate the old behavior of analyzeTableExpr
 analyzeTableExprOld :: Table -> TableExpr -> AnalysisResult

@@ -45,13 +45,20 @@ data ParserInstance = QueryParsing | NormParsing
 -- TODO: parsing of 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
 
 -- keywords
-allKeyWords :: S.Set String -- set of reserved "words"
-allKeyWords = S.fromList ["return",
+allKeyWordList :: [String]
+allKeyWordList = ["output","return",
                "const","^","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid","tauoid",
                "selectMin","selectMax","selectProd","selectL"]
 
+allKeyWords :: S.Set String -- set of reserved "words"
+allKeyWords = S.fromList allKeyWordList
+
 allCaseInsensKeyWords :: S.Set String -- set of reserved "words"
 allCaseInsensKeyWords = S.fromList ["select","as","from","where","and","min","max","sum","product","count","distinct","group","by","between"]
+
+-- we agree that this key will be used for the output query
+outputTableName :: String
+outputTableName = head allKeyWordList
 
 -- a query expression
 queryExpr :: VarName -> Parser [Expr]
@@ -486,32 +493,31 @@ filterBetween = do
 sqlFilter :: Parser [Function]
 sqlFilter = try filterBetween <|> try filterVarConst <|> filterVarVar
 
-sqlQueries :: Parser [Query]
+sqlQueries :: Parser (M.Map TableName Query)
 sqlQueries = try sqlManyQueries <|> sqlOneQuery
 
-sqlManyQueries :: Parser [Query]
+sqlManyQueries :: Parser (M.Map TableName Query)
 sqlManyQueries = do
     qs1 <- many sqlAsgnQuery
     qs2  <- sqlAggrQuery
-    return $ (concat qs1) ++ qs2
+    return $ M.union (concatMaps qs1) qs2
 
-sqlOneQuery :: Parser [Query]
+sqlOneQuery :: Parser (M.Map TableName Query)
 sqlOneQuery = do
     qs  <- sqlAggrQuery
     return qs
 
-sqlAsgnQuery :: Parser [Query]
+sqlAsgnQuery :: Parser (M.Map TableName Query)
 sqlAsgnQuery = do
   tableName <- tableName
   void (asgn)
   (gs,colNames,groups,aexprs,tableNames,tableAliases,filters,internalQueries) <- sqlQuery
-  -- let fs = zipWith3 (\g x y -> F (aexprToExpr (tableName ++ "." ++ y) $ aexprNormalize x) (g (tableName ++ "." ++ y))) gs aexprs colNames
   let fs = zipWith3 (\g x y -> F (aexprToExpr y $ aexprNormalize x) (g y)) gs aexprs colNames
   let tableAliasMap = M.fromList $ zip tableAliases tableNames
-  let subquery = P tableName colNames groups fs tableAliasMap filters
-  return $ internalQueries ++ [subquery]
+  let subquery = P groups fs tableAliasMap filters
+  return $ M.insert tableName subquery internalQueries
 
-sqlQuery :: Parser ([VarName -> TableExpr],[VarName],[VarName],[AExpr VarName],[TableName],[TableAlias],[Function],[Query])
+sqlQuery :: Parser ([VarName -> TableExpr],[VarName],[VarName],[AExpr VarName],[TableName],[TableAlias],[Function],(M.Map TableName Query))
 sqlQuery = do
   caseInsensKeyWord "select"
   namedAExprs <- sepBy1 namedAExpr (symbol ",")
@@ -523,9 +529,9 @@ sqlQuery = do
   filters <- sqlQueryFilter
   groups  <- sqlQueryGroupBy
 
-  return (gs,names,groups,aexprs,tableNames,tableAliases,filters,concat internalQueries)
+  return (gs,names,groups,aexprs,tableNames,tableAliases,filters,concatMaps internalQueries)
 
-sqlAggrQuery :: Parser [Query]
+sqlAggrQuery :: Parser (M.Map TableName Query)
 sqlAggrQuery = do
   caseInsensKeyWord "select"
   unnamedAExprs <- sepBy1 unnamedAExpr (symbol ",")
@@ -540,10 +546,11 @@ sqlAggrQuery = do
   let ys = map (\i -> "y~" ++ show i) [0..length gs - 1]
   let queryFuns = zipWith3 (\g aexpr y -> F (aexprToExpr y (aexprNormalize $ aexpr)) (g y)) gs aexprs ys
   let tableAliasMap = M.fromList $ zip tableAliases tableNames
-  let subquery = P "output" [] groups queryFuns tableAliasMap filters
-  return $ (concat internalQueries) ++ [subquery]
+  let subquery = P groups queryFuns tableAliasMap filters
+  let tableName = outputTableName
+  return $ M.insert tableName subquery (concatMaps internalQueries)
 
-internalTable :: Parser (TableName, TableAlias, [Query])
+internalTable :: Parser (TableName, TableAlias, (M.Map TableName Query))
 internalTable = internalTableQuery <|> try internalTableNameAS <|> internalTableName 
 
 -- give the table name and the alias explicitly
@@ -551,23 +558,23 @@ internalTableNameAS = do
     tableName <- identifier
     caseInsensKeyWord "as"
     tableAlias <- identifier
-    return (tableName, tableAlias, [])
+    return (tableName, tableAlias, M.empty)
 
 -- the real name of a nested query equals the alias, and we know that there cannot be multiple copies of it
 internalTableQuery = do
     (gs,colNames,groups,aexprs,tableNames,tableAliases,filters,internalQueries) <- parens sqlQuery
     caseInsensKeyWord "as"
     tableAlias <- identifier
-    --let fs = zipWith3 (\g x y -> F (aexprToExpr (tableAlias ++ "." ++ y) $ aexprNormalize x) (g (tableAlias ++ "." ++ y))) gs aexprs colNames
     let fs = zipWith3 (\g x y -> F (aexprToExpr y $ aexprNormalize x) (g y)) gs aexprs colNames
     let tableAliasMap = M.fromList $ zip tableAliases tableNames
-    let subquery = P tableAlias colNames groups fs tableAliasMap filters
-    return (tableAlias, tableAlias, internalQueries ++ [subquery])
+    let subquery = P groups fs tableAliasMap filters
+    let tableName = tableAlias
+    return (tableAlias, tableAlias, M.insert tableName subquery internalQueries)
 
 -- if an alias is not specified, then the table name is used directly
 internalTableName = do
     tableName <- identifier
-    return (tableName, tableName, [])
+    return (tableName, tableName, M.empty)
 
 sqlQueryFilter :: Parser [Function]
 sqlQueryFilter = sqlQueryWithFilter <|> sqlQueryWithoutFilter
@@ -607,7 +614,7 @@ query = do
   void (delim)
   f <- function QueryParsing
   let tableAliasMap = M.fromList [(tablePath,tablePath)]
-  return $ P "output" [] [] [f] tableAliasMap []
+  return $ P [] [f] tableAliasMap []
 
 -- the first row in the norm file is the list of sensitive rows
 -- the second row in the norm file is the list of sensitive columns
@@ -787,24 +794,19 @@ readDB dbFileName = do
 
 
 -- the format of the query
---   TableName         is the name of the resulting table
---   "[String]"         is the list of names assigned to the resulting columns
 --   "[String]"         is the list of columns by which the result should be grouped
 --   "[Function]"       is the list of the queried function itself (SELECT x)
 --   "[TableName]"      is the list of input tables that are used in the query (FROM x)
 --   "[TableAlias]"     is the list of table names that are used in the query (FROM ... AS x)
 --   "[Function]"       is the list of filters used in the query (WHERE x)
 data Query
-  = P TableName [String] [String] [Function] (M.Map TableAlias TableName) [Function]
+  = P [String] [Function] (M.Map TableAlias TableName) [Function]
   deriving (Show)
 
-getQueryName        (P x _ _ _ _ _) = x
-getQueryColNames    (P _ x _ _ _ _) = x
-getQueryGroupNames  (P _ _ x _ _ _) = x
-getQueryFunctions   (P _ _ _ x _ _) = x
-getQueryAliasMap    (P _ _ _ _ x _) = x
-getQueryFilters     (P _ _ _ _ _ x) = x
-
+getQueryGroupNames (P x _ _ _) = x
+getQueryFunctions  (P _ x _ _) = x
+getQueryAliasMap   (P _ _ x _) = x
+getQueryFilters    (P _ _ _ x) = x
 
 query2Expr :: (M.Map VarName B.Var) -> Function -> (S.Set B.Var, B.Expr)
 query2Expr inputMap (F asgnMap y) =
@@ -829,8 +831,8 @@ norm2Expr prefix inputMap (F asgnMap y) =
 processExpression :: (Show a, Ord a) => 
                      String ->                                 -- the name of the database file that we prepend to all variable names
                      (Expr -> [a] -> [b] -> [S.Set a] -> b) -> -- the function that actually rewrites the term
-                     (M.Map VarName a) ->                        -- input variable map
-                     (M.Map VarName Expr) ->                     -- assigmnent variable map
+                     (M.Map VarName a) ->                      -- input variable map
+                     (M.Map VarName Expr) ->                   -- assigmnent variable map
                      Expr ->                                   -- the expression that we rewrite
                      (S.Set a, b)
 processExpression s f inputMap asgnMap expr =
@@ -883,17 +885,15 @@ readIntBoolString s =
 readDoubles :: String -> [[Double]]
 readDoubles s = fmap (map readIntBoolString . words) (lines s)
 
--- add the entire second argument to each query of the first argument list
-mergeQueryFuns :: TableAlias -> [Function] -> [(TableAlias, TableName)] -> [Function] -> [Function]
-mergeQueryFuns _ [] _ _ = []
-mergeQueryFuns prefix (F as b : qs1) subst qs2 =
-    let as1 = foldl M.union M.empty $ concat $ map (\(F as' _) -> map (updateVariableNames prefix as') subst) qs2 in
-    (F (M.union as as1) b) : (mergeQueryFuns prefix qs1 subst qs2)
+concatMaps :: (Ord k) => [M.Map k a] -> M.Map k a
+concatMaps xs = foldr M.union M.empty xs
 
-updateVariableNames :: TableAlias -> (M.Map VarName Expr) -> (TableAlias, TableName) -> (M.Map VarName Expr)
-updateVariableNames prefix as subst =
-    let as' = M.mapKeys (updatePrefices prefix subst) as in
-    M.map (updatePreficesExpr prefix subst) as'
+-- add all the queries of entire list qs2 to each query of the list qs1
+mergeQueryFuns :: [Function] -> [Function] -> [Function]
+mergeQueryFuns [] _ = []
+mergeQueryFuns (F as b : qs1) qs2 =
+    let as2 = concatMaps $ map (\(F as1 _) -> as1) qs2 in
+    (F (M.union as as2) b) : (mergeQueryFuns qs1 qs2)
 
 -- this checks that the subqueries are all of select-type
 badQFuns :: [Function] -> (Bool, String)
@@ -914,20 +914,16 @@ fillMissingWithRec (x:xs) y n i =
     else error $ error_internal_fillMissing x i xs
 
 -- compute table data for a cross product
-getTableCrossProductData :: [TableAlias] -> M.Map TableAlias TableData -> (B.Table, [VarName], [(TableAlias, Function)], [[Int]], [VarName])
+getTableCrossProductData :: [TableAlias] -> M.Map TableAlias TableData -> (B.Table, [[Int]], [VarName], [VarName])
 getTableCrossProductData tableAliases tableMap =
 
     let allInputVars     = map (getColNames .      (tableMap ! ) ) tableAliases in
-    let allTables        = map (getTableValues .   (tableMap ! ) ) tableAliases in
-    let allExprs         = map (getExpr .          (tableMap ! ) ) tableAliases in
-    let allQFuns         = map (getQFun .          (tableMap ! ) ) tableAliases in
-    let allNorms         = map (getNorm .          (tableMap ! ) ) tableAliases in
-    let allSensitiveRows = map (getSensitiveRows . (tableMap ! ) ) tableAliases in
     let allSensitiveVars = map (getSensitiveCols . (tableMap ! ) ) tableAliases in
+    let allTables        = map (getTableValues .   (tableMap ! ) ) tableAliases in
+    let allSensitiveRows = map (getSensitiveRows . (tableMap ! ) ) tableAliases in
 
     -- the input variables are concatenated in the order of tables, since each of them describes a column
     let inputVarList     = concat allInputVars in
-    let normList         = concat allNorms in
     let sensitiveVarList = concat allSensitiveVars in
 
     -- find the cross product of all used tables
@@ -936,23 +932,20 @@ getTableCrossProductData tableAliases tableMap =
     -- find the cross product of table row indices to remeber which row has come from which table
     let sensitiveRowCrossProduct = vectorJoin allSensitiveRows in
 
-    (crossProductTable, inputVarList, normList, sensitiveRowCrossProduct, sensitiveVarList)
+    (crossProductTable, sensitiveRowCrossProduct, inputVarList, sensitiveVarList)
 
 
 data TableData =
     -- content columnNames exprs norms aggrNorms sensRows sensCols originalTablename 
-    T B.Table [VarName] [B.Expr] [Function] [(TableAlias,Function)] [[Int]] [VarName] TableName
+    T B.Table [VarName] Function [[Int]] [VarName] TableName
   deriving Show
 
-getTableValues   (T x _ _ _ _ _ _ _) = x 
-getColNames      (T _ x _ _ _ _ _ _) = x 
-getExpr          (T _ _ x _ _ _ _ _) = x 
-getQFun          (T _ _ _ x _ _ _ _) = x 
-getNorm          (T _ _ _ _ x _ _ _) = x
-getSensitiveRows (T _ _ _ _ _ x _ _) = x 
-getSensitiveCols (T _ _ _ _ _ _ x _) = x 
-getTableName     (T _ _ _ _ _ _ _ x) = x 
-getNumOfCols     (T _ x _ _ _ _ _ _) = length x
+getTableValues   (T x _ _ _ _ _) = x
+getColNames      (T _ x _ _ _ _) = x
+getNorm          (T _ _ x _ _ _) = x
+getSensitiveRows (T _ _ _ x _ _) = x
+getSensitiveCols (T _ _ _ _ x _) = x
+getTableName     (T _ _ _ _ _ x) = x
 
 readAllTables :: Bool -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
 readAllTables usePrefices tableNames tableAliases = do
@@ -985,21 +978,16 @@ processAllTables (tableAlias:xs0) (x1:xs1) (x2:xs2) (x3:xs3) (x4:xs4) (x5:xs5) (
 processOneTable :: TableAlias -> TableName -> [VarName] -> B.Table -> Function -> [VarName] -> [Int] -> TableData
 processOneTable tableAlias tableName inputVars tableValues normFun dbSensitiveVars dbSensitiveRows =
 
-    -- initially, there are no complex functions, only initial variables
-    let qFuns = [] in
-    let exprs = [] in
-
     -- let non-sensitive rows be indexed by -1
     let numOfRows             = length tableValues in
     let extendedSensitiveRows = map (\x -> [x]) $ fillMissingWith (-1) numOfRows dbSensitiveRows in
 
-    T tableValues inputVars exprs qFuns [(tableAlias, normFun)] extendedSensitiveRows dbSensitiveVars tableName
+    T tableValues inputVars normFun extendedSensitiveRows dbSensitiveVars tableName
 
 
-deriveExprNorm :: Bool -> Bool -> Int -> (M.Map VarName B.Var) -> S.Set B.Var -> [(TableAlias,Function)] -> B.Expr -> B.TableExpr -> (B.Expr,B.TableExpr,Bool)
-deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols allTableNorms queryExpr queryAggr =
+deriveExprNorm :: Bool -> Bool -> Int -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [Function] -> B.Expr -> B.TableExpr -> (B.Expr,B.TableExpr,Bool)
+deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
 
-    let (dbNormTableAliases, dbNormFuns) = unzip allTableNorms in
     let namePrefices = map (\tableAlias -> if usePrefices then tableAlias ++ "." else "") dbNormTableAliases in
     let (dbNorms1,dbAggrNorms) = unzip $ zipWith (\x y -> norm2Expr x inputMap y) namePrefices dbNormFuns in
     let dbNorms = map (markNormCols sensitiveCols) dbNorms1 in
@@ -1039,35 +1027,39 @@ deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols allTableNo
 
 
 filteredExpr :: B.Table -> Double -> (M.Map VarName B.Var) -> [[Int]] -> S.Set B.Var -> [Function] -> [Function] -> ([Function], [[Int]], B.Table)
-filteredExpr table infVal inputMap sensRowMatrix sensitiveCols filterFuns unfilteredQueryFuns =
+filteredExpr table infVal inputMap sensRowMatrix sensitiveCols filterFuns queryFuns =
 
     let numOfRows = length table in
 
-    let (filterVars, filterExprs) = unzip $ map ((\(x,y) -> (S.intersection x sensitiveCols, markExprCols sensitiveCols y)) . query2Expr inputMap) filterFuns in
+    -- collect sensitive variables used by each filter, compute all values upon which a filter makes its decision about a row
+    let (filterSensVars, filterExprs) = unzip $ map ((\(x,y) -> (S.intersection x sensitiveCols, markExprCols sensitiveCols y)) . query2Expr inputMap) filterFuns in
     let filterValues  = map (\x -> map B.fx $ zipWith B.analyzeExpr table (replicate numOfRows x)) filterExprs in
+
+    -- we start from all-True filter, and map bad rows to False
     let initialFilter = replicate numOfRows True in
 
-    let (filteredQueryFuns,goodRows) = applyFilters initialFilter infVal unfilteredQueryFuns sensRowMatrix filterFuns filterVars filterValues in
+    let (filteredQueryFuns,goodRows) = applyFilters initialFilter infVal queryFuns sensRowMatrix filterFuns filterSensVars filterValues in
     let (filteredTable, filteredSensRowMatrix, _) = unzip3 $ filter (\(x,y,b) -> b) (zip3 table sensRowMatrix goodRows) in
     (filteredQueryFuns, filteredSensRowMatrix, filteredTable)
 
 -- construct input for multitable Banach analyser
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
-inputForSensWrtTable :: Bool -> Bool -> B.Expr -> B.TableExpr -> [(TableAlias,Function)] -> [[Int]] -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> [(Bool, (TableName, [Int], B.TableExpr))]
-inputForSensWrtTable debug usePrefices queryExpr queryAggr allTableNorms [] inputMap tableMap =
-    error $ error_emptyTable
-inputForSensWrtTable debug usePrefices queryExpr queryAggr allTableNorms sensitiveRowMatrix inputMap tableMap =
+inputForSensWrtTable :: Bool -> Bool -> [TableAlias] -> B.Expr -> B.TableExpr -> [[Int]] -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> [(Bool, (TableName, [Int], B.TableExpr))]
+inputForSensWrtTable _ _ _ _ _ [] _ _ = error $ error_emptyTable
+inputForSensWrtTable debug usePrefices tableAliases queryExpr queryAggr sensitiveRowMatrix inputMap tableMap =
     let sensitiveRowMatrixColumns = transpose sensitiveRowMatrix in
     let n1 = length sensitiveRowMatrixColumns in
-    let n2 = length allTableNorms in
+    let n2 = length tableAliases in
     if n1 /= n2 then error $ error_internal_sensitivityMatrix n1 n2 else
-    inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr allTableNorms sensitiveRowMatrixColumns tableMap
+    inputForSensWrtTableRec debug usePrefices tableAliases queryExpr queryAggr sensitiveRowMatrixColumns inputMap tableMap
 
-inputForSensWrtTableRec :: Bool -> Bool -> (M.Map VarName B.Var) -> B.Expr -> B.TableExpr -> [(TableAlias, Function)] -> [[Int]] -> (M.Map TableAlias TableData) -> [(Bool, (TableName, [Int], B.TableExpr))]
-inputForSensWrtTableRec _ _ _ _ _ [] _ _ = []
-inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr (tableNorm@(tableAlias, _) : ts) (col:cols) tableMap =
+inputForSensWrtTableRec :: Bool -> Bool -> [TableAlias] -> B.Expr -> B.TableExpr -> [[Int]] -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> [(Bool, (TableName, [Int], B.TableExpr))]
+inputForSensWrtTableRec _ _ [] _ _ _ _ _ = []
+inputForSensWrtTableRec debug usePrefices (tableAlias : ts) queryExpr queryAggr (col:cols) inputMap tableMap =
 
     let tableData     = tableMap ! tableAlias in
+
+    let tableNorm     = getNorm          tableData in
     let tableName     = getTableName     tableData in
     let tableSensVars = getSensitiveCols tableData in
     let tableSensCols = S.fromList $ map (inputMap ! ) tableSensVars in
@@ -1081,8 +1073,8 @@ inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr (tableNor
     traceIfDebug debug ("num of rows: " ++ show numOfRows) $
     traceIfDebug debug ("num of Sens rows: " ++ show numOfSensRows) $
 
-    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfSensRows inputMap tableSensCols [tableNorm] newQueryExpr newQueryAggr in
-    (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec debug usePrefices inputMap queryExpr queryAggr ts cols tableMap
+    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfSensRows inputMap tableSensCols [tableAlias] [tableNorm] newQueryExpr newQueryAggr in
+    (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec debug usePrefices ts queryExpr queryAggr cols inputMap tableMap
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
 -- we use the structure that marks all insensitive entries with '-1'
@@ -1104,44 +1096,52 @@ traceIOIfDebug debug msg = do
     if debug then traceIO msg
     else return ()
 
-processQuery :: TableAlias -> (M.Map TableName Query) -> TableName -> ([TableAlias],[TableName], [Function], [Function])
-processQuery prefix queryMap tableName =
+updateVariableNames :: TableAlias -> Function -> Function
+updateVariableNames prefix (F as b) =
+    let as' = M.map (updatePreficesExpr prefix) $ M.mapKeys (updatePrefices prefix) as in
+    let b'  = updatePreficesTableExpr prefix b in
+    F as' b'
+
+processQuery :: (M.Map TableName Query) -> TableAlias -> TableName -> ([TableAlias],[TableName], [Function], [Function])
+processQuery queryMap tableAlias tableName =
 
     -- if the table is not in the query map, then it is an input table
     if not (M.member tableName queryMap) then
-        ([prefix], [tableName], [], [])
+        ([tableAlias], [tableName], [], [])
     else
         -- collect all used tables of this query
-        let query@(P _ _ groupColnames queryFuns usedAliasMap filters) = queryMap ! tableName in
+        let query@(P groupColnames queryFuns usedAliasMap filterFuns) = queryMap ! tableName in
 
         -- we do not support 'group by' yet
         if length groupColnames > 0 then error $ error_queryExpr_groupBy else
 
         -- the subqueries should be of select-type
-        let (b, err) = badQFuns queryFuns in
-        if prefix /= "" && b then error $ err else
+        let (iserr, err) = badQFuns queryFuns in
+        if tableAlias /= outputTableName && iserr then error $ err else
 
         -- recursively, collect all subqueries and filters used to generate all used tables
         let usedAliases = M.keys usedAliasMap in
-        let extPrefix = if prefix == "" then "" else prefix ++ "." in
-        let (tableAliases', tableNames', subQFuns', subFilters') = unzip4 $ map (\key -> processQuery (extPrefix ++ key) queryMap (usedAliasMap ! key)) usedAliases in
+        let (tableAliases', tableNames', subQueryFuns', subFiltFuns') = unzip4 $ map (\key -> processQuery queryMap key (usedAliasMap ! key)) usedAliases in
 
-        let tableAliases = concat tableAliases'    in
-        let tableNames   = concat tableNames'      in
-        let subQFuns     = concat subQFuns'   in
-        let subFilters   = concat subFilters' in
+        let tableAliases  = concat tableAliases' in
+        let tableNames    = concat tableNames'   in
+        let subQueryFuns  = concat subQueryFuns' in
+        let subFiltFuns   = concat subFiltFuns'  in
 
-        -- put all query funs and all filters together with the current query's funs and filters
-        let curTableName = if prefix == "" then "" else tableName ++ "." in
-        let newQueryFuns = map (\(F as b) -> F (updateVariableNames curTableName as ("","")) (updatePreficesTableExpr curTableName ("","") b)) queryFuns in
-        let newFilters   = map (\(F as b) -> F (updateVariableNames curTableName as ("","")) (updatePreficesTableExpr curTableName ("","") b)) filters in
-        let newSubFilters   = map (\(F as b) -> F (updateVariableNames curTableName as ("","")) (updatePreficesTableExpr curTableName ("","") b)) subFilters in
+        -- add the current table alias as a prefix to all variables in all queries and filters
+        let extTableAlias = if tableAlias == outputTableName then "" else tableAlias ++ "." in
 
-        let outputQueryFuns = mergeQueryFuns extPrefix newQueryFuns (M.toList usedAliasMap) subQFuns in
-        let outputFilters   = newSubFilters ++ mergeQueryFuns extPrefix newFilters (M.toList usedAliasMap) subQFuns in
+        let newQueryFuns    = map (updateVariableNames extTableAlias) queryFuns in
+        let newFilterFuns   = map (updateVariableNames extTableAlias) filterFuns in
 
-        trace ("|| " ++ show outputQueryFuns) $
-        (tableAliases, tableNames, outputQueryFuns, outputFilters)
+        let newSubQueryFuns = map (updateVariableNames extTableAlias) subQueryFuns in
+        let newSubFiltFuns  = map (updateVariableNames extTableAlias) subFiltFuns in
+
+        -- put all subquery funs and all filters together with the current query's funs and filters
+        let outputQueryFuns = mergeQueryFuns newQueryFuns newSubQueryFuns in
+        let outputFilters   = newSubFiltFuns ++ mergeQueryFuns newFilterFuns newSubQueryFuns in
+
+        (map (extTableAlias ++) tableAliases, tableNames, outputQueryFuns, outputFilters)
 
 
 -- putting everything together
@@ -1150,78 +1150,75 @@ getBanachAnalyserInput :: Bool -> String -> IO (B.Table, [(String, [Int], B.Tabl
 getBanachAnalyserInput debug input = do
 
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
-    queries <- parseSqlQueryFromFile input
+    queryMap <- parseSqlQueryFromFile input
     let usePrefices = True
 
     -- "query" parses the old format where the query function is computed line by line
-    --singleQuery <- parseQueryFromFile input
-    --let queries = [singleQuery]
+    --let queryMap = M.fromList [(outputTableName,parseQueryFromFile input)]
     --let usePrefices = False
 
-    -- extract the tables that should be read from input files
+    -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
-    let lastQuery = last queries
-    let lastQueryName = getQueryName $ lastQuery
-    let queryMap = M.fromList $ map (\query -> (getQueryName query, query)) queries 
-    let (inputTableAliases,inputTableNames,outputQueryFuns, outputFilterFuns) = processQuery "" queryMap lastQueryName
+    let (inputTableAliases, inputTableNames, outputQueryFuns, outputFilterFuns) = processQuery queryMap outputTableName outputTableName
 
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Input table names:   " ++ show inputTableNames
+    traceIOIfDebug debug $ "Input table aliases: " ++ show inputTableAliases
+
+    --traceIOIfDebug debug $ "----------------"
+    --traceIOIfDebug debug $ "TableQ " ++ show outputQueryFuns
+    --traceIOIfDebug debug $ "TableF " ++ show outputFilterFuns
+
+    -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
     inputTableMap <- readAllTables usePrefices inputTableNames inputTableAliases
 
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ show inputTableNames
-    traceIOIfDebug debug $ show inputTableAliases
+    -- we assume that each input table has been copied as many times as it is used, and we take the cross product of all resulting tables
+    -- the columns of the cross product are ordered according to the list 'inputTableAliases'
+    let (crossProductTable, sensitiveRowMatrix, inputVarList, sensitiveVarList) = getTableCrossProductData inputTableAliases inputTableMap
 
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "TableQ " ++ show outputQueryFuns
-    traceIOIfDebug debug $ "TableF " ++ show outputFilterFuns
-
-    -- we assume that each input table is used only once, so we take the table cross product as an input
-    let (crossProductTable, inputVarList, allTableNorms, sensitiveRowMatrix, sensitiveVarList) = getTableCrossProductData inputTableAliases inputTableMap
-
+    -- assign a unique integer to each column name, which is the order of this column in the cross product table
     let inputMap        = M.fromList $ zip inputVarList [0..length inputVarList - 1]
     let sensitiveColSet = S.fromList $ map (inputMap ! ) sensitiveVarList
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "All input variables:    " ++ show (M.toList inputMap)
     traceIOIfDebug debug $ "All sensitive cols:     " ++ show sensitiveColSet
+    traceIOIfDebug debug $ "#rows before filtering: " ++ show (length crossProductTable)
+    --traceIOIfDebug debug $ "Sensitive row matrix:   " ++ show sensitiveRowMatrix
 
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "List of tables: " ++ show (M.keys inputTableMap)
-    traceIOIfDebug debug $ "Num of rows before filtering:   " ++ show (length crossProductTable)
-    --traceIOIfDebug debug $ "Sensitive row matrix: " ++ show sensitiveRowMatrix
-
-    -- we assume that the final table has one column (in theory, there can be more)
+    -- we assume that the output query table has only one column
     when (length outputQueryFuns > 1) $ error $ error_queryExpr_singleColumn
-    let outputQueryExprs = map (\x -> markExprCols sensitiveColSet $ snd (query2Expr inputMap x)) outputQueryFuns
+    let outputQueryFun  = head outputQueryFuns
+    let outputQueryExpr = markExprCols sensitiveColSet $ snd $ query2Expr inputMap outputQueryFun
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Query funs (w/o filter) = " ++ show outputQueryFuns
-    traceIOIfDebug debug $ "Query expr (w/o filter) = " ++ show outputQueryExprs
+    traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show outputQueryFun
+    traceIOIfDebug debug $ "Query expr (w/o filter) = " ++ show outputQueryExpr
 
-    -- TODO this is CHEATING! thoretically, the best value for 'infinity' is the maximum absolute value amongst those that we aggregate
+    -- TODO this is CHEATING! thoretically, the best value for 'infinity' is the the maximum of absolute values that we aggregate
     -- however, this is a bad idea since it depends on private data and has some sensitivity by itself; we want it to be a constant
     -- let infVal = 10000.0 -- this is more honest, but it gives very bad sensitivities
-    let infVal = B.fx $ B.analyzeTableExprOld crossProductTable (B.SelectMax (map (\expr -> B.ComposeL 1.0 [expr]) outputQueryExprs))
+    let infVal = B.fx $ B.analyzeTableExprOld crossProductTable $ B.SelectMax [B.ComposeL 1.0 [outputQueryExpr]]
 
     -- we may now apply the filter
-    let (filteredQueryFuns, filteredSensRowMatrix, filteredTable) = filteredExpr crossProductTable infVal inputMap sensitiveRowMatrix sensitiveColSet outputFilterFuns outputQueryFuns
+    let (filtQueryFuns, filtSensRowMatrix, filtTable) = filteredExpr crossProductTable infVal inputMap sensitiveRowMatrix sensitiveColSet outputFilterFuns [outputQueryFun]
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Num of rows after filtering:   " ++ show (length filteredTable)
-    traceIOIfDebug debug $ "Filtered sensitive row matrix: " ++ show filteredSensRowMatrix
+    traceIOIfDebug debug $ "#rows after filtering:  " ++ show (length filtTable)
+    --traceIOIfDebug debug $ "Filt. sens. row matrix: " ++ show filtSensRowMatrix
 
     -- now transform the main query to a banach expression
-    let mainQueryFun = last filteredQueryFuns
+    let mainQueryFun  = head filtQueryFuns
     let mainQueryExpr = markExprCols sensitiveColSet $ snd $ query2Expr inputMap mainQueryFun
     let mainQueryAggr = queryExprAggregate mainQueryFun mainQueryExpr
 
     traceIOIfDebug debug ("----------------")
-    traceIOIfDebug debug ("Query funs (w/ filter) = " ++ show (last filteredQueryFuns))
+    traceIOIfDebug debug ("Query funs (w/ filter) = " ++ show mainQueryFun)
     traceIOIfDebug debug ("Query expr (w/ filter) = " ++ show mainQueryExpr)
     traceIOIfDebug debug ("Query aggr (w/ filter) = " ++ show mainQueryAggr)
     
     --bring the input to the form [(String, [Int], TableExpr)]
-    let (goodNorms, tableExprData) = unzip $ inputForSensWrtTable debug usePrefices mainQueryExpr mainQueryAggr allTableNorms filteredSensRowMatrix inputMap inputTableMap
+    let (goodNorms, tableExprData) = unzip $ inputForSensWrtTable debug usePrefices inputTableAliases mainQueryExpr mainQueryAggr filtSensRowMatrix inputMap inputTableMap
 
     traceIOIfDebug debug ( "----------------")
     traceIOIfDebug debug ( "good table norms:" ++ show goodNorms)
@@ -1231,25 +1228,28 @@ getBanachAnalyserInput debug input = do
     let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else warning_verifyNorm ++ tableName ++ "\n") goodNorms tableExprData
     when (debug || not (null possibleErrMsg)) $ putStrLn $ possibleErrMsg
 
-    return (filteredTable, tableExprData)
+    return (filtTable, tableExprData)
+
 
     -- Below is the old solution that does not consider sensitivities w.r.t. each table
 
-    -- let numOfRows = length filteredTable
-    -- let (adjustedQueryExpr, adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfRows inputMap sensitiveColSet allTableNorms mainQueryExpr mainQueryAggr
+    -- let numOfRows = length filtTable
+    -- let inputTableNorms = map (getNorm . inputTableMap !) inputTableAliases
+    -- let (adjustedQueryExpr, adjustedQueryAggr, goodNorm) = 
+    --     deriveExprNorm debug usePrefices numOfRows inputMap sensitiveColSet inputTableAliases inputTableNorms mainQueryExpr mainQueryAggr
 
     -- let goodNormMsg = "OK: the database norm is at least as large as the query norm."
     -- let badNormMsg  = "WARNING: could not prove that the database norm is at least as large as the query norm."
     -- traceIOIfDebug debug $ if goodNorm then goodNormMsg else badNormMsg
 
     -- traceIOIfDebug debug $ "----------------"
-    -- traceIOIfDebug debug $ "filtered table = " ++ show filteredTable ++ "\n"
+    -- traceIOIfDebug debug $ "filtered table = " ++ show filtTable ++ "\n"
     -- traceIOIfDebug debug $ "initial expr = " ++ show mainQueryAggr ++ "\n"
     -- traceIOIfDebug debug $ "adjusted expr = " ++ show adjustedQueryAggr
     -- traceIOIfDebug debug $ "----------------"
 
-    -- let sensitiveRowsCV = sensitiveOR filteredSensRowMatrix
+    -- let sensitiveRowsCV = sensitiveOR filtSensRowMatrix
     -- let adjustedQueryAggrWithSensRows = queryExprAggregateSensRows numOfRows sensitiveRowsCV mainQueryFun adjustedQueryExpr
-    -- return (filteredTable, adjustedQueryAggrWithSensRows)
+    -- return (filtTable, adjustedQueryAggrWithSensRows)
 
 

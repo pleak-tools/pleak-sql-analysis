@@ -50,4 +50,4 @@ error_internal_fillMissing x i xs      = "case x < i in fillMissing: " ++ show x
 error_arrElem x xs  = "INTERNAL ERROR: Element " ++ show x ++ " is not in " ++ show xs
 
 -- this message comes only if debug=true, so pleak.io does not need to parse it
-warning_verifyNorm  = "WARNING: Could not prove that the db norm is at least as large as the query norm for sensitivity w.r.t. "
+warning_verifyNorm  = "ERROR: Could not prove that the db norm is at least as large as the query norm for sensitivity w.r.t. "

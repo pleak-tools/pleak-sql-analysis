@@ -46,8 +46,9 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectSum VarName         -- E1+...+En with norm that is not specified yet and will be derived later
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
                | Select VarName            -- does not apply aggregation, is used only for intermediate representation
-               | SelectDistinct VarName        -- TODO not supported yet, used only to generate nice error messages
-               | Filt Ordering VarName Double  -- used for filters, actually is not a 'Table' expression, we just use the same data structure
+               | SelectDistinct VarName           -- TODO not supported yet, used only to generate nice error messages
+               | Filt Ordering VarName Double     -- used for filters, actually is not a 'Table' expression, we just use the same data structure
+               | FiltNeg Ordering VarName Double  -- used for filters, actually is not a 'Table' expression, we just use the same data structure
   deriving Show
 
 -----------------------------------------------------------------------------------
@@ -66,7 +67,8 @@ extractArg t =
         SelectCount x  -> x
         SelectDistinct  x  -> x
         Select x       -> x
-        Filt _ x _   -> x
+        Filt _ x _     -> x
+        FiltNeg _ x _  -> x
 
 queryArg :: TableExpr -> [B.Expr] -> B.TableExpr
 queryArg t ys =
@@ -85,6 +87,7 @@ queryArg t ys =
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
         Select x       -> error $ error_queryExpr_syntax t
         Filt _ x _     -> error $ error_internal_queryExprFilter t
+        FiltNeg _ x _  -> error $ error_internal_queryExprFilter t
 
 normArg :: TableExpr -> ADouble
 normArg t =
@@ -200,6 +203,7 @@ updatePreficesTableExpr prefix expr =
         SelectDistinct x -> Select (updatePrefices prefix x)
         Select x       -> Select (updatePrefices prefix x)
         Filt a x c     -> Filt a (updatePrefices prefix x) c
+        FiltNeg a x c  -> FiltNeg a (updatePrefices prefix x) c
 
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa

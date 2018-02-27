@@ -23,7 +23,8 @@ error_parseNorm     s t = "ERROR: Could not parse the norm from file " ++ show s
 error_parseData     s   = "ERROR: Could not parse the data table from file " ++ show s
 
 -- unsupported SQL syntax
-error_filterExpr ord b = "ERROR: Unsupported filter for relation " ++ show ord ++ " and aggregator " ++ show b ++ "."
+error_filterExpr ord b   = "ERROR: Unsupported filter for relation " ++ show ord ++ " and aggregator " ++ show b ++ "."
+error_filterExprConstr t = "ERROR: Unknown filter construction " ++ show t ++ "."
 
 error_queryExpr t   = "ERROR: Unsupported term in the expression " ++ show t
 error_queryExpr_syntax t           = "ERROR: Unsupported query syntax " ++ show t ++ "."

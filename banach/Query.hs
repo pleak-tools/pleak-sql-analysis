@@ -1,6 +1,7 @@
 module Query where
 
 import Control.Monad (void)
+import Data.Bits
 import Data.Either
 import Data.List
 import qualified Data.Map as M
@@ -52,22 +53,31 @@ applyFilters bs infVal queries sensRowMatrix (filt:filts) (fvar:fvars) (fcol:fco
     applyFilters newBs infVal newQueries sensRowMatrix filts fvars fcols
 
 markGoodRows :: [[Int]] -> Function ->  S.Set B.Var -> [Double] -> [Bool]
-markGoodRows sensRowMatrix (F _ (Filt ord x c)) fvar fcol =
+markGoodRows sensRowMatrix (F _ filterAggr) fvar fcol =
+
+    let (b,ord,x,c) = case filterAggr of
+            Filt ord x c    -> (False,ord,x,c)
+            FiltNeg ord x c -> (True,ord,x,c)
+    in
 
     -- check if the filter "contains at least one sensitive var"
     -- if it does not, then we may publicly mark the rows that do satisfy the filter
-    if (S.size fvar == 0) then  map (\xvalue -> (ord == compare xvalue c)) fcol
+    if (S.size fvar == 0) then  map (\xvalue -> xor b (ord == compare xvalue c)) fcol
     -- if it does, then we may still publicly mark the insensitive rows, i.e rows that only contain values -1
     else zipWith (\xs xvalue -> if length (filter (< 0) xs) == length xs then (ord == compare xvalue c) else True) sensRowMatrix fcol
 
 rewriteQuery :: Function -> Double -> String ->  S.Set B.Var -> Function -> Function
-rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
+rewriteQuery (F fas filterAggr) infVal tag fvar query@(F as b) =
 
     --we will introduce some new temporary variables
     let z  = "z~"  ++ tag in
     let z0 = "z0~" ++ tag in
     let z1 = "z1~" ++ tag in
     let z2 = "z2~" ++ tag in
+
+    let b0 = "b0~" ++ tag in
+    let b1 = "b1~" ++ tag in
+    let b2 = "b2~" ++ tag in
 
     -- let the default scaling factor be 0.1
     let a = 0.1 in
@@ -86,50 +96,58 @@ rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
     let two       = "2" in
     let twoVal    = Const   2.0  in
 
+    -- if the filter is a negation, we will need to replace all choices 'b' with '1 - b'
+    let (ord,x,c,asPos, asNeg) = case filterAggr of
+            Filt ord x c    -> (ord,x,c, [(oneNeg, oneNegVal), (one, oneVal), (b2, Id b0)],
+                                         [(oneNeg, oneNegVal), (one, oneVal), (b2, Sum [one, b1]),(b1, Prod [b0,oneNeg])])
+            FiltNeg ord x c -> (ord,x,c, [(oneNeg, oneNegVal), (one, oneVal), (b2, Sum [one, b1]),(b1, Prod [b0,oneNeg])],
+                                         [(oneNeg, oneNegVal), (one, oneVal), (b2, Id b0)])
+            t               -> error $ error_filterExprConstr t
+    in
+    let err = error_filterExpr ord b in
+
     -- check if the filter "contains at least one sensitive var"
     if (S.size fvar > 0) then
-            let f = case ord of
-                   EQ -> Tauoid a
-                   LT -> Sigmoid (-a)
-                   GT -> Sigmoid a
+            let (f,as') = case ord of
+                   EQ -> (Tauoid  a, M.fromList asPos)
+                   LT -> (Sigmoid a, M.fromList asNeg)
+                   GT -> (Sigmoid a, M.fromList asPos)
             in
             case b of
 
                 -- for counting, take the sigmoid output and compute l1-norm of the results
                 SelectCount y ->
-                         let asRw = \xs -> M.union xs (M.fromList [(z, f c x)]) in
-                         let bRw  = \x ->  SelectL 1.0 z in
+                         let asRw = \xs -> M.union xs $ M.union as' (M.fromList [(b0, f c x)]) in
+                         let bRw  = \x ->  SelectL 1.0 b2 in
                          F (M.union fas (asRw as)) (bRw b)
 
                 -- for sum and L-norms, we just multiply the value by the sigmoid output
                 SelectSum y ->
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Prod [y,z1]), (z1, f c x)]) in
+                    let asRw = \xs -> M.union xs $ M.union as' (M.fromList [(z, Prod [y,b2]), (b0, f c x)]) in
                     let bRw  = \x ->  SelectSum z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 SelectL p y ->
-                    let a' = case ord of {LT -> -a;  GT -> a; EQ -> error err} in
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Prod [y,z1]), (z1, f c x)]) in
+                    let asRw = \xs -> M.union xs $ M.union as' (M.fromList [(z, Prod [y,b2]), (b0, f c x)]) in
                     let bRw  = \x ->  SelectL p z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 -- for product, we take 1 + b*(y - 1), where b is the sigmoid output, so the values that are filtered out become 1
                 -- this is not good to be sigmoid-approximated since the error becomes too large with multiplication
                 SelectProd y ->
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Sum [one, z0]), (z0, Prod [z1,z2]), (z1, Sum [y,oneNeg]), (z2, f c x),
-                                                              (oneNeg, oneNegVal), (one, oneVal)]) in
+                    let asRw = \xs -> M.union xs $ M.union as' (M.fromList [(z, Sum [one, z0]), (z0, Prod [z1,b2]), (z1, Sum [y,oneNeg]), (b0, f c x)]) in
                     let bRw  = \x ->  SelectProd z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 -- for min/max, could we add/subtract a large quantity from the values that are filtered out, so that they would be ignored
                 -- this does not work well since if the quantity does not depend on the input, it may be too large
                 SelectMax y ->
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Sum [y,z1]), (z1, Prod [z2,infNeg]), (z2, f c x), (infNeg, infNegVal)]) in
+                    let asRw = \xs -> M.union xs $ M.union as' (M.fromList [(z, Sum [y,z1]), (z1, Prod [b2,infNeg]), (b0, f c x), (infNeg, infNegVal)]) in
                     let bRw  = \x ->  SelectMax z in
                     F (M.union fas (asRw as)) (bRw b)
 
                 SelectMin y ->
-                    let asRw = \xs -> M.union xs (M.fromList [(z, Sum [y,z1]), (z1, Prod [z2,infPos]), (z2, f c x), (infPos, infPosVal)]) in
+                    let asRw = \xs -> M.union xs $ M.union as' (M.fromList [(z, Sum [y,z1]), (z1, Prod [b2,infPos]), (b0, f c x), (infPos, infPosVal)]) in
                     let bRw  = \x ->  SelectMin z in
                     F (M.union fas (asRw as)) (bRw b)
 
@@ -168,7 +186,6 @@ rewriteQuery (F fas (Filt ord x c)) infVal tag fvar query@(F as b) =
 
                 _ -> error err
     else query
-    where err = error_filterExpr ord b
 
 
 

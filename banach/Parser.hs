@@ -54,7 +54,7 @@ allKeyWords :: S.Set String -- set of reserved "words"
 allKeyWords = S.fromList allKeyWordList
 
 allCaseInsensKeyWords :: S.Set String -- set of reserved "words"
-allCaseInsensKeyWords = S.fromList ["select","as","from","where","and","min","max","sum","product","count","distinct","group","by","between"]
+allCaseInsensKeyWords = S.fromList ["select","as","from","where","not","and","min","max","sum","product","count","distinct","group","by","between"]
 
 -- we agree that this key will be used for the output query
 outputTableName :: String
@@ -433,18 +433,18 @@ selectAExpr :: Parser (VarName -> TableExpr)
 selectAExpr = do
   return Select
 
-filterVarConst :: Parser [Function]
-filterVarConst = do
+filterVarConst :: Bool -> Parser [Function]
+filterVarConst pos = do
   aexpr <- aExpr
   op <- order
   c <- signedFloat
   let y = "filt~"
   let as = aexprToExpr y (aexprNormalize $ aexpr)
-  let b  = Filt op y c
+  let b  = if pos then Filt op y c else FiltNeg op y c
   return [F as b]
 
-filterVarVar :: Parser [Function]
-filterVarVar = do
+filterVarVar :: Bool -> Parser [Function]
+filterVarVar pos = do
   aexpr1 <- aExpr
   op <- order
   aexpr2 <- aExpr
@@ -458,11 +458,11 @@ filterVarVar = do
   let as2 = M.toList $ aexprToExpr y2 (aexprNormalize $ aexpr2)
 
   let as = M.fromList (as1 ++ as2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
-  let b  = Filt op y 0.0
+  let b  = if pos then Filt op y 0.0 else FiltNeg op y 0.0
   return [F as b]
 
-filterBetween :: Parser [Function]
-filterBetween = do
+filterBetween :: Bool -> Parser [Function]
+filterBetween pos = do
   aexpr   <- aExpr
   caseInsensKeyWord "between"
   aexprLB <- aExpr
@@ -482,8 +482,8 @@ filterBetween = do
   let asLB  = M.fromList (as1 ++ asLB2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
   let asUB  = M.fromList (as1 ++ asUB2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
 
-  let bLB  = Filt GT y 0.0
-  let bUB  = Filt LT y 0.0
+  let bLB  = if pos then Filt GT y 0.0 else FiltNeg GT y 0.0
+  let bUB  = if pos then Filt LT y 0.0 else FiltNeg LT y 0.0
   return [F asLB bLB, F asUB bUB]
 
 -- ======================================================================= --
@@ -491,7 +491,19 @@ filterBetween = do
 ----      The code below does not need to be updated with Banach.hs      ----
 -----------------------------------------------------------------------------
 sqlFilter :: Parser [Function]
-sqlFilter = try filterBetween <|> try filterVarConst <|> filterVarVar
+sqlFilter = try sqlFilterNeg <|> sqlFilterPos
+
+sqlFilterPos :: Parser [Function]
+sqlFilterPos = sqlFilterMain True
+
+sqlFilterNeg :: Parser [Function]
+sqlFilterNeg = do
+    caseInsensKeyWord "not"
+    qs <- sqlFilterMain False
+    return qs
+
+sqlFilterMain :: Bool -> Parser [Function]
+sqlFilterMain pos = try (filterBetween pos) <|> try (filterVarConst pos) <|> filterVarVar pos
 
 sqlQueries :: Parser (M.Map TableName Query)
 sqlQueries = try sqlManyQueries <|> sqlOneQuery
@@ -1195,10 +1207,11 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show outputQueryFun
     traceIOIfDebug debug $ "Query expr (w/o filter) = " ++ show outputQueryExpr
 
-    -- TODO this is CHEATING! thoretically, the best value for 'infinity' is the the maximum of absolute values that we aggregate
+    -- TODO this is CHEATING! thoretically, the best value for 'infinity' is the the (max - min) of the values that we aggregate
     -- however, this is a bad idea since it depends on private data and has some sensitivity by itself; we want it to be a constant
     -- let infVal = 10000.0 -- this is more honest, but it gives very bad sensitivities
-    let infVal = B.fx $ B.analyzeTableExprOld crossProductTable $ B.SelectMax [B.ComposeL 1.0 [outputQueryExpr]]
+    let infVal = (B.fx $ B.analyzeTableExprOld crossProductTable $ B.SelectMax [outputQueryExpr]) - 
+                 (B.fx $ B.analyzeTableExprOld crossProductTable $ B.SelectMin [outputQueryExpr])
 
     -- we may now apply the filter
     let (filtQueryFuns, filtSensRowMatrix, filtTable) = filteredExpr crossProductTable infVal inputMap sensitiveRowMatrix sensitiveColSet outputFilterFuns [outputQueryFun]

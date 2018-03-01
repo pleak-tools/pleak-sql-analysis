@@ -219,9 +219,13 @@ takeCoarser x           Any           = x
 takeCoarser (Exactly p) (Exactly q)   = Exactly (min p q)
 
 -- we do some simplifications to make the matching easier
+-- 1) Move all scallings deep into the brackets
+-- 2) Ungroup variables whenever possible
+-- 3) Remove repeating subnorms
 normalizeNorm :: Ord a => Norm a -> Norm a
 
 -- move all scaling into the brackets as deep as possible
+-- remove scaling by 1.0
 normalizeNorm (NormScale 1.0 x) = normalizeNorm x
 normalizeNorm (NormScale c1 (NormScale c2 x)) = normalizeNorm $ NormScale (c1*c2) x
 normalizeNorm (NormScale c (NormL a xs))  = normalizeNorm $ NormL a $ map (\x -> NormScale c x) xs
@@ -229,14 +233,31 @@ normalizeNorm (NormScale c NormZero)  = NormZero
 normalizeNorm (NormLN      NormZero)  = NormZero
 normalizeNorm (NormL p xs) = 
 
-    -- apply the equality ||x,y|_p, z|_p == ||x|_p, |y|_p, z|_p, normalize the result
-    let ys' = map normalizeNorm (rearrangeNorm Ungroup EQ p xs) in
 
-    -- if any subnorm repeats, we take it only once
-    -- TODO it would be more precise to scale it by sqrt[p](n) for n copies, but current solution is safe anyway
-    let ys = S.toList (S.fromList ys') in
-    let zs = filter (\y -> case y of NormZero -> False; _ -> True) ys in
-    -- |||x| ||_p = |x|
+    -- apply the equality ||x,y|_p, z|_p == ||x|_p, |y|_p, z|_p to ungroup, normalize the result
+    let ys' = map normalizeNorm $ rearrangeNorm Ungroup EQ p xs in
+
+    -- throw away empty entires that are always 0 anyway
+    let ys  = filter (\y -> case y of NormZero -> False; _ -> True) ys' in
+
+    -- if any subnorm repeats, we take it only once using equality |x,x,z|_p = |sqrt[p](2)*x,z|_p
+    -- to preserve the equality, we scale a variable by sqrt[p](n) for n copies
+
+    -- count each variable
+    let ysUnique = S.toList (S.fromList ys) in
+    let counts   = map (\y -> (y, (length . Data.List.filter (==y)) ys)) ysUnique in
+
+    -- scale each variable with the p-th root of its multiplicity
+    let rootPow = case p of
+            Exactly q -> (1 / q)
+            Any       -> 0.0
+    in
+    let zs' = map (\(y,ny) -> NormScale ((fromIntegral ny) ** rootPow) y) counts in
+
+    -- again, we need to apply normalizeNorm to push the fresh scalings down
+    let zs  = map normalizeNorm $ zs' in
+
+    -- we may now get the case |||x| ||_p = |x|
     case zs of
         [z] -> z
         []  -> NormZero
@@ -248,17 +269,28 @@ normalizeNorm x = x
 -- we know how to do it only if scalings are around 'Col x' or 'NormLN (Col x)'
 -- hence, a term has to be normalized first
 -- there are two mappings: one for 'Col x', another for NormLN (Col x)'
-extractScalings :: (Show a, Ord a) => Norm a -> (M.Map a Double, M.Map a Double)
-extractScalings norm = 
+-- the function 'aggr' tells what to do with repeating variables
+-- the functions 'pre' and 'post' tell how to pre- and and postprocess each variable
+extractScalings :: (Show a, Ord a) => (Double -> Double) ->
+                                      (Double -> Double -> Double) ->
+                                      (Double -> Double) ->
+                                      Norm a -> (M.Map a Double, M.Map a Double)
+extractScalings pre aggr post norm = 
+    let (map1,map2) = extractScalingsRec pre aggr norm in
+    (M.map post map1, M.map post map2)
+
+extractScalingsRec :: (Show a, Ord a) => (Double -> Double) ->
+                                         (Double -> Double -> Double) ->
+                                         Norm a -> (M.Map a Double, M.Map a Double)
+extractScalingsRec pre aggr norm = 
     case norm of
-            NormScale a (Col x)          -> (M.fromList [(x,a)], none)
-            NormScale a (NormLN (Col x)) -> (none, M.fromList [(x,a)])
-            Col x                        -> (M.fromList [(x,1.0)], none)
-            NormLN (Col x)               -> (none, M.fromList [(x,1.0)])
+            NormScale a (Col x)          -> (M.fromList [(x,pre a)], none)
+            NormScale a (NormLN (Col x)) -> (none, M.fromList [(x,pre a)])
+            Col x                        -> (M.fromList [(x,pre 1.0)], none)
+            NormLN (Col x)               -> (none, M.fromList [(x,pre 1.0)])
             NormZero                     -> (none, none)
-            -- if the same variable has been used several times, take its minimum scaling
-            -- minimum scaling is the one that increases sensitivity the most
-            NormL p xs                   -> foldr (\(x1,y1) (x2,y2) -> let f = M.unionWith min in (f x1 x2, f y1 y2)) (none,none) $ map extractScalings xs
+            -- if the same variable has been used several times, apply the aggregation to it
+            NormL p xs                   -> foldl (\(x1,y1) (x2,y2) -> let f = M.unionWith aggr in (f x1 x2, f y1 y2)) (none,none) $ map (extractScalingsRec pre aggr) xs
             x                            -> error $ error_internal_extractScaling x
     where none = M.empty
 
@@ -275,7 +307,7 @@ scalingLpNorm (Exactly p1) (Exactly p2) n =
 -- this is safe since the minimum scaling increases sensitivity the most
 exprCost :: (Show a, Ord a) => Norm a -> Double
 exprCost expr = 
-    let (scalingMapCol, scalingMapLN) = extractScalings expr in
+    let (scalingMapCol, scalingMapLN) = extractScalings id min id expr in
     let scalings1 = snd $ unzip (M.toList scalingMapCol) in
     let scalings2 = snd $ unzip (M.toList scalingMapLN) in
     foldr min 100000 (scalings1 ++ scalings2)
@@ -355,9 +387,80 @@ verifyNorm k n1 (NormScale a2 n2) =
 verifyNorm _ NormZero _ = Just NormZero
 verifyNorm _ x y = Nothing --trace (show x ++ "\n" ++ show y ++ "\n---") $ Nothing
 
-normalizeAndVerify :: (Show a, Eq a, Ord a) => Norm a -> Norm a -> Maybe (Norm a)
-normalizeAndVerify n1 n2 = 
-    fmap normalizeNorm $ verifyNorm 0 (normalizeNorm n1) (normalizeNorm n2)
+normalizeAndVerify :: (Show a, Eq a, Ord a) => Norm a -> Norm a -> (M.Map a Double, M.Map a Double)
+normalizeAndVerify nx ny = 
+    -- normalize the norms
+    let nnx = normalizeNorm nx in
+    let nny = normalizeNorm ny in
+    -- first of all, try a more clever norm matching, that may still fail
+    let newNorm = fmap normalizeNorm $ verifyNorm 0 nnx nny in
+    -- if it does not work, then use a hammer
+    case newNorm of
+        Just norm -> extractScalings id min id norm
+        Nothing   ->
+              -- find the finest p-norm in nx and the coarsest norm in ny
+              -- we aim to scale variables of nx, so that the norm px will be as large as py
+              let px = findMinP nnx in
+              let py = findMaxP nny in
+              let proot = case py of
+                      Exactly q -> (1 / q)
+                      Any       -> 0.0
+              in
+
+              -- extract scalings of all variables, compute a single scaling sqrt[p](a^p_1 + ... + a^p_k) for repating variables
+              let (mapColx, mapLNx) = if proot == 0.0 then extractScalings id max id nnx else extractScalings (\x -> x**(1 / proot)) (+) (\x -> x**proot) nnx in
+              let (mapColy, mapLNy) = if proot == 0.0 then extractScalings id max id nny else extractScalings (\x -> x**(1 / proot)) (+) (\x -> x**proot) nny in
+
+              -- scale the variables of nx to match ny, scale with sqrt[p](2) if some variable is used both as x ans lnx in the query
+              let scale = 2**(-proot) in
+              let listMapCol = matchScalings         nnx (M.toList mapColx) mapColy in
+              let listMapLN  = matchLNScalings scale nnx (M.toList mapLNx)  mapColx mapColy mapLNy in
+
+              -- additional scaling is needed in the case px < py
+              let n = fromIntegral $ length (listMapCol ++ listMapLN) in
+              let a = scalingLpNorm px py n in
+              (M.fromList $ map (\(x,xa) -> (x,xa * a)) listMapCol, M.fromList $ map (\(x,xa) -> (x,xa * a)) listMapLN)
+
+matchScalings :: (Show a, Ord a) => Norm a -> [(a,Double)] -> (M.Map a Double) -> [(a,Double)]
+matchScalings _ [] _ = []
+matchScalings t ((x,a):xs) mapColy =
+    if M.member x mapColy then
+        (x, min a (mapColy ! x)) : matchScalings t xs mapColy
+    else error $ error_badNorm t x
+
+matchLNScalings :: (Show a, Ord a) => Double -> Norm a -> [(a,Double)] -> (M.Map a Double) -> (M.Map a Double) -> (M.Map a Double) -> [(a,Double)]
+matchLNScalings _ _ [] _ _ _ = []
+matchLNScalings scale t ((x,a):xs) mapColx mapColy mapLNy =
+    -- if mapLNy also contains x, everything is fine
+    if M.member x mapLNy then
+        (x, min a (mapLNy ! x)) : matchLNScalings scale t xs mapColx mapColy mapLNy
+    -- we may still take x from mapColy
+    else if  M.member x mapColy && not (M.member x mapColx) then
+        (x, min a (mapColy ! x)) : matchLNScalings scale t xs mapColx mapColy mapLNy
+    -- we need additional scaling by sqrt[p](2) if mapColx also contained x, to handle two copies
+    else if  M.member x mapColy && M.member x mapColx then
+        (x, scale * (min a (mapColy ! x))) : matchLNScalings scale t xs mapColx mapColy mapLNy
+    else error $ error_badLNNorm t x
+
+-- assume that the norm has already been normalized
+findMaxP :: Norm a -> ADouble
+-- we take the smallest possible value for vectors of length one
+findMaxP (Col _)  = Exactly 1.0
+findMaxP NormZero = Exactly 1.0
+findMaxP (NormLN x) = findMaxP x
+findMaxP (NormL Any _) = Any
+findMaxP (NormL p xs) = foldl takeFiner p $ map findMaxP xs
+findMaxP (NormScale _ x) = findMaxP x
+
+-- assume that the norm has already been normalized
+findMinP :: Norm a -> ADouble
+-- we take the largest possible value for vectors of length one
+findMinP (Col _)  = Any
+findMinP NormZero = Any
+findMinP (NormLN x) = findMinP x
+findMinP (NormL (Exactly 1.0) xs) = Exactly 1.0
+findMinP (NormL p xs) = foldl takeCoarser p $ map findMinP xs
+findMinP (NormScale _ x) = findMinP x
 
 -- here is the main step proving |x_1,...,x_n|_{px} <= |y_1,...,y_m|_{py} for (py <= px)
 -- it tries to prove that there is an injective mapping f such that |x_i| <= |y_f(i)| for all i

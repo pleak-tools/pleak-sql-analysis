@@ -1,0 +1,1 @@
+SELECT SUM |ships.latitude| ^ 2 + |ships.longitude| ^ 2+ |ships.maxspeed| ^ 2 FROM ships

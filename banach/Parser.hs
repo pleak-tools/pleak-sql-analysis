@@ -461,6 +461,16 @@ filterVarVar pos = do
   let b  = if pos then Filt op y 0.0 else FiltNeg op y 0.0
   return [F as b]
 
+-- this filter makes sense only of applied to booleans
+-- otherwise, it treats all values that do not equal 0 as 1
+filterNocomp :: Bool -> Parser [Function]
+filterNocomp pos = do
+  aexpr <- aExpr
+  let y  = "filt~"
+  let as = aexprToExpr y (aexprNormalize $ aexpr)
+  let b  = if pos then FiltNeg EQ y 0.0 else Filt EQ y 0.0
+  return [F as b]
+
 filterBetween :: Bool -> Parser [Function]
 filterBetween pos = do
   aexpr   <- aExpr
@@ -503,7 +513,7 @@ sqlFilterNeg = do
     return qs
 
 sqlFilterMain :: Bool -> Parser [Function]
-sqlFilterMain pos = try (filterBetween pos) <|> try (filterVarConst pos) <|> filterVarVar pos
+sqlFilterMain pos = try (filterBetween pos) <|> try (filterVarConst pos) <|> try (filterVarVar pos) <|> filterNocomp pos
 
 sqlQueries :: Parser (M.Map TableName Query)
 sqlQueries = try sqlManyQueries <|> sqlOneQuery

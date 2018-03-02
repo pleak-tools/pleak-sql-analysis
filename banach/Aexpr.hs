@@ -123,9 +123,13 @@ aexprToExpr y (AVar x)   = M.fromList [(y, Id x)]
 -- lp-norm
 aexprToExpr y aexpr@(AUnary (ARoot p) (ASum xs)) =
 
+    -- if p is an even number, we do not need to take absolute value of the arguments
+    let pint = round p in
+    let isEven = mod pint 2 == 0 && p == fromIntegral pint in
+
     -- collect all expression and variable arguments separately
-    let ysExpr = filter (\x -> case x of {AUnary (APower q) (AAbs _)        -> if p == q then True else False; _ -> False}) xs in
-    let ysVar  = filter (\x -> case x of {AUnary (APower q) (AAbs (AVar _)) -> if p == q then True else False; _ -> False}) xs in
+    let ysExpr = filter (\x -> case x of {AUnary (APower q) (AAbs _)        -> p == q; AUnary (APower q) _        -> p == q && isEven; _ -> False}) xs in
+    let ysVar  = filter (\x -> case x of {AUnary (APower q) (AAbs (AVar _)) -> p == q; AUnary (APower q) (AVar _) -> p == q && isEven; _ -> False}) xs in
 
         -- if all arguments are p-powers of absolute values, then we have an lp-norm
         if (length xs == length ysExpr) then
@@ -133,12 +137,12 @@ aexprToExpr y aexpr@(AUnary (ARoot p) (ASum xs)) =
             -- if there is at least one expression argument that is not a variable, convert all variables to expressions as x~ = Power x 1.0
             if (length ysVar < length ysExpr) then
                 let zs = map (\x -> y ++ "~" ++ show x) [1..length xs] in
-                let ws = map (\(x,z) -> case x of AUnary (APower _) (AAbs x') -> aexprToExpr z x') (zip xs zs) in
+                let ws = map (\(x,z) -> case x of {AUnary (APower _) (AAbs x') -> aexprToExpr z x'; AUnary (APower _) x' -> aexprToExpr z x'}) (zip xs zs) in
                 M.union (M.fromList [(y, L p zs)]) $ foldr M.union M.empty ws
 
             -- otherwise, take the variables directly
             else
-                let zs = map (\x -> case x of {AUnary (APower _) (AAbs (AVar z)) -> z}) xs in
+                let zs = map (\x -> case x of {AUnary (APower _) (AAbs (AVar z)) -> z; AUnary (APower _) (AVar z) -> z}) xs in
                 M.fromList[(y, L p zs)]
 
         -- otherwise, we fail since we do not know how to compute root sensitivities yet
@@ -151,6 +155,25 @@ aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) (AAbs (AVar x)))) =
 
 aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) (AAbs x))) =
     if p == q then
+        let z = y ++ "~1" in
+        M.union (M.fromList [(y, L p [z])]) (aexprToExpr z x)
+    else error $ error_queryExpr aexpr
+
+aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) (AVar x))) =
+
+    -- if p is an even number, we do not need to take absolute value of the arguments
+    let pint = round p in
+    let isEven = mod pint 2 == 0 && p == fromIntegral pint in
+    if p == q && isEven then
+        M.fromList [(y, L p [x])]
+    else error $ error_queryExpr aexpr
+
+aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) x)) =
+
+    -- if p is an even number, we do not need to take absolute value of the arguments
+    let pint = round p in
+    let isEven = mod pint 2 == 0 && p == fromIntegral pint in
+    if p == q && isEven then
         let z = y ++ "~1" in
         M.union (M.fromList [(y, L p [z])]) (aexprToExpr z x)
     else error $ error_queryExpr aexpr

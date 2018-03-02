@@ -425,7 +425,8 @@ matchScalings :: (Show a, Ord a) => Norm a -> [(a,Double)] -> (M.Map a Double) -
 matchScalings _ [] _ = []
 matchScalings t ((x,a):xs) mapColy =
     if M.member x mapColy then
-        (x, min a (mapColy ! x)) : matchScalings t xs mapColy
+        let b = mapColy ! x in
+        (x, (min a b) / a) : matchScalings t xs mapColy
     else error $ error_badNorm t x
 
 matchLNScalings :: (Show a, Ord a) => Double -> Norm a -> [(a,Double)] -> (M.Map a Double) -> (M.Map a Double) -> (M.Map a Double) -> [(a,Double)]
@@ -433,13 +434,16 @@ matchLNScalings _ _ [] _ _ _ = []
 matchLNScalings scale t ((x,a):xs) mapColx mapColy mapLNy =
     -- if mapLNy also contains x, everything is fine
     if M.member x mapLNy then
-        (x, min a (mapLNy ! x)) : matchLNScalings scale t xs mapColx mapColy mapLNy
+        let b = mapLNy ! x in
+        (x, (min a b) / a) : matchLNScalings scale t xs mapColx mapColy mapLNy
     -- we may still take x from mapColy
     else if  M.member x mapColy && not (M.member x mapColx) then
-        (x, min a (mapColy ! x)) : matchLNScalings scale t xs mapColx mapColy mapLNy
+        let b = mapColy ! x in
+        (x, (min a b) / a) : matchLNScalings scale t xs mapColx mapColy mapLNy
     -- we need additional scaling by sqrt[p](2) if mapColx also contained x, to handle two copies
     else if  M.member x mapColy && M.member x mapColx then
-        (x, scale * (min a (mapColy ! x))) : matchLNScalings scale t xs mapColx mapColy mapLNy
+        let b = mapColy ! x in
+        (x, scale * (min a b) / a) : matchLNScalings scale t xs mapColx mapColy mapLNy
     else error $ error_badLNNorm t x
 
 -- assume that the norm has already been normalized

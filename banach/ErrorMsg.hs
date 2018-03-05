@@ -47,7 +47,10 @@ error_internal_extractScaling t        = error_internal ++ "\n cannot extract sc
 error_internal_sensitivityMatrix n1 n2 = error_internal ++ "\n " ++ show n2 ++ " tables, but " ++ show n1 ++ " columns in sensitivity matrix."
 error_internal_fillMissing x i xs      = "case x < i in fillMissing: " ++ show x ++ " < " ++ show i ++ " in " ++ show xs
 
-error_arrElem x xs  = "INTERNAL ERROR: Element " ++ show x ++ " is not in " ++ show xs
+error_arrElem x xs     = "INTERNAL ERROR: Element " ++ show x ++ " is not in " ++ show xs
+error_badNorm   t sens = "ERROR: the database norm " ++ show t ++ " does not contain the (non-LN) variable " ++ show sens ++ " declared as sensitive."
+error_badLNNorm t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
 
--- this message comes only if debug=true, so pleak.io does not need to parse it
-warning_verifyNorm  = "ERROR: Could not prove that the db norm is at least as large as the query norm for sensitivity w.r.t. "
+--the next error is not used anymore
+error_verifyNorm  = "INTERNAL ERROR: Could not prove that the db norm is at least as large as the query norm for sensitivity w.r.t. "
+

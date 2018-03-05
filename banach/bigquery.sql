@@ -1,11 +1,11 @@
 feasible_ports =
 SELECT ports.port_id AS id, ports.latitude AS latitude, ports.longitude AS longitude
 FROM ports
-WHERE ports.available = 1
+WHERE ports.available
 
 ship_distance_from_port = 
 SELECT ships.ship_id AS ship_id, fports.id AS port_id, ships.length AS length, ships.maxspeed AS speed,
-       sqrt(|(ships.latitude - fports.latitude)| ^ 2 + |(ships.longitude - fports.longitude)| ^ 2) AS distance
+       sqrt((ships.latitude - fports.latitude) ^ 2 + (ships.longitude - fports.longitude) ^ 2) AS distance
 FROM ships, feasible_ports AS fports
 
 reachable_ports =

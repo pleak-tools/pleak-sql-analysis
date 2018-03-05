@@ -461,6 +461,16 @@ filterVarVar pos = do
   let b  = if pos then Filt op y 0.0 else FiltNeg op y 0.0
   return [F as b]
 
+-- this filter makes sense only of applied to booleans
+-- otherwise, it treats all values that do not equal 0 as 1
+filterNocomp :: Bool -> Parser [Function]
+filterNocomp pos = do
+  aexpr <- aExpr
+  let y  = "filt~"
+  let as = aexprToExpr y (aexprNormalize $ aexpr)
+  let b  = if pos then FiltNeg EQ y 0.0 else Filt EQ y 0.0
+  return [F as b]
+
 filterBetween :: Bool -> Parser [Function]
 filterBetween pos = do
   aexpr   <- aExpr
@@ -503,7 +513,7 @@ sqlFilterNeg = do
     return qs
 
 sqlFilterMain :: Bool -> Parser [Function]
-sqlFilterMain pos = try (filterBetween pos) <|> try (filterVarConst pos) <|> filterVarVar pos
+sqlFilterMain pos = try (filterBetween pos) <|> try (filterVarConst pos) <|> try (filterVarVar pos) <|> filterNocomp pos
 
 sqlQueries :: Parser (M.Map TableName Query)
 sqlQueries = try sqlManyQueries <|> sqlOneQuery
@@ -1014,13 +1024,7 @@ deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols dbNormTabl
     let queryAggrNorm = deriveTableNorm queryAggr in
 
     -- adjust the query norm to the table norm
-    let newQueryExprNorm = normalizeAndVerify queryExprNorm dbExprNorm in
-
-    --has the adjustment succeeded, or are the norms too different?
-    let (goodNorm,(mapCol,mapLN)) = case newQueryExprNorm of
-            Just norm -> (True, extractScalings norm)
-            Nothing   -> (False, (none,none)) where none = M.empty
-    in
+    let (mapCol,mapLN) = normalizeAndVerify queryExprNorm dbExprNorm in
 
     let adjustedQueryExpr = updateExpr mapCol mapLN queryExpr in
     let adjustedQueryAggr = updateTableExpr queryAggr mapCol mapLN queryAggrNorm dbAggrNorm numOfSensRows in
@@ -1033,9 +1037,9 @@ deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols dbNormTabl
     traceIfDebug debug ("database norm     = Rows: " ++ show dbAggrNorm    ++ " | Cols: "  ++ show (normalizeNorm dbExprNorm)) $
     traceIfDebug debug ("intial query norm = Rows: " ++ show queryAggrNorm ++ " | Cols: "  ++ show (normalizeNorm queryExprNorm)) $
     traceIfDebug debug ("adjust query norm = Rows: " ++ show newAggrNorm   ++ " | Cols: "  ++ show (normalizeNorm newQueryNorm)) $
-    traceIfDebug debug ("variable norm scaling: " ++ case newQueryExprNorm of {Nothing -> "???\n"; Just norm -> show (extractScalings norm) ++ "\n"}) $
+    traceIfDebug debug ("scaling: " ++ show mapCol ++ "\n\t " ++ show mapLN ++ "\n\n") $
     traceIfDebug debug ("----------------") $
-    (adjustedQueryExpr, adjustedQueryAggr, goodNorm)
+    (adjustedQueryExpr, adjustedQueryAggr, True)
 
 
 filteredExpr :: B.Table -> Double -> (M.Map VarName B.Var) -> [[Int]] -> S.Set B.Var -> [Function] -> [Function] -> ([Function], [[Int]], B.Table)
@@ -1238,8 +1242,8 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug ( "tableExprData:" ++ show tableExprData)
     traceIOIfDebug debug ( "----------------")
 
-    let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else warning_verifyNorm ++ tableName ++ "\n") goodNorms tableExprData
-    when (debug || not (null possibleErrMsg)) $ putStrLn $ possibleErrMsg
+    let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else error_verifyNorm ++ tableName ++ "\n") goodNorms tableExprData
+    when (not (null possibleErrMsg)) $ error $ possibleErrMsg
 
     return (filtTable, tableExprData)
 

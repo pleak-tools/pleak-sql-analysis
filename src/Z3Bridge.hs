@@ -418,6 +418,7 @@ genOp n = maybe (ice errMsg) id $ lookup n' ops
         ("and", "and"),
         ("<>", "distinct"), ("!=", "distinct"), ("is not", "distinct"),
         ("*", "*"), ("+", "+"), ("-", "-"), ("/", "/"), ("%", "%"),
+        ("^", "^"),
         ("=", "="), ("<", "<"), ("<=", "<="), (">", ">"), (">=", ">=")
       ]
 
@@ -433,6 +434,8 @@ genType n = showString $ case unpack n of
   "bool"    -> "Bool"
 --  "text"    -> "String"
   "text"    -> "(Seq (_ BitVec 8))"
+  "float8"  -> "Real"
+  "numeric" -> "Real"
   "double precision" -> "Real"
   n'        -> ice $ printf "Invalid type \"%s\"." n'
 

@@ -4,8 +4,8 @@ FROM ports
 WHERE ports.available
 
 ship_distance_from_port = 
-SELECT ships.ship_id AS ship_id, fports.id AS port_id, ships.length AS length, ships.maxspeed AS speed,
-       sqrt((ships.latitude - fports.latitude) ^ 2 + (ships.longitude - fports.longitude) ^ 2) AS distance
+SELECT ships.ship_id AS ship_id, fports.id AS port_id,  ships.length AS length, ships.maxspeed AS speed,
+       ((ships.latitude - fports.latitude) ^ 2 + (ships.longitude - fports.longitude) ^ 2) ^ 0.5 AS distance
 FROM ships, feasible_ports AS fports
 
 reachable_ports =
@@ -19,7 +19,7 @@ FROM ship_distance_from_port AS sdp2, berth
 WHERE berth.port_id = sdp2.port_id AND
       sdp2.length <= berth.berthlength
 
-SELECT MIN sdp3.distance / sdp3.speed
+SELECT min (sdp3.distance / sdp3.speed)
 FROM ship_distance_from_port AS sdp3, available_slots, reachable_ports
 WHERE sdp3.port_id = available_slots.port_id AND
       sdp3.ship_id = available_slots.ship_id AND

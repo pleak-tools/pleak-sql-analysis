@@ -293,13 +293,13 @@ powerAExpr = do
 sqrtAExpr :: Parser (AExpr a -> AExpr a)
 sqrtAExpr = do
   keyWord "sqrt"
-  return (AUnary (ARoot 2.0))
+  return (AUnary (APower 0.5))
 
 rootAExpr :: Parser (AExpr a -> AExpr a)
 rootAExpr = do
   keyWord "root"
   r <- float
-  return (AUnary (ARoot r))
+  return (AUnary (APower (1/r)))
 
 lnAExpr :: Parser (AExpr a -> AExpr a)
 lnAExpr = do

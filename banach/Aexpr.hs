@@ -23,7 +23,6 @@ data AUnOp
   = AAbsBegin | AAbsEnd 
   | ALn | ANeg
   | AExp   Double
-  | ARoot  Double
   | APower Double
   deriving (Show)
 
@@ -99,11 +98,6 @@ aexprNormalize x = x
 -- we do not convert aggregation since it comes separately
 -- we do not convert scaleNorm and zeroSens since they come from the database norm
 aexprToExpr :: VarName -> AExpr VarName -> (M.Map VarName Expr)
-aexprToExpr y (AUnary (APower c) (AVar x))              = M.fromList [(y, Power x c)]
-aexprToExpr y (AUnary (APower c) (AUnary ALn (AVar x))) = M.fromList [(y, PowerLN x c)]
-aexprToExpr y (AUnary (APower c) x) = 
-    let z = y ++ "~1" in
-    M.union (M.fromList [(y, Power z c)]) (aexprToExpr z x)
 
 aexprToExpr y (AUnary (AExp c) (AVar x)) = M.fromList [(y, Exp c x)]
 aexprToExpr y (AUnary (AExp c) x) = 
@@ -121,7 +115,9 @@ aexprToExpr y (AConst c) = M.fromList [(y, Const c)]
 aexprToExpr y (AVar x)   = M.fromList [(y, Id x)]
 
 -- lp-norm
-aexprToExpr y aexpr@(AUnary (ARoot p) (ASum xs)) =
+aexprToExpr y aexpr@(AUnary (APower pinv) (ASum xs)) =
+
+    let p = 1 / pinv in
 
     -- if p is an even number, we do not need to take absolute value of the arguments
     let pint = round p in
@@ -148,35 +144,45 @@ aexprToExpr y aexpr@(AUnary (ARoot p) (ASum xs)) =
         -- otherwise, we fail since we do not know how to compute root sensitivities yet
         else error $ error_queryExpr aexpr
 
-aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) (AAbs (AVar x)))) =
+aexprToExpr y aexpr@(AUnary (APower pinv) (AUnary (APower q) (AAbs (AVar x)))) =
+    let p = 1 / pinv in
     if p == q then
         M.fromList [(y, L p [x])]
     else error $ error_queryExpr aexpr
 
-aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) (AAbs x))) =
+aexprToExpr y aexpr@(AUnary (APower pinv) (AUnary (APower q) (AAbs x))) =
+    let p = 1 / pinv in
     if p == q then
         let z = y ++ "~1" in
         M.union (M.fromList [(y, L p [z])]) (aexprToExpr z x)
     else error $ error_queryExpr aexpr
 
-aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) (AVar x))) =
+aexprToExpr y aexpr@(AUnary (APower pinv) (AUnary (APower q) (AVar x))) =
 
     -- if p is an even number, we do not need to take absolute value of the arguments
+    let p = 1 / pinv in
     let pint = round p in
     let isEven = mod pint 2 == 0 && p == fromIntegral pint in
     if p == q && isEven then
         M.fromList [(y, L p [x])]
     else error $ error_queryExpr aexpr
 
-aexprToExpr y aexpr@(AUnary (ARoot p) (AUnary (APower q) x)) =
+aexprToExpr y aexpr@(AUnary (APower pinv) (AUnary (APower q) x)) =
 
     -- if p is an even number, we do not need to take absolute value of the arguments
+    let p = 1 / pinv in
     let pint = round p in
     let isEven = mod pint 2 == 0 && p == fromIntegral pint in
     if p == q && isEven then
         let z = y ++ "~1" in
         M.union (M.fromList [(y, L p [z])]) (aexprToExpr z x)
     else error $ error_queryExpr aexpr
+
+aexprToExpr y (AUnary (APower c) (AVar x))              = M.fromList [(y, Power x c)]
+aexprToExpr y (AUnary (APower c) (AUnary ALn (AVar x))) = M.fromList [(y, PowerLN x c)]
+aexprToExpr y (AUnary (APower c) x) = 
+    let z = y ++ "~1" in
+    M.union (M.fromList [(y, Power z c)]) (aexprToExpr z x)
 
 -- l1-norm and sum
 aexprToExpr y aexpr@(ASum xs) =

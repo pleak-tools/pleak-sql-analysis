@@ -969,14 +969,15 @@ getSensitiveRows (T _ _ _ x _ _) = x
 getSensitiveCols (T _ _ _ _ x _) = x
 getTableName     (T _ _ _ _ _ x) = x
 
-readAllTables :: Bool -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
-readAllTables usePrefices tableNames tableAliases = do
+-- assume that the tables are located in the same place where the query is
+readAllTables :: String -> Bool -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
+readAllTables queryPath usePrefices tableNames tableAliases = do
 
     -- collect all tables and all column names that will be used in our query
     -- read table sensitivities from corresponding files
     -- mapM is a standard function [IO a] -> IO [a]
-    let dbData     = mapM (\tableName -> readDB            $ tableName ++ ".db")  tableNames
-    let dbNormData = mapM (\tableName -> parseNormFromFile $ tableName ++ ".nrm") tableNames
+    let dbData     = mapM (\tableName -> readDB            $ queryPath ++ tableName ++ ".db")  tableNames
+    let dbNormData = mapM (\tableName -> parseNormFromFile $ queryPath ++ tableName ++ ".nrm") tableNames
 
     (tableColNames,  tableValues)   <- fmap unzip dbData
     (tableSensitives,tableNormFuns) <- fmap unzip dbNormData
@@ -1165,6 +1166,8 @@ processQuery queryMap tableAlias tableName =
 getBanachAnalyserInput :: Bool -> String -> IO (B.Table, [(String, [Int], B.TableExpr)])
 getBanachAnalyserInput debug input = do
 
+    let queryPath = reverse $ dropWhile (/= '/') (reverse input)
+
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
     queryMap <- parseSqlQueryFromFile input
     let usePrefices = True
@@ -1186,7 +1189,7 @@ getBanachAnalyserInput debug input = do
     --traceIOIfDebug debug $ "TableF " ++ show outputFilterFuns
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
-    inputTableMap <- readAllTables usePrefices inputTableNames inputTableAliases
+    inputTableMap <- readAllTables queryPath usePrefices inputTableNames inputTableAliases
 
     -- we assume that each input table has been copied as many times as it is used, and we take the cross product of all resulting tables
     -- the columns of the cross product are ordered according to the list 'inputTableAliases'

@@ -424,8 +424,9 @@ analyzeTableExprOld rows te = analyzeTableExpr rows [0..length rows - 1] te
 sumGroupsWith :: (Ord a, Ord b) => ([b] -> b) -> [(a,b)] -> [(a,b)]
 sumGroupsWith sumf = map (\ g -> (fst (head g), sumf (map snd g))) . groupBy (\ x y -> fst x == fst y) . sort
 
-performAnalyses :: ProgramOptions -> Table -> [(String, [Int], TableExpr)] -> IO ()
-performAnalyses args rows tableExprData = do
+-- added an input taskMap that is used to generate some intermediate results for each task
+performAnalyses :: ProgramOptions -> Table -> [(String,[Int])] -> [(String, [Int], TableExpr)] -> IO ()
+performAnalyses args rows taskMap tableExprData = do
   let debug = not (alternative args)
   res0 <- forM tableExprData $ \ (tableName, cs, te) -> do
     when debug $ putStrLn ""
@@ -433,15 +434,39 @@ performAnalyses args rows tableExprData = do
     when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="
     sds <- performAnalysis args rows cs te
     return (tableName, sds)
-  let res = sumGroupsWith sum res0
+  --let res = sumGroupsWith sum res0
   when debug $ putStrLn ""
   when debug $ putStrLn "--------------------------------"
   when debug $ putStrLn "Analysis summary (sensitivities w.r.t. each table):"
-  if alternative args
-    then putStr $ intercalate [unitSeparator] $ concat $ map (\ (tableName, sds) -> [tableName, show sds]) res
-    else forM_ res $ \ (tableName, sds) -> printf "%s: %0.6f\n" tableName sds
+  --if alternative args
+  --  then putStr $ intercalate [unitSeparator] $ concat $ map (\ (tableName, sds) -> [tableName, show sds]) res
+  --  else forM_ res $ \ (tableName, sds) -> printf "%s: %0.6f\n" tableName sds
 
-performAnalysis :: ProgramOptions -> Table -> [Int] -> TableExpr -> IO Double
+  -- partition the result among tasks, apply sumGroupsWith for each task
+  -- covert to a properly formatted string, let the tasks be separated by a special character 30
+  -- when combining table copies, we take minimal b since it correpons to maximal beta
+  let taskAggr0 = map (\(taskName,indices) -> (taskName, sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (min x1 x2, y1 + y2)) (epsilon,0)) (map (\i -> res0 !! i) indices)) ) taskMap
+  let unitSeparator2 = chr 30
+  let (_,_,x) = head tableExprData
+  let qr = fx $ analyzeTableExprOld rows x
+
+  -- add a table "all" to the output, sum up the sensitivities and take time minimal b
+  let taskAggr = map (\(taskName,vs) -> if taskName == "output" then
+                                            let v = foldr (\(_,(x1,y1)) (_, (x2,y2)) -> ("all", (min x1 x2, y1 + y2))) ("all", (epsilon,0)) vs in (taskName, v:vs)
+                                        else (taskName,vs)
+                     ) taskAggr0
+
+  let taskStr = if alternative args then
+          map (\(taskName,res) -> taskName ++ [unitSeparator] ++
+                                  (intercalate [unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show (sds/b/ qr * 100)]) res)) taskAggr
+      else
+          map (\(taskName,res) -> taskName ++ "\n" ++
+                                  (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f: %0.3f" tableName sds (sds/b/ qr * 100)) res)) taskAggr
+  putStrLn $ intercalate (if alternative args then [unitSeparator2] else "\n\n") taskStr
+
+-- this now also outputs b, we need it to compute all errors
+--performAnalysis :: ProgramOptions -> Table -> [Int] -> TableExpr -> IO Double
+performAnalysis :: ProgramOptions -> Table -> [Int] -> TableExpr -> IO (Double,Double)
 performAnalysis args rows cs te = do
   let debug = not (alternative args)
   let ar = analyzeTableExpr rows cs te
@@ -463,4 +488,5 @@ performAnalysis args rows cs te = do
   when debug $ printf "noise level: %0.6f\n" nl
   when debug $ printf "relative error from noise: %0.3f%%\n" (nl / qr * 100)
   when debug $ when (nl < 0) $ putStrLn "NEGATIVE NOISE LEVEL - differential privacy could not be achieved, try to increase epsilon!"
-  return sds
+  return (b,sds)
+--  return sds

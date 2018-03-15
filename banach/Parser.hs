@@ -351,6 +351,9 @@ aOperators =
     , Prefix rootAExpr
     , Postfix powerAExpr]
 
+  , [ InfixL (ABinary AMax <$ symbol "\\/")
+    , InfixL (ABinary AMin  <$ symbol "/\\") ]
+
   , [ InfixL (ABinary AMult <$ symbol "*")
     , InfixL (ABinary ADiv  <$ symbol "/") ]
 
@@ -653,7 +656,7 @@ customNorm = do
   return f
 
 defaultNorm xs = do
-  let f = F (M.fromList [("z",L 1.0 xs)]) (SelectMax "z")
+  let f = F (M.fromList [("z",LInf xs)]) (SelectMax "z")
   return f
 
 asgnStmt :: ParserInstance -> Parser [(VarName,Expr)]
@@ -1008,7 +1011,7 @@ processOneTable tableAlias tableName inputVars tableValues normFun dbSensitiveVa
     T tableValues inputVars normFun extendedSensitiveRows dbSensitiveVars tableName
 
 
-deriveExprNorm :: Bool -> Bool -> Int -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [Function] -> B.Expr -> B.TableExpr -> (B.Expr,B.TableExpr,Bool)
+deriveExprNorm :: Bool -> Bool -> Int -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [Function] -> B.Expr -> B.TableExpr -> (B.TableExpr,Bool)
 deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
 
     let namePrefices = map (\tableAlias -> if usePrefices then tableAlias ++ "." else "") dbNormTableAliases in
@@ -1026,12 +1029,10 @@ deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols dbNormTabl
 
     -- adjust the query norm to the table norm
     let (mapCol,mapLN) = normalizeAndVerify queryExprNorm dbExprNorm in
+    let adjustedQuery = updateTableExpr queryAggr mapCol mapLN queryAggrNorm dbAggrNorm numOfSensRows in
 
-    let adjustedQueryExpr = updateExpr mapCol mapLN queryExpr in
-    let adjustedQueryAggr = updateTableExpr queryAggr mapCol mapLN queryAggrNorm dbAggrNorm numOfSensRows in
-
-    let newQueryNorm = deriveNorm orderedVars adjustedQueryExpr in
-    let newAggrNorm  = deriveTableNorm adjustedQueryAggr in
+    let newQueryNorm = deriveNorm orderedVars $ head (getExprFromTableExpr adjustedQuery) in
+    let newAggrNorm  = deriveTableNorm adjustedQuery in
 
     traceIfDebug debug ("----------------") $
     traceIfDebug debug (show dbAggrNorms) $
@@ -1040,7 +1041,7 @@ deriveExprNorm debug usePrefices numOfSensRows inputMap sensitiveCols dbNormTabl
     traceIfDebug debug ("adjust query norm = Rows: " ++ show newAggrNorm   ++ " | Cols: "  ++ show (normalizeNorm newQueryNorm)) $
     traceIfDebug debug ("scaling: " ++ show mapCol ++ "\n\t " ++ show mapLN ++ "\n\n") $
     traceIfDebug debug ("----------------") $
-    (adjustedQueryExpr, adjustedQueryAggr, True)
+    (adjustedQuery, True)
 
 
 filteredExpr :: B.Table -> Double -> (M.Map VarName B.Var) -> [[Int]] -> S.Set B.Var -> [Function] -> [Function] -> ([Function], [[Int]], B.Table)
@@ -1090,8 +1091,8 @@ inputForSensWrtTableRec debug usePrefices (tableAlias : ts) queryExpr queryAggr 
     traceIfDebug debug ("num of rows: " ++ show numOfRows) $
     traceIfDebug debug ("num of Sens rows: " ++ show numOfSensRows) $
 
-    let (_,adjustedQueryAggr, goodNorm) = deriveExprNorm debug usePrefices numOfSensRows inputMap tableSensCols [tableAlias] [tableNorm] newQueryExpr newQueryAggr in
-    (goodNorm, (tableName, col, adjustedQueryAggr)) : inputForSensWrtTableRec debug usePrefices ts queryExpr queryAggr cols inputMap tableMap
+    let (adjustedQuery, goodNorm) = deriveExprNorm debug usePrefices numOfSensRows inputMap tableSensCols [tableAlias] [tableNorm] newQueryExpr newQueryAggr in
+    (goodNorm, (tableName, col, adjustedQuery)) : inputForSensWrtTableRec debug usePrefices ts queryExpr queryAggr cols inputMap tableMap
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
 -- we use the structure that marks all insensitive entries with '-1'
@@ -1119,12 +1120,12 @@ updateVariableNames prefix (F as b) =
     let b'  = updatePreficesTableExpr prefix b in
     F as' b'
 
-processQuery :: (M.Map TableName Query) -> TableAlias -> TableName -> ([TableAlias],[TableName], [Function], [Function])
-processQuery queryMap tableAlias tableName =
+processQuery :: (M.Map TableName Query) -> TableName -> TableAlias -> TableName -> ([[TableName]], [TableAlias],[TableName], [Function], [Function])
+processQuery queryMap taskName tableAlias tableName =
 
     -- if the table is not in the query map, then it is an input table
     if not (M.member tableName queryMap) then
-        ([tableAlias], [tableName], [], [])
+        ([[taskName]], [tableAlias], [tableName], [], [])
     else
         -- collect all used tables of this query
         let query@(P groupColnames queryFuns usedAliasMap filterFuns) = queryMap ! tableName in
@@ -1138,32 +1139,33 @@ processQuery queryMap tableAlias tableName =
 
         -- recursively, collect all subqueries and filters used to generate all used tables
         let usedAliases = M.keys usedAliasMap in
-        let (tableAliases', tableNames', subQueryFuns', subFiltFuns') = unzip4 $ map (\key -> processQuery queryMap key (usedAliasMap ! key)) usedAliases in
+        let (taskNames', tableAliases', tableNames', subQueryFuns', subFiltFuns') = unzip5 $ map (\key -> processQuery queryMap tableName key (usedAliasMap ! key)) usedAliases in
 
+        let taskNames     = concat taskNames'    in
         let tableAliases  = concat tableAliases' in
         let tableNames    = concat tableNames'   in
         let subQueryFuns  = concat subQueryFuns' in
         let subFiltFuns   = concat subFiltFuns'  in
 
         -- add the current table alias as a prefix to all variables in all queries and filters
-        let extTableAlias = if tableAlias == outputTableName then "" else tableAlias ++ "." in
+        let prefix = if tableAlias == outputTableName then "" else tableAlias ++ "." in
 
-        let newQueryFuns    = map (updateVariableNames extTableAlias) queryFuns in
-        let newFilterFuns   = map (updateVariableNames extTableAlias) filterFuns in
+        let newQueryFuns    = map (updateVariableNames prefix) queryFuns in
+        let newFilterFuns   = map (updateVariableNames prefix) filterFuns in
 
-        let newSubQueryFuns = map (updateVariableNames extTableAlias) subQueryFuns in
-        let newSubFiltFuns  = map (updateVariableNames extTableAlias) subFiltFuns in
+        let newSubQueryFuns = map (updateVariableNames prefix) subQueryFuns in
+        let newSubFiltFuns  = map (updateVariableNames prefix) subFiltFuns in
 
         -- put all subquery funs and all filters together with the current query's funs and filters
         let outputQueryFuns = mergeQueryFuns newQueryFuns newSubQueryFuns in
         let outputFilters   = newSubFiltFuns ++ mergeQueryFuns newFilterFuns newSubQueryFuns in
 
-        (map (extTableAlias ++) tableAliases, tableNames, outputQueryFuns, outputFilters)
+        (map (taskName :) taskNames, map (prefix ++) tableAliases, tableNames, outputQueryFuns, outputFilters)
 
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> IO (B.Table, [(String, [Int], B.TableExpr)])
+getBanachAnalyserInput :: Bool -> String -> IO (B.Table, [(String,[Int])], [(String, [Int], B.TableExpr)])
 getBanachAnalyserInput debug input = do
 
     let queryPath = reverse $ dropWhile (/= '/') (reverse input)
@@ -1178,11 +1180,17 @@ getBanachAnalyserInput debug input = do
 
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
-    let (inputTableAliases, inputTableNames, outputQueryFuns, outputFilterFuns) = processQuery queryMap outputTableName outputTableName
+    let (taskNames, inputTableAliases, inputTableNames, outputQueryFuns, outputFilterFuns) = processQuery queryMap "" outputTableName outputTableName
+
+    let indexedTaskNames = zip taskNames [0..(length taskNames) - 1]
+    let taskMaps = concat $ map (\(ts,i) -> (map (\t -> (t,[i])) ) ts) indexedTaskNames
+    let taskMap  = M.toList $ M.fromListWith (++) $ filter (\(t,_) -> t /= "") taskMaps
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Input table names:   " ++ show inputTableNames
     traceIOIfDebug debug $ "Input table aliases: " ++ show inputTableAliases
+    traceIOIfDebug debug $ "Task names:          " ++ show taskNames
+    traceIOIfDebug debug $ "Task map:            " ++ show taskMap
 
     --traceIOIfDebug debug $ "----------------"
     --traceIOIfDebug debug $ "TableQ " ++ show outputQueryFuns
@@ -1237,7 +1245,7 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug ("Query expr (w/ filter) = " ++ show mainQueryExpr)
     traceIOIfDebug debug ("Query aggr (w/ filter) = " ++ show mainQueryAggr)
     
-    --bring the input to the form [(String, [Int], TableExpr)]
+    --bring the input to the form [(String, String, [Int], TableExpr)]
     let (goodNorms, tableExprData) = unzip $ inputForSensWrtTable debug usePrefices inputTableAliases mainQueryExpr mainQueryAggr filtSensRowMatrix inputMap inputTableMap
 
     traceIOIfDebug debug ( "----------------")
@@ -1248,7 +1256,7 @@ getBanachAnalyserInput debug input = do
     let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else error_verifyNorm ++ tableName ++ "\n") goodNorms tableExprData
     when (not (null possibleErrMsg)) $ error $ possibleErrMsg
 
-    return (filtTable, tableExprData)
+    return (filtTable, taskMap, tableExprData)
 
 
     -- Below is the old solution that does not consider sensitivities w.r.t. each table

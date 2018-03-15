@@ -51,6 +51,16 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | FiltNeg Ordering VarName Double  -- used for filters, actually is not a 'Table' expression, we just use the same data structure
   deriving Show
 
+getExprFromTableExpr :: B.TableExpr -> [B.Expr]
+getExprFromTableExpr expr =
+    case expr of
+        B.SelectProd es    -> es
+        B.SelectL _  es    -> es
+        B.SelectMin  es    -> es
+        B.SelectMax  es    -> es
+        B.SelectSump _ es  -> es
+        B.SelectSumInf es  -> es
+
 -----------------------------------------------------------------------------------
 -- TODO: reconstruction of terms is being synchronized with B.Expr and B.TableExpr
 

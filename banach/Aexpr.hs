@@ -6,10 +6,15 @@ import qualified Data.Map as M
 import ErrorMsg
 import Expr
 
+-- the default value for Tauoids, b makes them precise, and ScaleNorm maps b back to a
+a = 0.1
+b = 10.0
+
 -- we want to parse complex expressions and transform them to Expr afterwards
 data AExpr a
   = AVar a
   | AConst Double
+  | ASubExpr Expr
   | AUnary  AUnOp (AExpr a)
   | ABinary ABinOp (AExpr a) (AExpr a)
   | AAbs  (AExpr a)
@@ -21,13 +26,13 @@ data AExpr a
 
 data AUnOp
   = AAbsBegin | AAbsEnd 
-  | ALn | ANeg
+  | ALn | ANeg | ANot
   | AExp   Double
   | APower Double
   deriving (Show)
 
 data ABinOp
-  = ADiv | AMult | AAdd | ASub | AMin | AMax
+  = ADiv | AMult | AAdd | ASub | AMin | AMax | AAnd | AOr | ALT | AEQ | AGT
   deriving (Show)
 
 
@@ -87,11 +92,13 @@ aexprNormalize (ABinary AMax x y) =
                 (_       , AMaxs ys) -> AMaxs (x':ys)
                 (_       , _       ) -> AMaxs [x',y']
 
+aexprNormalize (ABinary AAnd x y) = aexprNormalize $ ABinary AMult x y
+aexprNormalize (ABinary AOr x y) = aexprNormalize $ ABinary ASub (ABinary AAdd x y) (ABinary AMult x y)
+
 aexprNormalize (AUnary AAbsEnd (AUnary AAbsBegin x)) = AAbs (aexprNormalize x)
 
 aexprNormalize (AUnary f x) = AUnary f (aexprNormalize x)
--- TODO all binary expressions have already been considered as special cases, but we will probably need this later
--- aexprNormalize (ABinary f x y) = ABinary f (aexprNormalize x) (aexprNormalize y)
+aexprNormalize (ABinary f x y) = ABinary f (aexprNormalize x) (aexprNormalize y)
 aexprNormalize x = x
 
 -- we do not convert sigmoids since they come only from filters
@@ -110,9 +117,61 @@ aexprToExpr y (AUnary ANeg x) =
     let oneNeg = "-1" in
     M.union (M.fromList [(y, Prod [oneNeg, z]), (oneNeg, Const (-1.0))]) (aexprToExpr z x)
 
+aexprToExpr y (AUnary ANot x) = 
+    let z      = y ++ "~1" in
+    let oneNeg = "-1" in
+    M.union (M.fromList [(y, Prod [oneNeg, z]), (oneNeg, Const (-1.0))]) (aexprToExpr z x)
+
 aexprToExpr y (AUnary ALn  (AConst c)) = M.fromList [(y, Const (log c))]
-aexprToExpr y (AConst c) = M.fromList [(y, Const c)]
-aexprToExpr y (AVar x)   = M.fromList [(y, Id x)]
+aexprToExpr y (AConst c)   = M.fromList [(y, Const c)]
+aexprToExpr y (AVar x)     = M.fromList [(y, Id x)]
+aexprToExpr y (ASubExpr e) = M.fromList [(y, e)]
+
+aexprToExpr y (ABinary ALT x (AConst c)) = 
+    let z      = y ++ "~0" in
+    let z1     = y ++ "~1" in
+    let w1     = y ++ "~2" in
+    let w2     = y ++ "~3" in
+    let one = "1" in
+    let oneNeg = "-1" in
+    M.union (aexprToExpr z x) $ M.fromList [(y, Sum [one,w2]), (w2, Prod [oneNeg,w1]), (w1, Sigmoid a c z), (one, Const (1.0)), (oneNeg, Const (-1.0))]
+
+aexprToExpr y (ABinary ALT x1 x2) = 
+    let z       = y ++ "~0" in 
+    let z1      = y ++ "~1" in
+    let z2      = y ++ "~2" in
+    let w1      = y ++ "~3" in
+    let w2      = y ++ "~4" in
+    let oneNeg = "-1" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Sigmoid a 0.0 z), (z, Sum [z2,w1]), (w1, Prod [oneNeg,z1]), (oneNeg, Const (-1.0))]
+
+aexprToExpr y (ABinary AEQ x (AConst c)) = 
+    let z      = y ++ "~0" in
+    let z1     = y ++ "~1" in
+    M.union (aexprToExpr z x) $ M.fromList [(y, Tauoid a c z)]
+
+aexprToExpr y (ABinary AEQ x1 x2) = 
+    let z      = y ++ "~0" in 
+    let z1     = y ++ "~1" in
+    let z2     = y ++ "~2" in
+    let w1     = y ++ "~3" in
+    let w2     = y ++ "~4" in
+    let oneNeg = "-1" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Tauoid a 0.0 z), (z, Sum [z1,w1]), (w1, Prod [oneNeg,z2]), (oneNeg, Const (-1.0))]
+
+aexprToExpr y (ABinary AGT x (AConst c)) = 
+    let z      = y ++ "~0" in
+    let z1     = y ++ "~1" in
+    M.union (aexprToExpr z x) $ M.fromList [(y, Sigmoid a c z)]
+
+aexprToExpr y (ABinary AGT x1 x2) = 
+    let z       = y ++ "~0" in 
+    let z1      = y ++ "~1" in
+    let z2      = y ++ "~2" in
+    let w1     = y ++ "~3" in
+    let w2     = y ++ "~4" in
+    let oneNeg = "-1" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Sigmoid a 0.0 z), (z, Sum [z1,w1]), (w1, Prod [oneNeg,z2]), (oneNeg, Const (-1.0))]
 
 -- lp-norm
 aexprToExpr y aexpr@(AUnary (APower pinv) (ASum xs)) =

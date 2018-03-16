@@ -48,7 +48,8 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | Select VarName            -- does not apply aggregation, is used only for intermediate representation
                | SelectDistinct VarName           -- TODO not supported yet, used only to generate nice error messages
                | Filt Ordering VarName Double     -- used for filters, actually is not a 'Table' expression, we just use the same data structure
-               | FiltNeg Ordering VarName Double  -- used for filters, actually is not a 'Table' expression, we just use the same data structure
+               | FiltNeg Ordering VarName Double
+               | Filter VarName
   deriving Show
 
 getExprFromTableExpr :: B.TableExpr -> [B.Expr]
@@ -79,6 +80,7 @@ extractArg t =
         Select x       -> x
         Filt _ x _     -> x
         FiltNeg _ x _  -> x
+        Filter x       -> x
 
 queryArg :: TableExpr -> [B.Expr] -> B.TableExpr
 queryArg t ys =
@@ -95,9 +97,10 @@ queryArg t ys =
         -- then all filters are defined over non-sensitive variables, so there are no privacy issues
         SelectCount _  -> B.SelectSump 1.0 $ map (\_ -> B.ZeroSens (B.Const 1.0)) ys
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
-        Select x       -> error $ error_queryExpr_syntax t
-        Filt _ x _     -> error $ error_internal_queryExprFilter t
-        FiltNeg _ x _  -> error $ error_internal_queryExprFilter t
+        Select _       -> error $ error_queryExpr_syntax t
+        Filt _ _ _     -> error $ error_internal_queryExprFilter t
+        FiltNeg _ _ _  -> error $ error_internal_queryExprFilter t
+        Filter _       -> error $ error_internal_queryExprFilter t
 
 normArg :: TableExpr -> ADouble
 normArg t =
@@ -128,50 +131,71 @@ extractArgs t =
         Sum xs           -> xs
         Id  x            -> [x]
 
--- puts zeroSens in front of all sensitive variables
-markExprCols :: S.Set B.Var -> B.Expr -> B.Expr
+-- puts zeroSens in front of all insensitive variables, remove zeroSens from sensitive variables
+-- collect and return also all used sens.variables
+-- if a sigmoid/tauoid is applied to an insensitive quantity, we make it more accurate by taking large alpha
+markExprCols :: S.Set B.Var -> B.Expr -> ([B.Var],B.Expr)
 markExprCols sensitiveVars expr =
+    let alpha = 100.0 in
     case expr of
-        B.PowerLN x c      -> if S.member x sensitiveVars then expr else B.ZeroSens expr
-        B.Power x c        -> if S.member x sensitiveVars then expr else B.ZeroSens expr
-        B.ComposePower e c -> B.ComposePower (markExprCols sensitiveVars e) c
-        B.Exp c x          -> if S.member x sensitiveVars then expr else B.ZeroSens expr
-        B.ComposeExp c e   -> B.ComposeExp c (markExprCols sensitiveVars e)
-        B.Sigmoid a c x    -> if S.member x sensitiveVars then expr else B.ZeroSens expr
-        B.ComposeSigmoid a c e -> B.ComposeSigmoid a c $ markExprCols sensitiveVars e
-        B.Tauoid a c x     -> if S.member x sensitiveVars then expr else B.ZeroSens expr
-        B.ComposeTauoid a c e  -> B.ComposeTauoid a c $ markExprCols sensitiveVars e
-        B.Const c          -> B.Const c
-        B.ScaleNorm a e    -> B.ScaleNorm a $ markExprCols sensitiveVars e
-        B.ZeroSens e       -> B.ZeroSens e
-        B.ComposeL p es    -> B.ComposeL p $ map (markExprCols sensitiveVars) es
+        B.PowerLN x c      -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
+        B.Power x c        -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
+        B.ComposePower e c -> let (t1,t2) = markExprCols sensitiveVars e in (t1, B.ComposePower t2 c)
+        B.Exp c x          -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
+        B.ComposeExp c e   -> let (t1,t2) = markExprCols sensitiveVars e in (t1, B.ComposeExp c t2)
+        B.Sigmoid a c x    -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens (B.Sigmoid alpha c x))
+        B.ComposeSigmoid a c e -> let (t1,t2) = markExprCols sensitiveVars e in 
+                                      if length t1 == 0 then
+                                          (t1, B.ComposeSigmoid alpha c t2)
+                                      else
+                                          (t1, B.ComposeSigmoid a c t2)
+        B.Tauoid a c x     -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens (B.Tauoid alpha c x))
+        B.ComposeTauoid a c e  -> let (t1,t2) = markExprCols sensitiveVars e in 
+                                      if length t1 == 0 then
+                                          (t1,B.ComposeTauoid alpha c t2)
+                                      else
+                                          (t1,B.ComposeTauoid a c t2)
+        B.Const c          -> ([],B.Const c)
+        B.ScaleNorm a e    -> let (t1,t2) = markExprCols sensitiveVars e in (t1,B.ScaleNorm a t2)
+        B.ZeroSens e       -> let (t1,t2) = markExprCols sensitiveVars e in
+                                  if length t1 == 0 then
+                                      ([],B.ZeroSens t2)
+                                  else
+                                      (t1,t2)
 
         B.L p xs           -> let allSensitive = foldr (\x y -> if S.member x sensitiveVars then True && y else False) True xs in
                               if allSensitive then
-                                  B.L p xs
+                                  (xs, B.L p xs)
                               else
-                                  B.ComposeL p $ map (\x -> let z = B.Power x 1.0 in if S.member x sensitiveVars then z else B.ZeroSens z) xs
+                                  let t1 = filter (\x -> S.member x sensitiveVars) xs in
+                                  let t2 = map (\x -> let z = B.Power x 1.0 in if S.member x sensitiveVars then z else B.ZeroSens z) xs in
+                                  (t1, B.ComposeL p t2) 
 
         B.LInf xs          -> let allInsensitive = foldr (\x y -> if S.member x sensitiveVars then False else True && y) True xs in
-                              if allInsensitive then B.ZeroSens (B.LInf xs) else B.LInf xs
+                              if allInsensitive then
+                                  ([], B.ZeroSens (B.LInf xs))
+                              else
+                                  let t1 = filter (\x -> S.member x sensitiveVars) xs in
+                                  (t1, B.LInf xs)
 
-        B.Prod es          -> B.Prod   $ map (markExprCols sensitiveVars) es
-        B.Prod2 es         -> B.Prod2  $ map (markExprCols sensitiveVars) es
-        B.Min es           -> B.Min    $ map (markExprCols sensitiveVars) es
-        B.Max es           -> B.Max    $ map (markExprCols sensitiveVars) es
-        B.Sump p es        -> B.Sump p $ map (markExprCols sensitiveVars) es
-        B.SumInf es        -> B.SumInf $ map (markExprCols sensitiveVars) es
-        B.Sum2 es          -> B.Sum2   $ map (markExprCols sensitiveVars) es
+        B.ComposeL p es    -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.ComposeL p t2s)
+        B.Prod es          -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Prod       t2s)
+        B.Prod2 es         -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Prod2      t2s)
+        B.Min es           -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Min        t2s)
+        B.Max es           -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Max        t2s)
+        B.Sump p es        -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Sump p     t2s)
+        B.SumInf es        -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.SumInf     t2s)
+        B.Sum2 es          -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Sum2       t2s)
 
 markTableExprCols :: S.Set B.Var -> B.TableExpr -> B.TableExpr
 markTableExprCols sensitiveVars expr =
     case expr of
-        B.SelectProd es    -> B.SelectProd   $ map (markExprCols sensitiveVars) es
-        B.SelectL p  es    -> B.SelectL p    $ map (markExprCols sensitiveVars) es
-        B.SelectMin  es    -> B.SelectMin    $ map (markExprCols sensitiveVars) es
-        B.SelectMax  es    -> B.SelectMax    $ map (markExprCols sensitiveVars) es
-        B.SelectSump p es  -> B.SelectSump p $ map (markExprCols sensitiveVars) es
-        B.SelectSumInf es  -> B.SelectSumInf $ map (markExprCols sensitiveVars) es
+        B.SelectProd es    -> B.SelectProd   $ map (snd . markExprCols sensitiveVars) es
+        B.SelectL p  es    -> B.SelectL p    $ map (snd . markExprCols sensitiveVars) es
+        B.SelectMin  es    -> B.SelectMin    $ map (snd . markExprCols sensitiveVars) es
+        B.SelectMax  es    -> B.SelectMax    $ map (snd . markExprCols sensitiveVars) es
+        B.SelectSump p es  -> B.SelectSump p $ map (snd . markExprCols sensitiveVars) es
+        B.SelectSumInf es  -> B.SelectSumInf $ map (snd . markExprCols sensitiveVars) es
 
 
 -- updates variable names
@@ -214,6 +238,7 @@ updatePreficesTableExpr prefix expr =
         Select x       -> Select (updatePrefices prefix x)
         Filt a x c     -> Filt a (updatePrefices prefix x) c
         FiltNeg a x c  -> FiltNeg a (updatePrefices prefix x) c
+        Filter x       -> Filter (updatePrefices prefix x)
 
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa

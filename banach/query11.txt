@@ -1,0 +1,1 @@
+SELECT SUM |ships.latitude| ^ 2 + |ships.longitude| ^ 2+ |ships.maxspeed| ^ 2 FROM ships WHERE (NOT ships.name <= 34 OR ships.cargo == 0) AND ships.draft == 0

@@ -47,7 +47,7 @@ data ParserInstance = QueryParsing | NormParsing
 -- keywords
 allKeyWordList :: [String]
 allKeyWordList = ["output","return",
-               "const","^","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid","tauoid",
+               "const","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid","tauoid",
                "selectMin","selectMax","selectProd","selectL"]
 
 allKeyWords :: S.Set String -- set of reserved "words"
@@ -83,6 +83,7 @@ queryExpr x = powerExpr
 -- a norm expression
 normExpr :: VarName -> Parser [Expr]
 normExpr _ = scaleNormExpr
+  <|> scaleNorm2Expr
   <|> zeroSensExpr
   <|> lpNormExpr
   <|> linfNormExpr
@@ -97,7 +98,7 @@ constExpr = do
 
 powerExpr :: Parser [Expr]
 powerExpr = do
-  keyWord "^"
+  symbol "^"
   a <- varName
   b <- float
   return [Power a b]
@@ -105,7 +106,7 @@ powerExpr = do
 powerLNExpr :: Parser [Expr]
 powerLNExpr = do
   keyWord "LN"
-  keyWord "^"
+  symbol "^"
   a <- varName
   b <- signedFloat
   return [PowerLN a b]
@@ -136,6 +137,13 @@ scaleNormExpr :: Parser [Expr]
 scaleNormExpr = do
   keyWord "scaleNorm"
   a <- float
+  b <- varName
+  return [ScaleNorm a b]
+
+scaleNorm2Expr :: Parser [Expr]
+scaleNorm2Expr = do
+  a <- float
+  symbol "*"
   b <- varName
   return [ScaleNorm a b]
 
@@ -312,6 +320,19 @@ expAExpr = do
   r <- signedFloat
   return (AUnary (AExp r))
 
+notAExpr :: Parser (AExpr a -> AExpr a)
+notAExpr = do
+  caseInsensKeyWord "not"
+  return (AUnary (ANot))
+
+betweenAExpr :: Parser (AExpr VarName -> AExpr VarName)
+betweenAExpr = do
+  caseInsensKeyWord "between"
+  aexprLB <- aExpr
+  caseInsensKeyWord "and"
+  aexprUB <- aExpr
+  return (\e -> ABinary AAnd (ABinary AGT e aexprLB) (ABinary ALT e aexprUB))
+
 -- TODO this could probably be improved, but there are no circumfix operators
 absBeginAExpr :: Parser (AExpr a -> AExpr a)
 absBeginAExpr = do
@@ -325,6 +346,9 @@ absEndAExpr = do
 
 aExpr :: Parser (AExpr VarName)
 aExpr = makeExprParser aTerm aOperators
+
+bExpr :: Parser (AExpr VarName)
+bExpr = makeExprParser bTerm bOperators
 
 namedAExpr :: Parser (VarName, VarName -> TableExpr, AExpr VarName)
 namedAExpr = do
@@ -340,13 +364,14 @@ unnamedAExpr = do
     aexpr <- aExpr
     return (g, aexpr)
 
-aOperators :: [[Operator Parser (AExpr a)]]
+aOperators :: [[Operator Parser (AExpr VarName)]]
 aOperators =
   [ [ Prefix  absBeginAExpr
     , Postfix absEndAExpr]
 
   , [ Prefix lnAExpr
     , Prefix expAExpr]
+
   , [ Prefix sqrtAExpr
     , Prefix rootAExpr
     , Postfix powerAExpr]
@@ -359,6 +384,7 @@ aOperators =
 
   , [ InfixL (ABinary AAdd <$ symbol "+")
     , InfixL (ABinary ASub <$ symbol "-") ]
+
   ]
 
 aTerm :: Parser (AExpr VarName)
@@ -371,6 +397,26 @@ aDummy = do
   symbol "*"
   return (AConst 0.0)
 
+bOperators :: [[Operator Parser (AExpr VarName)]]
+bOperators =
+  [
+    [ Prefix notAExpr
+    , Postfix betweenAExpr]
+
+  , [ InfixL (ABinary ALT <$ symbol "<=")
+    , InfixL (ABinary ALT <$ symbol "<")
+    , InfixL (ABinary AEQ <$ symbol "==")
+    , InfixL (ABinary AEQ <$ symbol "=")
+    , InfixL (ABinary AGT <$ symbol ">=")
+    , InfixL (ABinary AGT <$ symbol ">") ]
+
+  , [ InfixL (ABinary AAnd <$ caseInsensKeyWord "and")
+    , InfixL (ABinary AOr <$ caseInsensKeyWord "or") ]
+
+  ]
+
+bTerm :: Parser (AExpr VarName)
+bTerm = parens bExpr <|> aExpr
 
 ------------------------------------------------------------
 ---- Parsing SQL query (simlpified, could be delegated) ----
@@ -441,7 +487,7 @@ filterVarConst pos = do
   aexpr <- aExpr
   op <- order
   c <- signedFloat
-  let y = "filt~"
+  let y = "filt"
   let as = aexprToExpr y (aexprNormalize $ aexpr)
   let b  = if pos then Filt op y c else FiltNeg op y c
   return [F as b]
@@ -460,7 +506,8 @@ filterVarVar pos = do
   let as1 = M.toList $ aexprToExpr y1 (aexprNormalize $ aexpr1)
   let as2 = M.toList $ aexprToExpr y2 (aexprNormalize $ aexpr2)
 
-  let as = M.fromList (as1 ++ as2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
+  let as = M.fromList $ as1 ++ as2 ++ (case op of GT -> [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))]
+                                                  _  -> [(y, Sum [y2, z2]),(z2, Prod [y1,z1]),(z1, Const (-1.0))])
   let b  = if pos then Filt op y 0.0 else FiltNeg op y 0.0
   return [F as b]
 
@@ -505,6 +552,19 @@ filterBetween pos = do
 -----------------------------------------------------------------------------
 sqlFilter :: Parser [Function]
 sqlFilter = try sqlFilterNeg <|> sqlFilterPos
+
+sqlFilterExpr :: Parser [Function]
+sqlFilterExpr = do
+    bexpr <- bExpr
+    let y  = "filt"
+    let as = aexprToExpr y $ aexprNormalize bexpr
+    -- how many filters we actually have if we split them by "and"?
+    let last = as ! y
+    let xs = case last of
+            Prod xs -> xs
+            _       -> []
+    let filters = if length xs == 0 then [F as (Filter y)] else map (\x -> F as (Filter x)) xs
+    return filters
 
 sqlFilterPos :: Parser [Function]
 sqlFilterPos = sqlFilterMain True
@@ -611,8 +671,9 @@ sqlQueryWithoutFilter = do
 sqlQueryWithFilter :: Parser [Function]
 sqlQueryWithFilter = do
   caseInsensKeyWord "where"
-  filters <- sepBy1 sqlFilter (caseInsensKeyWord "and")
-  return (concat $ filters)
+  filters <- sqlFilterExpr
+  --filters <- fmap concat $ sepBy1 sqlFilter (caseInsensKeyWord "and")
+  return filters
 
 sqlQueryGroupBy :: Parser [String]
 sqlQueryGroupBy = sqlQueryWithGroupBy <|> sqlQueryWithoutGroupBy
@@ -833,10 +894,12 @@ getQueryFunctions  (P _ x _ _) = x
 getQueryAliasMap   (P _ _ x _) = x
 getQueryFilters    (P _ _ _ x) = x
 
-query2Expr :: (M.Map VarName B.Var) -> Function -> (S.Set B.Var, B.Expr)
-query2Expr inputMap (F asgnMap y) =
+query2Expr :: (M.Map VarName B.Var) -> (S.Set B.Var) -> Function -> (S.Set B.Var, B.Expr)
+query2Expr inputMap sensitiveColSet (F asgnMap y) =
     let x = extractArg y in
-    matchAsgnVariable "" queryExpression inputMap asgnMap x
+    let (_,expr') = matchAsgnVariable "" queryExpression inputMap asgnMap x in
+    let (usedSensCols,expr) = markExprCols sensitiveColSet expr' in
+    (S.fromList usedSensCols, expr)
 
 queryExprAggregate :: Function-> B.Expr -> B.TableExpr
 queryExprAggregate (F _ y) z =
@@ -1050,7 +1113,7 @@ filteredExpr table infVal inputMap sensRowMatrix sensitiveCols filterFuns queryF
     let numOfRows = length table in
 
     -- collect sensitive variables used by each filter, compute all values upon which a filter makes its decision about a row
-    let (filterSensVars, filterExprs) = unzip $ map ((\(x,y) -> (S.intersection x sensitiveCols, markExprCols sensitiveCols y)) . query2Expr inputMap) filterFuns in
+    let (filterSensVars, filterExprs) = unzip $ map (query2Expr inputMap sensitiveCols) filterFuns in
     let filterValues  = map (\x -> map B.fx $ zipWith B.analyzeExpr table (replicate numOfRows x)) filterExprs in
 
     -- we start from all-True filter, and map bad rows to False
@@ -1082,8 +1145,8 @@ inputForSensWrtTableRec debug usePrefices (tableAlias : ts) queryExpr queryAggr 
     let tableSensVars = getSensitiveCols tableData in
     let tableSensCols = S.fromList $ map (inputMap ! ) tableSensVars in
 
-    let newQueryExpr = markExprCols      tableSensCols queryExpr in
-    let newQueryAggr = markTableExprCols tableSensCols queryAggr in
+    let newQueryExpr = snd $ markExprCols      tableSensCols queryExpr in
+    let newQueryAggr =       markTableExprCols tableSensCols queryAggr in
 
     let numOfRows = length col in
     let numOfSensRows = length $ filter (>= 0) col in
@@ -1216,7 +1279,7 @@ getBanachAnalyserInput debug input = do
     -- we assume that the output query table has only one column
     when (length outputQueryFuns > 1) $ error $ error_queryExpr_singleColumn
     let outputQueryFun  = head outputQueryFuns
-    let outputQueryExpr = markExprCols sensitiveColSet $ snd $ query2Expr inputMap outputQueryFun
+    let outputQueryExpr = snd $ query2Expr inputMap sensitiveColSet outputQueryFun
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show outputQueryFun
@@ -1237,7 +1300,7 @@ getBanachAnalyserInput debug input = do
 
     -- now transform the main query to a banach expression
     let mainQueryFun  = head filtQueryFuns
-    let mainQueryExpr = markExprCols sensitiveColSet $ snd $ query2Expr inputMap mainQueryFun
+    let mainQueryExpr = snd $ query2Expr inputMap sensitiveColSet mainQueryFun
     let mainQueryAggr = queryExprAggregate mainQueryFun mainQueryExpr
 
     traceIOIfDebug debug ("----------------")

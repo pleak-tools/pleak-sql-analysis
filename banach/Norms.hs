@@ -307,7 +307,7 @@ scalingLpNorm (Exactly p1) (Exactly p2) n =
 -- this is safe since the minimum scaling increases sensitivity the most
 exprCost :: (Show a, Ord a) => Norm a -> Double
 exprCost expr = 
-    let (scalingMapCol, scalingMapLN) = extractScalings id min id expr in
+    let (scalingMapCol, scalingMapLN) = extractScalings id min id (normalizeNorm expr) in
     let scalings1 = snd $ unzip (M.toList scalingMapCol) in
     let scalings2 = snd $ unzip (M.toList scalingMapLN) in
     foldr min 100000 (scalings1 ++ scalings2)
@@ -371,10 +371,11 @@ verifyNorm k n1@(NormL a1 ns1) (NormL a2 ns2) =
 -- scaling
 verifyNorm k (NormScale a1 n1) (NormScale a2 n2) =
     let y = verifyNorm k n1 n2 in
-    fmap (\x -> NormScale a2 x) y
+    fmap (\x -> NormScale (a2/a1) x) y
 
 verifyNorm k (NormScale a1 n1) n2 =
-    verifyNorm k n1 n2
+    let y = verifyNorm k n1 n2 in
+    fmap (\x -> NormScale (1/a1) x) y
 
 verifyNorm k n1 (NormScale a2 n2) =
     let y = verifyNorm k n1 n2 in

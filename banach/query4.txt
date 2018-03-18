@@ -1,1 +1,1 @@
-SELECT COUNT ports.port_id FROM ports WHERE ports.available == 1.0
+SELECT COUNT ports.port_id FROM ports WHERE NOT ports.available

@@ -91,10 +91,10 @@ queryArg t ys =
         SelectL c _    -> B.SelectL c ys
         SelectSump c _ -> B.SelectSump c ys
         SelectSumInf _ -> B.SelectSumInf ys
-        -- let it be Sump 1.0 by default, we can take a coarser norm later if necessary
+        -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
         SelectSum  _   -> B.SelectSump 1.0 ys
-        -- if it turns out that SelectCount is left as it is,
-        -- then all filters are defined over non-sensitive variables, so there are no privacy issues
+        -- if it turns out that, if SelectCount is left as it is,
+        -- then all filters are defined over non-sensitive variables, so they are discarded completely
         SelectCount _  -> B.SelectSump 1.0 $ map (\_ -> B.ZeroSens (B.Const 1.0)) ys
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
         Select _       -> error $ error_queryExpr_syntax t
@@ -136,7 +136,8 @@ extractArgs t =
 -- if a sigmoid/tauoid is applied to an insensitive quantity, we make it more accurate by taking large alpha
 markExprCols :: S.Set B.Var -> B.Expr -> ([B.Var],B.Expr)
 markExprCols sensitiveVars expr =
-    let alpha = 100.0 in
+    -- do not make alpha too large, since it may cause overflows
+    let alpha = 10.0 in
     case expr of
         B.PowerLN x c      -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
         B.Power x c        -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
@@ -226,19 +227,19 @@ updatePreficesExpr prefix expr =
 updatePreficesTableExpr :: VarName -> TableExpr -> TableExpr
 updatePreficesTableExpr prefix expr =
     case expr of
-        SelectProd x   -> SelectProd (updatePrefices prefix x)
-        SelectMin x    -> SelectMin (updatePrefices prefix x)
-        SelectMax x    -> SelectMax (updatePrefices prefix x)
-        SelectL p x    -> SelectL p (updatePrefices prefix x)
-        SelectSump p x -> SelectSump p (updatePrefices prefix x)
-        SelectSumInf x -> SelectSumInf (updatePrefices prefix x)
-        SelectSum  x   -> SelectSum (updatePrefices prefix x)
-        SelectCount x  -> SelectSum (updatePrefices prefix x)
-        SelectDistinct x -> Select (updatePrefices prefix x)
-        Select x       -> Select (updatePrefices prefix x)
-        Filt a x c     -> Filt a (updatePrefices prefix x) c
-        FiltNeg a x c  -> FiltNeg a (updatePrefices prefix x) c
-        Filter x       -> Filter (updatePrefices prefix x)
+        SelectProd x     -> SelectProd     (updatePrefices prefix x)
+        SelectMin x      -> SelectMin      (updatePrefices prefix x)
+        SelectMax x      -> SelectMax      (updatePrefices prefix x)
+        SelectL p x      -> SelectL p      (updatePrefices prefix x)
+        SelectSump p x   -> SelectSump p   (updatePrefices prefix x)
+        SelectSumInf x   -> SelectSumInf   (updatePrefices prefix x)
+        SelectSum  x     -> SelectSum      (updatePrefices prefix x)
+        SelectCount x    -> SelectCount    (updatePrefices prefix x)
+        SelectDistinct x -> SelectDistinct (updatePrefices prefix x)
+        Select x         -> Select         (updatePrefices prefix x)
+        Filt a x c       -> Filt a         (updatePrefices prefix x) c
+        FiltNeg a x c    -> FiltNeg a      (updatePrefices prefix x) c
+        Filter x         -> Filter         (updatePrefices prefix x)
 
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa

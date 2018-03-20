@@ -14,7 +14,10 @@ import ToySolver.Combinatorial.BipartiteMatching
 
 -- import Expr directly from Banach.hs, 'qualified' because we want to reuse the names
 import qualified Banach as B
-import ErrorMsg
+
+import ErrorMsg hiding (at1)
+import qualified ErrorMsg as EM (at1)
+(!!) xs x = EM.at1 xs x
 
 -- this is a double with additional top-value 'any', meaning that any double is allowed at this place
 data ADouble = Exactly Double | Any

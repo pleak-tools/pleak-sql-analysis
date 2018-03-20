@@ -7,7 +7,7 @@ import Data.List
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Void
-import Debug.Trace
+--import Debug.Trace
 
 import qualified Banach as B
 import ErrorMsg
@@ -49,7 +49,7 @@ applyFilters bs infVal queries sensRowMatrix (filt:filts) (fvar:fvars) (fcol:fco
     let newQueries = map (rewriteQuery filt infVal tag fvar) queries in
     let goodRows = markGoodRows sensRowMatrix filt fvar fcol in
 
-    trace ("\n---L: " ++ show fvar ++ "\n" ++ show filt) $
+    --trace ("\n---L: " ++ show fvar ++ "\n" ++ show filt) $
     --apply the rest of the filters, take AND of row goodness for each row
     let newBs = zipWith (&&) bs goodRows in
     applyFilters newBs infVal newQueries sensRowMatrix filts fvars fcols

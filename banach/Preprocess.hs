@@ -21,9 +21,9 @@ import Query
 type TableName  = String
 type TableAlias = String
 
--- we agree that this key will be used for the output query
-outputTableName :: String
-outputTableName = "output"
+-- we agree that this key will be used for the output query if not specified otherwise
+defaultOutputTableName :: String
+defaultOutputTableName = "output"
 
 -------------------------------------------------------
 ---- Converting a Query to Banach Analyser input   ----
@@ -322,8 +322,8 @@ updateVariableNames prefix (F as b) =
     let b'  = updatePreficesTableExpr prefix b in
     F as' b'
 
-processQuery :: (M.Map TableName Query) -> TableName -> TableAlias -> TableName -> ([[TableName]], [TableAlias],[TableName], [Function], [Function])
-processQuery queryMap taskName tableAlias tableName =
+processQuery :: TableName -> (M.Map TableName Query) -> TableName -> TableAlias -> TableName -> ([[TableName]], [TableAlias],[TableName], [Function], [Function])
+processQuery outputTableName queryMap taskName tableAlias tableName =
 
     -- if the table is not in the query map, then it is an input table
     if not (M.member tableName queryMap) then
@@ -341,7 +341,7 @@ processQuery queryMap taskName tableAlias tableName =
 
         -- recursively, collect all subqueries and filters used to generate all used tables
         let usedAliases = M.keys usedAliasMap in
-        let (taskNames', tableAliases', tableNames', subQueryFuns', subFiltFuns') = unzip5 $ map (\key -> processQuery queryMap tableName key (usedAliasMap ! key)) usedAliases in
+        let (taskNames', tableAliases', tableNames', subQueryFuns', subFiltFuns') = unzip5 $ map (\key -> processQuery outputTableName queryMap tableName key (usedAliasMap ! key)) usedAliases in
 
         let taskNames     = concat taskNames'    in
         let tableAliases  = concat tableAliases' in

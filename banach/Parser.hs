@@ -45,7 +45,7 @@ data ParserInstance = QueryParsing | NormParsing
 
 -- keywords
 allKeyWordList :: [String]
-allKeyWordList = ["output","return",
+allKeyWordList = ["return",
                "const","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid","tauoid",
                "selectMin","selectMax","selectProd","selectL"]
 
@@ -573,19 +573,19 @@ sqlFilterNeg = do
 sqlFilterMain :: Bool -> Parser [Function]
 sqlFilterMain pos = try (filterBetween pos) <|> try (filterVarConst pos) <|> try (filterVarVar pos) <|> filterNocomp pos
 
-sqlQueries :: Parser (M.Map TableName Query)
+sqlQueries :: Parser (TableName, M.Map TableName Query)
 sqlQueries = try sqlManyQueries <|> sqlOneQuery
 
-sqlManyQueries :: Parser (M.Map TableName Query)
+sqlManyQueries :: Parser (TableName, M.Map TableName Query)
 sqlManyQueries = do
-    qs1 <- many sqlAsgnQuery
-    qs2  <- sqlAggrQuery
-    return $ M.union (concatMaps qs1) qs2
+    qs1 <- many (try sqlAsgnQuery)
+    (tableName, qs2)  <- sqlAggrQuery
+    return $ (tableName, M.union (concatMaps qs1) qs2)
 
-sqlOneQuery :: Parser (M.Map TableName Query)
+sqlOneQuery :: Parser (TableName, M.Map TableName Query)
 sqlOneQuery = do
-    qs  <- sqlAggrQuery
-    return qs
+    res <- sqlAggrQuery
+    return res
 
 sqlAsgnQuery :: Parser (M.Map TableName Query)
 sqlAsgnQuery = do
@@ -611,8 +611,18 @@ sqlQuery = do
 
   return (gs,names,groups,aexprs,tableNames,tableAliases,filters,concatMaps internalQueries)
 
-sqlAggrQuery :: Parser (M.Map TableName Query)
-sqlAggrQuery = do
+sqlAggrQuery :: Parser (TableName, M.Map TableName Query)
+sqlAggrQuery = sqlAggrQueryNamed <|> sqlAggrQueryUnnamed defaultOutputTableName
+
+sqlAggrQueryNamed :: Parser (TableName, M.Map TableName Query)
+sqlAggrQueryNamed = do
+  tableName <- tableName
+  void (asgn)
+  res <- sqlAggrQueryUnnamed tableName
+  return res
+
+sqlAggrQueryUnnamed :: TableName -> Parser (TableName, M.Map TableName Query)
+sqlAggrQueryUnnamed outputTableName = do
   caseInsensKeyWord "select"
   unnamedAExprs <- sepBy1 unnamedAExpr (symbol ",")
   let (gs, aexprs) = unzip unnamedAExprs
@@ -628,7 +638,7 @@ sqlAggrQuery = do
   let tableAliasMap = M.fromList $ zip tableAliases tableNames
   let subquery = P groups queryFuns tableAliasMap filters
   let tableName = outputTableName
-  return $ M.insert tableName subquery (concatMaps internalQueries)
+  return (outputTableName, M.insert tableName subquery $ concatMaps internalQueries)
 
 internalTable :: Parser (TableName, TableAlias, (M.Map TableName Query))
 internalTable = internalTableQuery <|> try internalTableNameAS <|> internalTableName 
@@ -887,13 +897,13 @@ readAllTables queryPath usePrefices tableNames tableAliases = do
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> IO (B.Table, [(String,[Int])], [(String, [Int], B.TableExpr)])
+getBanachAnalyserInput :: Bool -> String -> IO (String, B.Table, [(String,[Int])], [(String, [Int], B.TableExpr)])
 getBanachAnalyserInput debug input = do
 
     let queryPath = reverse $ dropWhile (/= '/') (reverse input)
 
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
-    queryMap <- parseSqlQueryFromFile input
+    (outputTableName,queryMap) <- parseSqlQueryFromFile input
     let usePrefices = True
 
     -- "query" parses the old format where the query function is computed line by line
@@ -902,7 +912,7 @@ getBanachAnalyserInput debug input = do
 
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
-    let (taskNames, inputTableAliases, inputTableNames, outputQueryFuns, outputFilterFuns) = processQuery queryMap "" outputTableName outputTableName
+    let (taskNames, inputTableAliases, inputTableNames, outputQueryFuns, outputFilterFuns) = processQuery outputTableName queryMap "" outputTableName outputTableName
 
     let indexedTaskNames = zip taskNames [0..(length taskNames) - 1]
     let taskMaps = concat $ map (\(ts,i) -> (map (\t -> (t,[i])) ) ts) indexedTaskNames
@@ -980,7 +990,7 @@ getBanachAnalyserInput debug input = do
 
     traceIOIfDebug debug $ "filtered table = " ++ show filtTable ++ "\n"
 
-    return (filtTable, taskMap, tableExprData)
+    return (outputTableName, filtTable, taskMap, tableExprData)
 
 
     -- Below is the old solution that does not consider sensitivities w.r.t. each table

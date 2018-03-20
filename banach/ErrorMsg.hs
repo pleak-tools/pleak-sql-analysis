@@ -1,7 +1,5 @@
 module ErrorMsg where
 
-import Prelude hiding ((!!))
-import qualified Prelude as P
 import qualified Data.Map as M
 
 -- map element sampling with a more readable error message
@@ -9,11 +7,15 @@ import qualified Data.Map as M
 (!) :: (Show k, Show a, Ord k) => M.Map k a -> k -> a
 (!) xs x = if M.member x xs then xs M.! x else error $ error_arrElem x (M.keys xs)
 
-(!!) :: (Show a) => [a] -> Int -> a
-(!!) xs x = if x < length xs then xs P.!! x else error $ error_arrElem x xs
+at1 :: (Show a) => [a] -> Int -> a
+at1 xs x = if x < length xs then xs !! x else error $ error_arrElem x xs
+
+at2 :: [a] -> Int -> a
+at2 xs x = if x < length xs then xs !! x else error $ error_arrElem "" "the array."
+
 --------------------------------------------------------
 -- some hardcoded error message
-
+error_negativeNoise = "ERROR: NEGATIVE NOISE LEVEL - differential privacy could not be achieved, try to increase epsilon!"
 error_emptyTable = "ERROR: Cannot analyse sensitivity of an empty table."
 
 -- the term t contains the error message generated inside megaparsec

@@ -3,11 +3,16 @@ module Banach where
 
 import ProgramOptions
 
-import Data.List
+import Prelude hiding ((!!))
+import Data.List hiding ((!!))
 import Data.Char
 import Text.Printf
 import Debug.Trace
 import Control.Monad
+
+import ErrorMsg hiding (at2)
+import qualified ErrorMsg as EM (at2)
+(!!) = EM.at2
 
 type Var = Int                    -- variable corresponding to column i (starting from 0)
 
@@ -56,7 +61,7 @@ data SmoothUpperBound = SUB {
 instance Show SmoothUpperBound where
   show (SUB g beta0) = let beta = chooseBeta beta0
                        in if beta >= beta0 then printf "%0.3f (beta = %0.3f)" (g beta) beta
-                                           else printf "ERROR (beta = %0.3f but must be >= %0.3f)" beta beta0
+                                           else error $ printf "ERROR (beta = %0.3f but must be >= %0.3f)" beta beta0
 
 data AnalysisResult = AR {
   fx :: Double,             -- value of the analyzed function (f(x))
@@ -425,8 +430,8 @@ sumGroupsWith :: (Ord a, Ord b) => ([b] -> b) -> [(a,b)] -> [(a,b)]
 sumGroupsWith sumf = map (\ g -> (fst (head g), sumf (map snd g))) . groupBy (\ x y -> fst x == fst y) . sort
 
 -- added an input taskMap that is used to generate some intermediate results for each task
-performAnalyses :: ProgramOptions -> Table -> [(String,[Int])] -> [(String, [Int], TableExpr)] -> IO ()
-performAnalyses args rows taskMap tableExprData = do
+performAnalyses :: ProgramOptions -> Table -> String -> [(String,[Int])] -> [(String, [Int], TableExpr)] -> IO ()
+performAnalyses args rows outputTableName taskMap tableExprData = do
   let debug = not (alternative args)
   res0 <- forM tableExprData $ \ (tableName, cs, te) -> do
     when debug $ putStrLn ""
@@ -451,7 +456,7 @@ performAnalyses args rows taskMap tableExprData = do
   let qr = fx $ analyzeTableExprOld rows x
 
   -- add a table "all" to the output, sum up the sensitivities and take time minimal b
-  let taskAggr = map (\(taskName,vs) -> if taskName == "output" then
+  let taskAggr = map (\(taskName,vs) -> if taskName == outputTableName then
                                             let v = foldr (\(_,(x1,y1)) (_, (x2,y2)) -> ("all", (min x1 x2, y1 + y2))) ("all", (epsilon,0)) vs in (taskName, v:vs)
                                         else (taskName,vs)
                      ) taskAggr0
@@ -487,6 +492,7 @@ performAnalysis args rows cs te = do
   let nl = sds / b
   when debug $ printf "noise level: %0.6f\n" nl
   when debug $ printf "relative error from noise: %0.3f%%\n" (nl / qr * 100)
-  when debug $ when (nl < 0) $ putStrLn "NEGATIVE NOISE LEVEL - differential privacy could not be achieved, try to increase epsilon!"
+  --when debug $ when (nl < 0) $ putStrLn "NEGATIVE NOISE LEVEL - differential privacy could not be achieved, try to increase epsilon!"
+  when (nl < 0) $ error error_negativeNoise
   return (b,sds)
 --  return sds

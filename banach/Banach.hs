@@ -16,6 +16,9 @@ import qualified ErrorMsg as EM (at2)
 
 type Var = Int                    -- variable corresponding to column i (starting from 0)
 
+resultForAllTables :: String
+resultForAllTables = "all input tables together"
+
 -- this simultaneously defines a function E to be analyzed and a norm N on its domain
 -- expressions of type Expr use values from a single row
 data Expr = Power Var Double         -- x^r with norm | |
@@ -426,6 +429,49 @@ analyzeTableExpr rows cs te =
 analyzeTableExprOld :: Table -> TableExpr -> AnalysisResult
 analyzeTableExprOld rows te = analyzeTableExpr rows [0..length rows - 1] te
 
+
+-- make sigmoid/tauoid more accurate by taking large alpha
+-- this is needed to estimate what the query is "actually" supposed to output
+preciseSigmoidsExpr :: Expr -> Expr
+preciseSigmoidsExpr expr =
+
+    -- do not make alpha too large, since it may cause overflows
+    let alpha = 10.0 in
+    case expr of
+        PowerLN x c      -> PowerLN x c
+        Power x c        -> Power x c
+        ComposePower e c -> ComposePower (preciseSigmoidsExpr e) c
+        Exp c x          -> Exp c x
+        ComposeExp c e   -> ComposeExp c (preciseSigmoidsExpr e)
+        Sigmoid a c x    -> Sigmoid alpha c x
+        ComposeSigmoid a c e -> ComposeSigmoid alpha c (preciseSigmoidsExpr e)
+        Tauoid a c x     -> Tauoid alpha c x
+        ComposeTauoid a c e  -> ComposeTauoid  alpha c (preciseSigmoidsExpr e)
+        Const c          -> Const c
+        ScaleNorm a e    -> ScaleNorm a (preciseSigmoidsExpr e)
+        ZeroSens e       -> ZeroSens (preciseSigmoidsExpr e)
+        L p xs           -> L p xs
+        LInf xs          -> LInf xs
+
+        ComposeL p es    -> ComposeL p $ map preciseSigmoidsExpr es
+        Prod es          -> Prod $ map preciseSigmoidsExpr es
+        Prod2 es         -> Prod2 $ map preciseSigmoidsExpr es
+        Min es           -> Min $ map preciseSigmoidsExpr es
+        Max es           -> Max $ map preciseSigmoidsExpr es
+        Sump p es        -> Sump p $ map preciseSigmoidsExpr es
+        SumInf es        -> SumInf $ map preciseSigmoidsExpr es
+        Sum2 es          -> Sum2 $ map preciseSigmoidsExpr es
+
+preciseSigmoidsTableExpr :: TableExpr -> TableExpr
+preciseSigmoidsTableExpr expr =
+    case expr of
+        SelectProd es    -> SelectProd   $ map preciseSigmoidsExpr es
+        SelectL p  es    -> SelectL p    $ map preciseSigmoidsExpr es
+        SelectMin  es    -> SelectMin    $ map preciseSigmoidsExpr es
+        SelectMax  es    -> SelectMax    $ map preciseSigmoidsExpr es
+        SelectSump p es  -> SelectSump p $ map preciseSigmoidsExpr es
+        SelectSumInf es  -> SelectSumInf $ map preciseSigmoidsExpr es
+
 sumGroupsWith :: (Ord a, Ord b) => ([b] -> b) -> [(a,b)] -> [(a,b)]
 sumGroupsWith sumf = map (\ g -> (fst (head g), sumf (map snd g))) . groupBy (\ x y -> fst x == fst y) . sort
 
@@ -437,8 +483,8 @@ performAnalyses args rows outputTableName taskMap tableExprData = do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="
-    sds <- performAnalysis args rows cs te
-    return (tableName, sds)
+    result <- performAnalysis args rows cs te
+    return (tableName, result)
   --let res = sumGroupsWith sum res0
   when debug $ putStrLn ""
   when debug $ putStrLn "--------------------------------"
@@ -447,26 +493,29 @@ performAnalyses args rows outputTableName taskMap tableExprData = do
   --  then putStr $ intercalate [unitSeparator] $ concat $ map (\ (tableName, sds) -> [tableName, show sds]) res
   --  else forM_ res $ \ (tableName, sds) -> printf "%s: %0.6f\n" tableName sds
 
+  let (_,_,x) = head tableExprData
+  let qr = fx $ analyzeTableExprOld rows (preciseSigmoidsTableExpr x)
+
   -- partition the result among tasks, apply sumGroupsWith for each task
   -- covert to a properly formatted string, let the tasks be separated by a special character 30
-  -- when combining table copies, we take minimal b since it correpons to maximal beta
-  let taskAggr0 = map (\(taskName,indices) -> (taskName, sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (min x1 x2, y1 + y2)) (epsilon,0)) (map (\i -> res0 !! i) indices)) ) taskMap
+  -- when combining table copies, we take maximal noise level since it correpons to maximal beta
+  let taskAggr0 = map (\(taskName,is) -> (taskName, sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0)) $ map (res0 !!) is)) taskMap
   let unitSeparator2 = chr 30
-  let (_,_,x) = head tableExprData
-  let qr = fx $ analyzeTableExprOld rows x
 
-  -- add a table "all" to the output, sum up the sensitivities and take time minimal b
-  let taskAggr = map (\(taskName,vs) -> if taskName == outputTableName then
-                                            let v = foldr (\(_,(x1,y1)) (_, (x2,y2)) -> ("all", (min x1 x2, y1 + y2))) ("all", (epsilon,0)) vs in (taskName, v:vs)
-                                        else (taskName,vs)
+  -- add an aggregated result to the output, sum up the sensitivities and take time minimal b
+  let taskAggr = map (\(taskName,vs) ->
+                         if taskName == outputTableName then
+                             let v = foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0) (snd $ unzip vs) in
+                             (taskName, (resultForAllTables, v):vs)
+                         else (taskName,vs)
                      ) taskAggr0
 
   let taskStr = if alternative args then
           map (\(taskName,res) -> taskName ++ [unitSeparator] ++
-                                  (intercalate [unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show (sds/b/ qr * 100)]) res)) taskAggr
+                                  (intercalate [unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show qr, show (sds/b), show ((sds/b) / qr * 100)]) res)) taskAggr
       else
           map (\(taskName,res) -> taskName ++ "\n" ++
-                                  (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f: %0.3f" tableName sds (sds/b/ qr * 100)) res)) taskAggr
+                                  (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f\t %0.6f\t %0.6f\t %0.3f" tableName qr (sds/b) sds ((sds/b) / qr * 100)) res)) taskAggr
   putStrLn $ intercalate (if alternative args then [unitSeparator2] else "\n\n") taskStr
 
 -- this now also outputs b, we need it to compute all errors
@@ -496,3 +545,4 @@ performAnalysis args rows cs te = do
   when (nl < 0) $ error error_negativeNoise
   return (b,sds)
 --  return sds
+

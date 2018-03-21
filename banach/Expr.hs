@@ -198,7 +198,6 @@ markTableExprCols sensitiveVars expr =
         B.SelectSump p es  -> B.SelectSump p $ map (snd . markExprCols sensitiveVars) es
         B.SelectSumInf es  -> B.SelectSumInf $ map (snd . markExprCols sensitiveVars) es
 
-
 -- updates variable names
 updatePrefices :: VarName -> VarName -> VarName
 updatePrefices prefix var = prefix ++ var

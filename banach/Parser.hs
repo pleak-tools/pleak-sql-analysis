@@ -985,7 +985,7 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug ( "tableExprData:" ++ show tableExprData)
     traceIOIfDebug debug ( "----------------")
 
-    let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else error_verifyNorm ++ tableName ++ "\n") goodNorms tableExprData
+    let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else error_verifyNorm tableName ++ tableName ++ "\n") goodNorms tableExprData
     when (not (null possibleErrMsg)) $ error $ possibleErrMsg
 
     traceIOIfDebug debug $ "filtered table = " ++ show filtTable ++ "\n"

@@ -33,6 +33,8 @@ data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm
           | SumInf [VarName]              -- E1+...+En with norm ||(N1,...,Nn)||_infinity
           | Sum [VarName]                 -- E1+...+En with norm that is not specified yet and will be derived later
           | Id VarName                    -- identity function, used for input table values
+          | ARMin                         -- special placeholder for aggregated minimum
+          | ARMax                         -- special placeholder for aggregated maximum
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
@@ -130,6 +132,8 @@ extractArgs t =
         SumInf xs        -> xs
         Sum xs           -> xs
         Id  x            -> [x]
+        ARMin            -> []
+        ARMax            -> []
 
 -- puts zeroSens in front of all insensitive variables, remove zeroSens from sensitive variables
 -- collect and return also all used sens.variables
@@ -187,6 +191,8 @@ markExprCols sensitiveVars expr =
         B.Sump p es        -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Sump p     t2s)
         B.SumInf es        -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.SumInf     t2s)
         B.Sum2 es          -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Sum2       t2s)
+        -- TODO we actually do not want ZeroSens in front of it!
+        B.Prec ar          -> ([], B.Prec ar)
 
 markTableExprCols :: S.Set B.Var -> B.TableExpr -> B.TableExpr
 markTableExprCols sensitiveVars expr =
@@ -326,8 +332,101 @@ queryExpression t xs es vss =
         -- this is our reserved 'identity' that does nothing
         Id _             -> if xs /= [] then B.Power (headInputVar t xs es) 1.0
                             else             (headAsgnVar t xs es)
+        -- in the following, 1.0 and -1.0 are used only to show whether it was min or max, and will be modified later
+        ARMax            -> B.Prec (B.AR {B.fx =  1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}})
+        ARMin            -> B.Prec (B.AR {B.fx = -1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}})
 
    where err = error_queryExpr_repeatingVars t
+
+
+
+-- make sigmoid/tauoid more accurate by taking large alpha
+-- this is needed to estimate what the query is "actually" supposed to output
+preciseSigmoidsExpr :: B.Expr -> B.Expr
+preciseSigmoidsExpr expr =
+
+    -- do not make alpha too large, since it may cause overflows
+    let alpha = 10.0 in
+    case expr of
+        B.PowerLN x c      -> B.PowerLN x c
+        B.Power x c        -> B.Power x c
+        B.ComposePower e c -> B.ComposePower (preciseSigmoidsExpr e) c
+        B.Exp c x          -> B.Exp c x
+        B.ComposeExp c e   -> B.ComposeExp c (preciseSigmoidsExpr e)
+        B.Sigmoid a c x    -> B.Sigmoid alpha c x
+        B.ComposeSigmoid a c e -> B.ComposeSigmoid alpha c (preciseSigmoidsExpr e)
+        B.Tauoid a c x     -> B.Tauoid alpha c x
+        B.ComposeTauoid a c e  -> B.ComposeTauoid  alpha c (preciseSigmoidsExpr e)
+        B.Const c          -> B.Const c
+        B.ScaleNorm a e    -> B.ScaleNorm a (preciseSigmoidsExpr e)
+        B.ZeroSens e       -> B.ZeroSens (preciseSigmoidsExpr e)
+        B.L p xs           -> B.L p xs
+        B.LInf xs          -> B.LInf xs
+        B.Prec ar          -> B.Prec ar
+
+        B.ComposeL p es    -> B.ComposeL p $ map preciseSigmoidsExpr es
+        B.Prod es          -> B.Prod $ map preciseSigmoidsExpr es
+        B.Prod2 es         -> B.Prod2 $ map preciseSigmoidsExpr es
+        B.Min es           -> B.Min $ map preciseSigmoidsExpr es
+        B.Max es           -> B.Max $ map preciseSigmoidsExpr es
+        B.Sump p es        -> B.Sump p $ map preciseSigmoidsExpr es
+        B.SumInf es        -> B.SumInf $ map preciseSigmoidsExpr es
+        B.Sum2 es          -> B.Sum2 $ map preciseSigmoidsExpr es
+
+preciseSigmoidsTableExpr :: B.TableExpr -> B.TableExpr
+preciseSigmoidsTableExpr expr =
+    case expr of
+        B.SelectProd es    -> B.SelectProd   $ map preciseSigmoidsExpr es
+        B.SelectL p  es    -> B.SelectL p    $ map preciseSigmoidsExpr es
+        B.SelectMin  es    -> B.SelectMin    $ map preciseSigmoidsExpr es
+        B.SelectMax  es    -> B.SelectMax    $ map preciseSigmoidsExpr es
+        B.SelectSump p es  -> B.SelectSump p $ map preciseSigmoidsExpr es
+        B.SelectSumInf es  -> B.SelectSumInf $ map preciseSigmoidsExpr es
+
+-- puts preanalysed aggregated function results into correspoding placeholders
+applyPrecAggr :: B.AnalysisResult -> B.AnalysisResult -> B.Expr -> B.Expr
+applyPrecAggr arMin arMax expr =
+
+    case expr of
+        B.PowerLN x c      -> B.PowerLN x c
+        B.Power x c        -> B.Power x c
+        B.ComposePower e c -> B.ComposePower (applyPrecAggr arMin arMax e) c
+        B.Exp c x          -> B.Exp c x
+        B.ComposeExp c e   -> B.ComposeExp c (applyPrecAggr arMin arMax e)
+        B.Sigmoid a c x    -> B.Sigmoid a c x
+        B.ComposeSigmoid a c e -> B.ComposeSigmoid a c (applyPrecAggr arMin arMax e)
+        B.Tauoid a c x     -> B.Tauoid a c x
+        B.ComposeTauoid a c e  -> B.ComposeTauoid  a c (applyPrecAggr arMin arMax e)
+        B.Const c          -> B.Const c
+        B.ScaleNorm a e    -> B.ScaleNorm a (applyPrecAggr arMin arMax e)
+        B.ZeroSens e       -> B.ZeroSens (applyPrecAggr arMin arMax e)
+        B.L p xs           -> B.L p xs
+        B.LInf xs          -> B.LInf xs
+        B.Prec ar          -> if B.fx ar < 0 then B.Prec arMin else B.Prec arMax
+
+        B.ComposeL p es    -> B.ComposeL p $ map (applyPrecAggr arMin arMax) es
+        B.Prod es          -> B.Prod       $ map (applyPrecAggr arMin arMax) es
+        B.Prod2 es         -> B.Prod2      $ map (applyPrecAggr arMin arMax) es
+        B.Min es           -> B.Min        $ map (applyPrecAggr arMin arMax) es
+        B.Max es           -> B.Max        $ map (applyPrecAggr arMin arMax) es
+        B.Sump p es        -> B.Sump p     $ map (applyPrecAggr arMin arMax) es
+        B.SumInf es        -> B.SumInf     $ map (applyPrecAggr arMin arMax) es
+        B.Sum2 es          -> B.Sum2       $ map (applyPrecAggr arMin arMax) es
+
+applyPrecAggrTable :: B.AnalysisResult -> B.AnalysisResult -> B.TableExpr -> B.TableExpr
+applyPrecAggrTable arMin arMax expr =
+    case expr of
+        B.SelectProd es    -> B.SelectProd   $ map (applyPrecAggr arMin arMax) es
+        B.SelectL p  es    -> B.SelectL p    $ map (applyPrecAggr arMin arMax) es
+        B.SelectMin  es    -> B.SelectMin    $ map (applyPrecAggr arMin arMax) es
+        B.SelectMax  es    -> B.SelectMax    $ map (applyPrecAggr arMin arMax) es
+        B.SelectSump p es  -> B.SelectSump p $ map (applyPrecAggr arMin arMax) es
+        B.SelectSumInf es  -> B.SelectSumInf $ map (applyPrecAggr arMin arMax) es
+
+-- uses preanalysed aggregated function results
+precAggr :: [B.AnalysisResult] -> [B.AnalysisResult] -> [B.TableExpr] -> [B.TableExpr]
+precAggr (arMin:arMins) (arMax:arMaxs) (e:es) =
+    (applyPrecAggrTable arMin arMax e) : precAggr arMins arMaxs es
 
 -- the definition of Norm allows to use any variables inside argumets (both input and assignment variables)
 normExpression :: Expr -> [a] -> [Norm a] -> [S.Set a] -> (Norm a)

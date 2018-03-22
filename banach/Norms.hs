@@ -67,6 +67,7 @@ deriveNorm colnames expr =
         B.SumInf es        -> NormL Any $ map (deriveNorm colnames) es
         B.Sum2 es          -> let subNorms = map (deriveNorm colnames) es in
                               foldr upperBoundNorm NormZero subNorms
+        B.Prec _           -> NormZero -- we do not need a norm here since its sensitivity is computed separately
 
 deriveTableNorm :: B.TableExpr -> ADouble
 deriveTableNorm expr = 
@@ -125,6 +126,7 @@ updateExpr mapCol mapLN expr =
         B.Sump p es        -> B.Sump p $ map (updateExpr mapCol mapLN) es
         B.SumInf es        -> B.SumInf $ map (updateExpr mapCol mapLN) es
         B.Sum2 es          -> B.Sum2   $ map (updateExpr mapCol mapLN) es -- we assume that equality of subnorms has been already checked
+        B.Prec ar          -> B.Prec ar
 
 updateTableExpr :: B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> Int -> B.TableExpr
 updateTableExpr expr mapCol mapLN queryAggrNorm dbAggrNorm numOfSensRows =

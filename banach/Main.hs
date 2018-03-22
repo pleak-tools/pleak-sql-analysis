@@ -6,5 +6,5 @@ main :: IO ()
 main = do
   args <- getProgramOptions
   let debug = not (alternative args)
-  (outputTableName,table,taskMap,tableExprData) <- P.getBanachAnalyserInput debug (inputFp args)
-  B.performAnalyses args table outputTableName taskMap tableExprData
+  (outputTableName,qr,table,taskMap,tableExprData) <- P.getBanachAnalyserInput debug (inputFp args)
+  B.performAnalyses args table outputTableName qr taskMap tableExprData

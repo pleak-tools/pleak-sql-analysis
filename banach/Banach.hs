@@ -43,6 +43,7 @@ data Expr = Power Var Double         -- x^r with norm | |
           | Sump Double [Expr]       -- E1+...+En with norm ||(N1,...,Nn)||_p
           | SumInf [Expr]            -- E1+...+En with norm ||(N1,...,Nn)||_infinity
           | Sum2 [Expr]              -- E1+...+En with norm N, where N is the common norm of all Ei
+          | Prec AnalysisResult      -- use precomputed AR for this node
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
@@ -157,6 +158,7 @@ analyzeExpr :: Row -> Expr -> AnalysisResult
 analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr ++ " -> " ++ show res)-} res where
  res =
   case expr of
+    Prec ar   -> ar
     Power i r ->
       let x = row !! i
       in if r == 1
@@ -429,55 +431,12 @@ analyzeTableExpr rows cs te =
 analyzeTableExprOld :: Table -> TableExpr -> AnalysisResult
 analyzeTableExprOld rows te = analyzeTableExpr rows [0..length rows - 1] te
 
-
--- make sigmoid/tauoid more accurate by taking large alpha
--- this is needed to estimate what the query is "actually" supposed to output
-preciseSigmoidsExpr :: Expr -> Expr
-preciseSigmoidsExpr expr =
-
-    -- do not make alpha too large, since it may cause overflows
-    let alpha = 10.0 in
-    case expr of
-        PowerLN x c      -> PowerLN x c
-        Power x c        -> Power x c
-        ComposePower e c -> ComposePower (preciseSigmoidsExpr e) c
-        Exp c x          -> Exp c x
-        ComposeExp c e   -> ComposeExp c (preciseSigmoidsExpr e)
-        Sigmoid a c x    -> Sigmoid alpha c x
-        ComposeSigmoid a c e -> ComposeSigmoid alpha c (preciseSigmoidsExpr e)
-        Tauoid a c x     -> Tauoid alpha c x
-        ComposeTauoid a c e  -> ComposeTauoid  alpha c (preciseSigmoidsExpr e)
-        Const c          -> Const c
-        ScaleNorm a e    -> ScaleNorm a (preciseSigmoidsExpr e)
-        ZeroSens e       -> ZeroSens (preciseSigmoidsExpr e)
-        L p xs           -> L p xs
-        LInf xs          -> LInf xs
-
-        ComposeL p es    -> ComposeL p $ map preciseSigmoidsExpr es
-        Prod es          -> Prod $ map preciseSigmoidsExpr es
-        Prod2 es         -> Prod2 $ map preciseSigmoidsExpr es
-        Min es           -> Min $ map preciseSigmoidsExpr es
-        Max es           -> Max $ map preciseSigmoidsExpr es
-        Sump p es        -> Sump p $ map preciseSigmoidsExpr es
-        SumInf es        -> SumInf $ map preciseSigmoidsExpr es
-        Sum2 es          -> Sum2 $ map preciseSigmoidsExpr es
-
-preciseSigmoidsTableExpr :: TableExpr -> TableExpr
-preciseSigmoidsTableExpr expr =
-    case expr of
-        SelectProd es    -> SelectProd   $ map preciseSigmoidsExpr es
-        SelectL p  es    -> SelectL p    $ map preciseSigmoidsExpr es
-        SelectMin  es    -> SelectMin    $ map preciseSigmoidsExpr es
-        SelectMax  es    -> SelectMax    $ map preciseSigmoidsExpr es
-        SelectSump p es  -> SelectSump p $ map preciseSigmoidsExpr es
-        SelectSumInf es  -> SelectSumInf $ map preciseSigmoidsExpr es
-
 sumGroupsWith :: (Ord a, Ord b) => ([b] -> b) -> [(a,b)] -> [(a,b)]
 sumGroupsWith sumf = map (\ g -> (fst (head g), sumf (map snd g))) . groupBy (\ x y -> fst x == fst y) . sort
 
 -- added an input taskMap that is used to generate some intermediate results for each task
-performAnalyses :: ProgramOptions -> Table -> String -> [(String,[Int])] -> [(String, [Int], TableExpr)] -> IO ()
-performAnalyses args rows outputTableName taskMap tableExprData = do
+performAnalyses :: ProgramOptions -> Table -> String -> Double -> [(String,[Int])] -> [(String, [Int], TableExpr)] -> IO ()
+performAnalyses args rows outputTableName qr taskMap tableExprData = do
   let debug = not (alternative args)
   res0 <- forM tableExprData $ \ (tableName, cs, te) -> do
     when debug $ putStrLn ""
@@ -492,9 +451,6 @@ performAnalyses args rows outputTableName taskMap tableExprData = do
   --if alternative args
   --  then putStr $ intercalate [unitSeparator] $ concat $ map (\ (tableName, sds) -> [tableName, show sds]) res
   --  else forM_ res $ \ (tableName, sds) -> printf "%s: %0.6f\n" tableName sds
-
-  let (_,_,x) = head tableExprData
-  let qr = fx $ analyzeTableExprOld rows (preciseSigmoidsTableExpr x)
 
   -- partition the result among tasks, apply sumGroupsWith for each task
   -- covert to a properly formatted string, let the tasks be separated by a special character 30
@@ -512,10 +468,10 @@ performAnalyses args rows outputTableName taskMap tableExprData = do
 
   let taskStr = if alternative args then
           map (\(taskName,res) -> taskName ++ [unitSeparator] ++
-                                  (intercalate [unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show qr, show (sds/b), show ((sds/b) / qr * 100)]) res)) taskAggr
+                  (intercalate [unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show qr, show (sds/b), show ((sds/b) / qr * 100)]) res)) taskAggr
       else
           map (\(taskName,res) -> taskName ++ "\n" ++
-                                  (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f\t %0.6f\t %0.6f\t %0.3f" tableName qr (sds/b) sds ((sds/b) / qr * 100)) res)) taskAggr
+                  (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f\t %0.6f\t %0.6f\t %0.3f" tableName qr (sds/b) sds ((sds/b) / qr * 100)) res)) taskAggr
   putStrLn $ intercalate (if alternative args then [unitSeparator2] else "\n\n") taskStr
 
 -- this now also outputs b, we need it to compute all errors

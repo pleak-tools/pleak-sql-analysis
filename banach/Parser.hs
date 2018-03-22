@@ -35,7 +35,6 @@ import Query
 -- 'String' means 'input comes in form of a String'
 type Parser = Parsec Void String
 
-
 -- a small bit, denoting whether we are parsing a query or a norm
 -- we define it, since a query and a norm have very similar format
 data ParserInstance = QueryParsing | NormParsing
@@ -77,7 +76,8 @@ queryExpr x = powerExpr
 
 -- a norm expression
 normExpr :: VarName -> Parser [Expr]
-normExpr _ = scaleNormExpr
+normExpr _ = constExpr
+  <|> scaleNormExpr
   <|> scaleNorm2Expr
   <|> zeroSensExpr
   <|> lpNormExpr
@@ -85,12 +85,6 @@ normExpr _ = scaleNormExpr
   <|> lnExpr
 
 -- parsing different expressions, one by one
-constExpr :: Parser [Expr]
-constExpr = do
-  keyWord "const"
-  b <- signedFloat
-  return [Const b]
-
 powerExpr :: Parser [Expr]
 powerExpr = do
   symbol "^"
@@ -127,39 +121,6 @@ expExpr = do
   a <- signedFloat
   b <- varName
   return [Exp a b]
-
-scaleNormExpr :: Parser [Expr]
-scaleNormExpr = do
-  keyWord "scaleNorm"
-  a <- float
-  b <- varName
-  return [ScaleNorm a b]
-
-scaleNorm2Expr :: Parser [Expr]
-scaleNorm2Expr = do
-  a <- float
-  symbol "*"
-  b <- varName
-  return [ScaleNorm a b]
-
-zeroSensExpr :: Parser [Expr]
-zeroSensExpr = do
-  keyWord "zeroSens"
-  a <- varName
-  return [ZeroSens a]
-
-lpNormExpr :: Parser [Expr]
-lpNormExpr = do
-  keyWord "lp"
-  a  <- float
-  bs <- many varName
-  return [L a bs]
-
-linfNormExpr :: Parser [Expr]
-linfNormExpr = do
-  keyWord "linf"
-  bs <- many varName
-  return [LInf bs]
 
 prodExpr :: Parser [Expr]
 prodExpr = do
@@ -208,6 +169,45 @@ sumInfExpr = do
   bs <- many varName
   return [SumInf bs]
 
+constExpr :: Parser [Expr]
+constExpr = do
+  keyWord "const"
+  b <- signedFloat
+  return [Const b]
+
+scaleNormExpr :: Parser [Expr]
+scaleNormExpr = do
+  keyWord "scaleNorm"
+  a <- float
+  b <- varName
+  return [ScaleNorm a b]
+
+scaleNorm2Expr :: Parser [Expr]
+scaleNorm2Expr = do
+  a <- float
+  symbol "*"
+  b <- varName
+  return [ScaleNorm a b]
+
+zeroSensExpr :: Parser [Expr]
+zeroSensExpr = do
+  keyWord "zeroSens"
+  a <- varName
+  return [ZeroSens a]
+
+lpNormExpr :: Parser [Expr]
+lpNormExpr = do
+  keyWord "lp"
+  a  <- float
+  bs <- many varName
+  return [L a bs]
+
+linfNormExpr :: Parser [Expr]
+linfNormExpr = do
+  keyWord "linf"
+  bs <- many varName
+  return [LInf bs]
+
 -- this one is intended only for norms
 lnExpr :: Parser [Expr]
 lnExpr = do
@@ -226,8 +226,8 @@ queryTableExpr = selectProdExpr
 
 -- a table expression for norms (which norm is applied to the rows)
 normTableExpr :: Parser TableExpr
-normTableExpr = selectProdExpr
-  <|> linfTableExpr
+normTableExpr =
+  linfTableExpr
   <|> lpTableExpr
 
 -- parsing different expressions, one by one
@@ -730,6 +730,7 @@ asgnStmt p = do
   a  <- varName
   void (asgn)
   bs <- case p of {QueryParsing -> queryExpr a; NormParsing -> normExpr a}
+
   -- this introduces new temporary variables for complex expressions 
   -- here "~" can be any symbol that is not allowed to use in variable names
   let as = map (\x -> a ++ "~" ++ show x) [1 .. length bs - 1]
@@ -897,7 +898,7 @@ readAllTables queryPath usePrefices tableNames tableAliases = do
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> IO (String, B.Table, [(String,[Int])], [(String, [Int], B.TableExpr)])
+getBanachAnalyserInput :: Bool -> String -> IO (String, Double, B.Table, [(String,[Int])], [(String, [Int], B.TableExpr)])
 getBanachAnalyserInput debug input = do
 
     let queryPath = reverse $ dropWhile (/= '/') (reverse input)
@@ -954,14 +955,8 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show outputQueryFun
     traceIOIfDebug debug $ "Query expr (w/o filter) = " ++ show outputQueryExpr
 
-    -- TODO this is CHEATING! thoretically, the best value for 'infinity' is the the (max - min) of the values that we aggregate
-    -- however, this is a bad idea since it depends on private data and has some sensitivity by itself; we want it to be a constant
-    -- let infVal = 10000.0 -- this is more honest, but it gives very bad sensitivities
-    let infVal = (B.fx $ B.analyzeTableExprOld crossProductTable $ B.SelectMax [outputQueryExpr]) - 
-                 (B.fx $ B.analyzeTableExprOld crossProductTable $ B.SelectMin [outputQueryExpr])
-
     -- we may now apply the filter
-    let (filtQueryFuns, filtSensRowMatrix, filtTable) = filteredExpr crossProductTable infVal inputMap sensitiveRowMatrix sensitiveColSet outputFilterFuns [outputQueryFun]
+    let (filtQueryFuns, filtSensRowMatrix, filtTable) = filteredExpr crossProductTable inputMap sensitiveRowMatrix sensitiveColSet outputFilterFuns [outputQueryFun]
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "#rows after filtering:  " ++ show (length filtTable)
@@ -978,40 +973,28 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug ("Query aggr (w/ filter) = " ++ show mainQueryAggr)
     
     --bring the input to the form [(String, String, [Int], TableExpr)]
-    let (goodNorms, tableExprData) = unzip $ inputForSensWrtTable debug usePrefices inputTableAliases mainQueryExpr mainQueryAggr filtSensRowMatrix inputMap inputTableMap
+    let dataWrtEachTable = inputWrtEachTable debug usePrefices inputTableAliases outputQueryExpr mainQueryExpr mainQueryAggr filtSensRowMatrix inputMap inputTableMap
+    let (allTableNames, allSensitiveInputs, allQueries, minQueries, maxQueries) = unzip5 dataWrtEachTable
 
-    traceIOIfDebug debug ( "----------------")
-    traceIOIfDebug debug ( "good table norms:" ++ show goodNorms)
-    traceIOIfDebug debug ( "tableExprData:" ++ show tableExprData)
-    traceIOIfDebug debug ( "----------------")
+    let minExprData   = map (\(x,y) -> B.analyzeTableExpr crossProductTable x y) $ zip allSensitiveInputs minQueries
+    let maxExprData   = map (\(x,y) -> B.analyzeTableExpr crossProductTable x y) $ zip allSensitiveInputs maxQueries
 
-    let possibleErrMsg = concat $ zipWith (\b (tableName,_,_) -> if b then "" else error_verifyNorm tableName ++ tableName ++ "\n") goodNorms tableExprData
-    when (not (null possibleErrMsg)) $ error $ possibleErrMsg
+    -- replace ARMin and ARMax inside the queries with actual precomputed data
+    let tableExprData = zip3 allTableNames allSensitiveInputs (precAggr minExprData maxExprData allQueries)
 
-    traceIOIfDebug debug $ "filtered table = " ++ show filtTable ++ "\n"
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "MIN: " ++ show minExprData
+    traceIOIfDebug debug $ "MAX: " ++ show maxExprData ++ "\n"
+    traceIOIfDebug debug $ "filtered table = " ++ show filtTable
+    traceIOIfDebug debug $ "----------------"
 
-    return (outputTableName, filtTable, taskMap, tableExprData)
+    -- compute the query result that is actually correct, without any noise
+    let (_,_,mainExprFiltered) = head tableExprData
+    let qr = B.fx $ B.analyzeTableExprOld filtTable (preciseSigmoidsTableExpr mainExprFiltered)
 
-
-    -- Below is the old solution that does not consider sensitivities w.r.t. each table
-
-    -- let numOfRows = length filtTable
-    -- let inputTableNorms = map (getNorm . inputTableMap !) inputTableAliases
-    -- let (adjustedQueryExpr, adjustedQueryAggr, goodNorm) = 
-    --     deriveExprNorm debug usePrefices numOfRows inputMap sensitiveColSet inputTableAliases inputTableNorms mainQueryExpr mainQueryAggr
-
-    -- let goodNormMsg = "OK: the database norm is at least as large as the query norm."
-    -- let badNormMsg  = "WARNING: could not prove that the database norm is at least as large as the query norm."
-    -- traceIOIfDebug debug $ if goodNorm then goodNormMsg else badNormMsg
-
-    -- traceIOIfDebug debug $ "----------------"
-    -- traceIOIfDebug debug $ "filtered table = " ++ show filtTable ++ "\n"
-    -- traceIOIfDebug debug $ "initial expr = " ++ show mainQueryAggr ++ "\n"
-    -- traceIOIfDebug debug $ "adjusted expr = " ++ show adjustedQueryAggr
-    -- traceIOIfDebug debug $ "----------------"
-
-    -- let sensitiveRowsCV = sensitiveOR filtSensRowMatrix
-    -- let adjustedQueryAggrWithSensRows = queryExprAggregateSensRows numOfRows sensitiveRowsCV mainQueryFun adjustedQueryExpr
-    -- return (filtTable, adjustedQueryAggrWithSensRows)
+    -- return data to the banach space analyser
+    return (outputTableName, qr, filtTable, taskMap, tableExprData)
 
 

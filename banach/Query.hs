@@ -41,18 +41,18 @@ charVecJoin xs = crossProduct (||) [False] xs
 -- applies the list of filters to a table (computes AND of all filters for each row)
 -- if all variables that are used in the filter are non-sensitive, apply the filter directly
 -- if at least one variable is sensitive, use a sigmoid or something similar, it depends on the filter and the aggregating function
-applyFilters :: [Bool]-> Double -> [Function] -> [[Int]] -> [Function] -> [S.Set B.Var] -> [[Double]] -> ([Function],[Bool])
-applyFilters bs _      queries _             [] [] [] = (queries, bs)
-applyFilters bs infVal queries sensRowMatrix (filt:filts) (fvar:fvars) (fcol:fcols) =
+applyFilters :: [Bool]-> [Function] -> [[Int]] -> [Function] -> [S.Set B.Var] -> [[Double]] -> ([Function],[Bool])
+applyFilters bs queries _             [] [] [] = (queries, bs)
+applyFilters bs queries sensRowMatrix (filt:filts) (fvar:fvars) (fcol:fcols) =
 
     let tag = show (length filts) ++ "~" in -- use this to ensure that we assing unique new variables to each filter
-    let newQueries = map (rewriteQuery filt infVal tag fvar) queries in
+    let newQueries = map (rewriteQuery filt tag fvar) queries in
     let goodRows = markGoodRows sensRowMatrix filt fvar fcol in
 
     --trace ("\n---L: " ++ show fvar ++ "\n" ++ show filt) $
     --apply the rest of the filters, take AND of row goodness for each row
     let newBs = zipWith (&&) bs goodRows in
-    applyFilters newBs infVal newQueries sensRowMatrix filts fvars fcols
+    applyFilters newBs newQueries sensRowMatrix filts fvars fcols
 
 markGoodRows :: [[Int]] -> Function ->  S.Set B.Var -> [Double] -> [Bool]
 markGoodRows sensRowMatrix (F _ filterAggr) fvar fcol =
@@ -68,8 +68,8 @@ markGoodRows sensRowMatrix (F _ filterAggr) fvar fcol =
     -- if it does, then we may still publicly mark the insensitive rows, i.e rows that only contain values -1
     else zipWith (\xs xvalue -> if length (filter (< 0) xs) == length xs then fun xvalue else True) sensRowMatrix fcol
 
-rewriteQuery :: Function -> Double -> String ->  S.Set B.Var -> Function -> Function
-rewriteQuery (F fas filterAggr) infVal tag fvar query@(F as b) =
+rewriteQuery :: Function -> String ->  S.Set B.Var -> Function -> Function
+rewriteQuery (F fas filterAggr) tag fvar query@(F as b) =
 
     -- check if the filter "contains at least one sensitive var"
     if (S.size fvar == 0) then query else
@@ -80,6 +80,9 @@ rewriteQuery (F fas filterAggr) infVal tag fvar query@(F as b) =
     let z1 = "z1~" ++ tag in
     let z2 = "z2~" ++ tag in
 
+    let w0 = "w0~" ++ tag in
+    let w1 = "w1~" ++ tag in
+
     let b1 = "b1~" ++ tag in
     let b2 = "b2~" ++ tag in
 
@@ -87,18 +90,20 @@ rewriteQuery (F fas filterAggr) infVal tag fvar query@(F as b) =
     let a = 0.1 in
 
     -- some important constants
-    let infPos    = "inf" in
-    let infNeg    = "-inf" in
-    let infPosVal = Const ( 1.0 * infVal) in
-    let infNegVal = Const (-1.0 * infVal) in
-
     let one       = "1" in
     let oneNeg    = "-1" in
     let oneVal    = Const   1.0  in
     let oneNegVal = Const (-1.0) in
 
-    let two       = "2" in
-    let twoVal    = Const   2.0  in
+    -- inf = max - min
+    let inf        = "inf~" in
+    let aggrMax    = "max~" in
+    let aggrMin    = "min~" in
+    let aggrMinNeg = "-min~" in
+
+    let maxRef    = ARMax in
+    let minRef    = ARMin in
+    let infAs     = M.fromList [(inf, Sum [aggrMax, aggrMinNeg]), (aggrMinNeg, Prod [aggrMin, oneNeg]), (aggrMax, maxRef), (aggrMin, minRef)] in
 
     -- if the filter is a negation, we will need to replace all choices 'b' with '1 - b'
     let (b0,maybeord,x,c,asPos, asNeg) =
@@ -146,14 +151,13 @@ rewriteQuery (F fas filterAggr) infVal tag fvar query@(F as b) =
                 F (M.union fas (asRw as)) (bRw b)
 
         -- for min/max, add/subtract a large quantity from the values that are filtered out, so that they would be ignored
-        -- this does not work well since if the quantity does not depend on the input, it may be too large
         SelectMax y ->
-                let asRw = \xs -> M.union xs $ M.union as' (M.fromList [(z, Sum [y,z1]), (z1, Prod [b2,infNeg]), (infNeg, infNegVal)]) in
+                let asRw = \xs -> M.union xs $ M.union as' $ M.union infAs (M.fromList [(z, Sum [z1,y]), (z1, Prod [w1,inf]), (w1, Sum [b2,oneNeg])]) in
                 let bRw  = \x ->  SelectMax z in
                 F (M.union fas (asRw as)) (bRw b)
 
         SelectMin y ->
-                let asRw = \xs -> M.union xs $ M.union as' (M.fromList [(z, Sum [y,z1]), (z1, Prod [b2,infPos]), (infPos, infPosVal)]) in
+                let asRw = \xs -> M.union xs $ M.union as' $ M.union infAs (M.fromList [(z, Sum [z1,y]), (z1, Prod [w1,inf]), (w1, Sum [one,w0]),(w0, Prod [b2,oneNeg])]) in
                 let bRw  = \x ->  SelectMin z in
                 F (M.union fas (asRw as)) (bRw b)
 

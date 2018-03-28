@@ -127,7 +127,7 @@ isSupportedWhereExpr = \case
   SpecialOp _ n _  -> nameToStr n == "between"
   _                -> False
   where
-    ops = ["=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/", "not"]
+    ops = ["=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/", "%", "not"]
 
 isSupportedAggregOp :: Name -> Bool
 isSupportedAggregOp op = nameToStr op `elem` ["count", "sum", "avg", "min", "max"]

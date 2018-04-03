@@ -154,7 +154,7 @@ performAnalysis opts us s q = do
   if sensitivity opts == -1
     then do
       results <- forM tables $ \ t -> (analyzeOneTable (alternative opts) (z3Path opts) us' s' q'
-                                                       (useMultisetSemantics && isAnyOtherTableWithoutUniquenessConstraint t) t)
+                                                       (useMultisetSemantics && isAnyOtherTableWithoutUniquenessConstraint t) aliasToOrigTableList t)
       return $ Right (tables',results)
     else do
       result <- sendToZ3 (z3Path opts) tables z3Input
@@ -167,9 +167,12 @@ performAnalysis opts us s q = do
       return $ Left (tables', results)
   where
     (us',s',q',useMultisetSemantics,tablesWithoutUniquenessConstraint,aliasToOrigTableMap) = doAllTransforms us s q
+    aliasToOrigTableList0 = Map.toList aliasToOrigTableMap
+    aliasToAliasList = map (\ (t,_) -> (t,t)) aliasToOrigTableList0
+    aliasToOrigTableList = if direct opts then aliasToOrigTableList0 else aliasToAliasList
     isAnyOtherTableWithoutUniquenessConstraint t = not $ Set.null (Set.delete t tablesWithoutUniquenessConstraint)
-    (tables, doc) = second fcat $ unzip $ generateZ3 us' s' q' (sensitivity opts)
-    tables' = map (aliasToOrigTableMap Map.!) tables
+    (tables, doc) = second fcat $ unzip $ generateZ3 us' s' q' (sensitivity opts) aliasToOrigTableList
+    tables' = if direct opts then tables else map (aliasToOrigTableMap Map.!) tables
     z3Input = doc ""
 
 findPrimaryKeys :: ProgramOptions -> UniqueInfo -> DbSchema -> QueryExpr -> IO [Bool]
@@ -193,9 +196,9 @@ findPrimaryKeys opts us s q = do
     isAnyTableWithoutUniquenessConstraint = not $ Set.null tablesWithoutUniquenessConstraint
     z3Input = generatePrimaryKeyZ3 us' s' q' origSelects ""
 
-analyzeOneTable :: Bool -> Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> Bool -> CatName -> IO Int
-analyzeOneTable alt fp us s q multisetsWithNonUniqueInput t = do
-  let genZ3 n = generateZ3Go us s q n t Nothing
+analyzeOneTable :: Bool -> Maybe FilePath -> UniqueInfo -> DbSchema -> QueryExpr -> Bool -> [(CatName, CatName)] -> CatName -> IO Int
+analyzeOneTable alt fp us s q multisetsWithNonUniqueInput aliasToOrigTableList t = do
+  let genZ3 n = generateZ3Go us s q n aliasToOrigTableList t Nothing
   let invokeZ3 n = sendToZ3 fp [t] (genZ3 n "")
   let
     try n limit = if n > limit then return (-1) else do
@@ -339,26 +342,35 @@ generateZ3 :: UniqueInfo         -- ^ uniques
            -> DbSchema           -- ^ information about the database
            -> QueryExpr          -- ^ query
            -> Int                -- ^ sensitivity
+           -> [(CatName, CatName)]
            -> [(CatName, ShowS)]
-generateZ3 us s query n = map (\t -> (t, generateZ3Go us s query n t Nothing)) uniqueJoinTables
+generateZ3 us s query n aliasToOrigTableList = map (\t -> (t, generateZ3Go us s query n aliasToOrigTableList t Nothing)) uniqueJoinTables
   where
-    joinTables = map (nameToCatName.getName) $ extractJoinTables query
-    uniqueJoinTables = nub joinTables
-    getName (Tref _ n) = n -- TODO: obviously...
+    --joinTables = map (nameToCatName.getName) $ extractJoinTables query
+    --uniqueJoinTables = nub joinTables
+    --getName (Tref _ n) = n -- TODO: obviously...
+    origTables = map snd aliasToOrigTableList
+    uniqueJoinTables = nub origTables
 
 generateZ3Go :: UniqueInfo         -- ^ uniques
              -> DbSchema           -- ^ information about the database
              -> QueryExpr          -- ^ query
              -> Int                -- ^ sensitivity
+             -> [(CatName, CatName)]
              -> CatName
              -> Maybe ScalarExpr
              -> ShowS
-generateZ3Go us s query n = go
+generateZ3Go us s query n aliasToOrigTableList origTable = go fixedTable
   where
-    joinTables = map (nameToCatName.getName) $ extractJoinTables query
+    --joinTables = map (nameToCatName.getName) $ extractJoinTables query
     selects = getSelects query
 
-    uniqueJoinTables = nub joinTables
+    --uniqueJoinTables = nub joinTables
+    uniqueJoinTables = map fst aliasToOrigTableList
+
+    origTableAliases = map fst $ filter ((origTable ==) . snd) aliasToOrigTableList
+    fixedTable = case origTableAliases of [ota] -> ota
+                                          _     -> pack ""
 
     -- XXX: does not consider nested queries!
     schema = Map.filterWithKey (\k v -> k `elem` uniqueJoinTables) s
@@ -378,7 +390,8 @@ generateZ3Go us s query n = go
 
     go fixedTable se = id
       . z3Push
-      . genDecls schema fixedTable n
+      . genDecls schema origTable origTableAliases fixedTable n
+      . genTableMultiUseConstraints schema origTable origTableAliases fixedTable n
       . uniqueAsserts fixedTable
       . whereAsserts fixedTable
       . funDecl
@@ -392,7 +405,12 @@ generatePrimaryKeyZ3 :: UniqueInfo         -- ^ uniques
                      -> QueryExpr          -- ^ query
                      -> [(CatName, ScalarExpr)]
                      -> ShowS
-generatePrimaryKeyZ3 us s query origSelects = fcat $ map (generateZ3Go us s query 1 (pack "") . Just) (map snd origSelects)
+generatePrimaryKeyZ3 us s query origSelects = fcat $ map (generateZ3Go us s query 1 aliasToAliasList (pack "") . Just) (map snd origSelects)
+  where
+    joinTables = map (nameToCatName.getName) $ extractJoinTables query
+    uniqueJoinTables = nub joinTables
+    aliasToAliasList = map (\ t -> (t,t)) uniqueJoinTables
+    getName (Tref _ n) = n -- TODO: obviously...
 
 
 nameComponentToCatName :: NameComponent -> CatName
@@ -459,11 +477,12 @@ genWhere :: DbSchema -> CatName -> Int -> ScalarExpr -> ShowS
 genWhere schema fixed n e = fcat (map z3Assert es)
   where es = take (n + 1) $ genScalarExpr' fixed e
 
-genDecls :: DbSchema -> CatName -> Int -> ShowS
-genDecls schema fixed n = fcat $ concatMap go $ Map.toList schema
+genDecls :: DbSchema -> CatName -> [CatName] -> CatName -> Int -> ShowS
+genDecls schema origTable origTableAliases fixed n = fcat $ concatMap go $ Map.toList schema
   where
     go (tbl, cols)
       | tbl == fixed = map (goFixed tbl) cols
+      | (not . null) origTableAliases && tbl == head origTableAliases && (not . null) (tail origTableAliases) = map (goFixed origTable) cols ++ map (goVariable tbl) cols
       | otherwise = map (goVariable tbl) cols
 
     goFixed tbl col = let
@@ -475,6 +494,19 @@ genDecls schema fixed n = fcat $ concatMap go $ Map.toList schema
         name i = genColName tbl (fst col) (showString "-" . shows i)
         decl i = z3DeclareConst (name i) ty
       in fcat [decl i | i <- [1 .. n + 1]]
+
+genTableMultiUseConstraints :: DbSchema -> CatName -> [CatName] -> CatName -> Int -> ShowS
+genTableMultiUseConstraints schema origTable origTableAliases fixed n =
+  if unpack fixed == ""
+    then
+      let cols = schema Map.! head origTableAliases
+      in fcat [z3Assert $
+                 z3Or [z3And [z3Eq [genColNamePrefix origTable (fst col),
+                                    genColName ota (fst col) (showString "-" . shows i)]
+                              | col <- cols]
+                       | ota <- origTableAliases]
+               | i <- [1 .. n + 1]]
+    else id
 
 -- ^ Assumes that "tbl" is not the one that is fixed!
 genUnique :: DbSchema -> CatName -> Name -> [NameComponent] -> Int -> ShowS

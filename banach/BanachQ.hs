@@ -2,7 +2,7 @@
 
 module BanachQ where
 
-import Banach (Expr(..), (!!), chooseBeta, dualnorm, skipith)
+import Banach (Expr(..), TableExpr(..), (!!), chooseBeta, dualnorm, skipith)
 
 import qualified Prelude as P
 import qualified Data.List as L
@@ -142,7 +142,13 @@ instance IfThenElseQ BoolExprQ AnalysisResult where
   ifThenElse b x err = x -- TODO: handle the error message correctly
 
 expQ = FunQ "exp"
+logQ = FunQ "log"
 absQ = FunQ "abs"
+
+minimumT = FunQ "min"
+maximumT = FunQ "max"
+sumT = FunQ "sum"
+productT = expQ . sumT . logQ
 
 minimumQ = ListFunQ "least"
 maximumQ = ListFunQ "greatest"
@@ -189,14 +195,24 @@ data AnalysisResult = AR {
 lpnorm :: Double -> [ExprQ] -> ExprQ
 lpnorm p xs = (sum $ map (** p) $ map abs xs) ** (1 / p)
 
+lpnormT :: Double -> ExprQ -> ExprQ
+lpnormT p xs = (sumT $ (abs xs) ** p) ** (1 / p)
+
 -- compute ||(x_1,...,x_n)||_q where || ||_q is the dual norm of || ||_p
 lqnorm :: Double -> [ExprQ] -> ExprQ
 lqnorm 1 xs = linfnorm xs
 lqnorm p xs = lpnorm (dualnorm p) xs
 
+lqnormT :: Double -> ExprQ -> ExprQ
+lqnormT 1 = linfnormT
+lqnormT p = lpnormT (dualnorm p)
+
 -- compute ||(x_1,...,x_n)||_infinity
 linfnorm :: [ExprQ] -> ExprQ
 linfnorm = maximumQ . map absQ
+
+linfnormT :: ExprQ -> ExprQ
+linfnormT = maximumT . absQ
 
 analyzeExprQ :: [String] -> Expr -> AnalysisResult
 analyzeExprQ colNames = analyzeExpr (map VarQ colNames)
@@ -327,6 +343,12 @@ combineArsMin ars =
          subf = SUB (\ beta -> minimum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
+combineArsMinT :: AnalysisResult -> AnalysisResult
+combineArsMinT ar =
+  AR {fx = minimumT (fx ar),
+      subf = SUB (\ beta -> minimumT (subg (subf ar) beta)) (subBeta (subf ar)),
+      sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+
 combineArsMax :: [AnalysisResult] -> AnalysisResult
 combineArsMax ars =
   let fxs = map fx ars
@@ -340,6 +362,12 @@ combineArsMax ars =
          subf = SUB (\ beta -> maximum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
+combineArsMaxT :: AnalysisResult -> AnalysisResult
+combineArsMaxT ar =
+  AR {fx = maximumT (fx ar),
+      subf = SUB (\ beta -> maximumT (subg (subf ar) beta)) (subBeta (subf ar)),
+      sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+
 combineArsL :: Double -> [AnalysisResult] -> AnalysisResult
 combineArsL p ars =
   let fxs = map fx ars
@@ -352,6 +380,12 @@ combineArsL p ars =
   in AR {fx = lpnorm p fxs,
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+
+combineArsLT :: Double -> AnalysisResult -> AnalysisResult
+combineArsLT p ar =
+  AR {fx = lpnormT p (fx ar),
+      subf = SUB (\ beta -> lpnormT p (subg (subf ar) beta)) (subBeta (subf ar)),
+      sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
 -- the computed function is l_p-norm but the norm is l_infinity
 combineArsLpInf :: Double -> [AnalysisResult] -> AnalysisResult
@@ -367,6 +401,12 @@ combineArsLpInf p ars =
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
+combineArsLpInfT :: Double -> AnalysisResult -> AnalysisResult
+combineArsLpInfT p ar =
+  AR {fx = lpnormT p (fx ar),
+      subf = SUB (\ beta -> lpnormT p (subg (subf ar) beta)) (subBeta (subf ar)),
+      sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+
 combineArsSump :: Double -> [AnalysisResult] -> AnalysisResult
 combineArsSump p ars =
   let fxs = map fx ars
@@ -379,6 +419,12 @@ combineArsSump p ars =
   in AR {fx = sum fxs,
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> lqnorm p (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+
+combineArsSumpT :: Double -> AnalysisResult -> AnalysisResult
+combineArsSumpT p ar =
+  AR {fx = sumT (fx ar),
+      subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
+      sdsf = SUB (\ beta -> lpnormT p (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
 combineArsSumInf :: [AnalysisResult] -> AnalysisResult
 combineArsSumInf ars =
@@ -393,6 +439,12 @@ combineArsSumInf ars =
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
+combineArsSumInfT :: AnalysisResult -> AnalysisResult
+combineArsSumInfT ar =
+  AR {fx = sumT (fx ar),
+      subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
+      sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+
 combineArsSum2 :: [AnalysisResult] -> AnalysisResult
 combineArsSum2 ars =
   let fxs = map fx ars
@@ -406,3 +458,11 @@ combineArsSum2 ars =
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
+analyzeTableExprQ :: [String] -> TableExpr -> AnalysisResult
+analyzeTableExprQ cols te =
+  case te of
+    SelectMin (expr : _) -> combineArsMinT (analyzeExprQ cols expr)
+    SelectMax (expr : _) -> combineArsMaxT (analyzeExprQ cols expr)
+    SelectL p (expr : _) -> combineArsLT p (analyzeExprQ cols expr)
+    SelectSump p (expr : _) -> combineArsSumpT p (analyzeExprQ cols expr)
+    SelectSumInf (expr : _) -> combineArsSumInfT (analyzeExprQ cols expr)

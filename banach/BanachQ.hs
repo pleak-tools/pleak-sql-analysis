@@ -27,6 +27,7 @@ data ExprQ = Q Double                -- a constant
            | (:*) ExprQ ExprQ
            | (:/) ExprQ ExprQ
            | (:**) ExprQ ExprQ        -- exponentiation
+           | Select ExprQ String String -- SELECT x FROM y WHERE z
 
 data BoolExprQ = CmpOpQ String ExprQ ExprQ -- an SQL comparison operator
 
@@ -172,6 +173,7 @@ instance Show ExprQ where
   show (x :* y) = '(' : show x ++ " * " ++ show y ++ ")"
   show (x :/ y) = '(' : show x ++ " / " ++ show y ++ ")"
   show (x :** y) = '(' : show x ++ " ^ " ++ show y ++ ")"
+  show (Select x fr wh) = "SELECT " ++ show x ++ (if null fr then "" else " FROM ") ++ fr ++ (if null wh then "" else " WHERE ") ++ wh ++ ";"
 
 instance Show BoolExprQ where
   show (CmpOpQ op x y) = '(' : show x ++ ' ' : op ++ ' ' : show y ++ ")"
@@ -424,7 +426,7 @@ combineArsSumpT :: Double -> AnalysisResult -> AnalysisResult
 combineArsSumpT p ar =
   AR {fx = sumT (fx ar),
       subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
-      sdsf = SUB (\ beta -> lpnormT p (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+      sdsf = SUB (\ beta -> lqnormT p (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
 combineArsSumInf :: [AnalysisResult] -> AnalysisResult
 combineArsSumInf ars =
@@ -458,11 +460,20 @@ combineArsSum2 ars =
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
-analyzeTableExprQ :: [String] -> TableExpr -> AnalysisResult
-analyzeTableExprQ cols te =
+analyzeTableExpr :: [String] -> TableExpr -> AnalysisResult
+analyzeTableExpr cols te =
   case te of
     SelectMin (expr : _) -> combineArsMinT (analyzeExprQ cols expr)
     SelectMax (expr : _) -> combineArsMaxT (analyzeExprQ cols expr)
     SelectL p (expr : _) -> combineArsLT p (analyzeExprQ cols expr)
     SelectSump p (expr : _) -> combineArsSumpT p (analyzeExprQ cols expr)
     SelectSumInf (expr : _) -> combineArsSumInfT (analyzeExprQ cols expr)
+
+-- SELECT expr FROM fr WHERE wh
+-- (colNames !! i) is the name of the variable with number i in expr
+-- fr may contain multiple tables and aliases, e.g. "t as t1, t as t2, t3"
+-- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
+analyzeTableExprQ :: String -> String -> [String] -> TableExpr -> AnalysisResult
+analyzeTableExprQ fr wh colNames te =
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) = analyzeTableExpr colNames te
+  in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta)

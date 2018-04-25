@@ -23,21 +23,17 @@ import Data.Void
 
 -- import Expr directly from Banach.hs, 'qualified' because we want to reuse the names
 import qualified Banach as B
-import Aexpr
+import AexprQ
 import ErrorMsg
-import Expr
-import Norms
-import Preprocess
-import Query
+import ExprQ
+import NormsQ
+import PreprocessQ
+import QueryQ
 
 -- Define the parser type
 -- 'Void' means 'no custom error messages'
 -- 'String' means 'input comes in form of a String'
 type Parser = Parsec Void String
-
--- a small bit, denoting whether we are parsing a query or a norm
--- we define it, since a query and a norm have very similar format
-data ParserInstance = QueryParsing | NormParsing
 
 ---------------------------------------------------------------------------------------------
 -- TODO: parsing of 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
@@ -54,29 +50,9 @@ allKeyWords = S.fromList allKeyWordList
 allCaseInsensKeyWords :: S.Set String -- set of reserved "words"
 allCaseInsensKeyWords = S.fromList ["select","as","from","where","not","and","min","max","sum","product","count","distinct","group","by","between"]
 
--- a query expression
-queryExpr :: VarName -> Parser [Expr]
-queryExpr x = powerExpr
-  <|> powerLNExpr
-  <|> invExpr
-  <|> divExpr x
-  <|> expExpr
-  <|> scaleNormExpr
-  <|> zeroSensExpr
-  <|> lpNormExpr
-  <|> linfNormExpr
-  <|> prodExpr
-  <|> minExpr
-  <|> maxExpr
-  <|> sigmoidExpr
-  <|> tauoidExpr
-  <|> sumpExpr
-  <|> sumInfExpr
-  <|> constExpr
-
 -- a norm expression
-normExpr :: VarName -> Parser [Expr]
-normExpr _ = constExpr
+normExpr :: Parser [Expr]
+normExpr = constExpr
   <|> scaleNormExpr
   <|> scaleNorm2Expr
   <|> zeroSensExpr
@@ -85,90 +61,6 @@ normExpr _ = constExpr
   <|> lnExpr
 
 -- parsing different expressions, one by one
-powerExpr :: Parser [Expr]
-powerExpr = do
-  symbol "^"
-  a <- varName
-  b <- float
-  return [Power a b]
-
-powerLNExpr :: Parser [Expr]
-powerLNExpr = do
-  keyWord "LN"
-  symbol "^"
-  a <- varName
-  b <- signedFloat
-  return [PowerLN a b]
-
-invExpr :: Parser [Expr]
-invExpr = do
-  keyWord "inv"
-  a <- varName
-  let b = -1.0
-  return [PowerLN a b]
-
-divExpr ::  VarName -> Parser [Expr]
-divExpr x = do
-  keyWord "div"
-  a <- varName
-  b <- varName
-  let c = -1.0
-  return [Prod [a,x ++ "~1"], PowerLN b c]
-
-expExpr :: Parser [Expr]
-expExpr = do
-  keyWord "exp"
-  a <- signedFloat
-  b <- varName
-  return [Exp a b]
-
-prodExpr :: Parser [Expr]
-prodExpr = do
-  keyWord "prod"
-  bs <- many varName
-  return [Prod bs]
-
-minExpr :: Parser [Expr]
-minExpr = do
-  keyWord "min"
-  bs <- many varName
-  return [Min bs]
-
-maxExpr :: Parser [Expr]
-maxExpr = do
-  keyWord "max"
-  bs <- many varName
-  return [Max bs]
-
-sigmoidExpr :: Parser [Expr]
-sigmoidExpr = do
-  keyWord "sigmoid"
-  a <- float
-  c <- float
-  x <- varName
-  return [Sigmoid a c x]
-
-tauoidExpr :: Parser [Expr]
-tauoidExpr = do
-  keyWord "tauoid"
-  a <- float
-  c <- float
-  x <- varName
-  return [Tauoid a c x]
-
-sumpExpr :: Parser [Expr]
-sumpExpr = do
-  keyWord "sump"
-  c <- float
-  bs <- many varName
-  return [Sump c bs]
-
-sumInfExpr :: Parser [Expr]
-sumInfExpr = do
-  keyWord "sumInf"
-  bs <- many varName
-  return [SumInf bs]
-
 constExpr :: Parser [Expr]
 constExpr = do
   keyWord "const"
@@ -215,15 +107,6 @@ lnExpr = do
   a <- varName
   return [PowerLN a 0.0]
 
--- a table expression
-queryTableExpr :: Parser TableExpr
-queryTableExpr = selectProdExpr
-  <|> selectMinExpr
-  <|> selectMaxExpr
-  <|> selectLExpr
-  <|> selectSumpExpr
-  <|> selectSumInfExpr
-
 -- a table expression for norms (which norm is applied to the rows)
 normTableExpr :: Parser TableExpr
 normTableExpr =
@@ -231,44 +114,6 @@ normTableExpr =
   <|> lpTableExpr
 
 -- parsing different expressions, one by one
-selectProdExpr :: Parser TableExpr
-selectProdExpr = do
-  keyWord "selectProd"
-  a <- varName
-  return (SelectProd a)
-
-selectMinExpr :: Parser TableExpr
-selectMinExpr = do
-  keyWord "selectMin"
-  a <- varName
-  return (SelectMin a)
-
-selectMaxExpr :: Parser TableExpr
-selectMaxExpr = do
-  keyWord "selectMax"
-  a <- varName
-  return (SelectMax a)
-
-selectLExpr :: Parser TableExpr
-selectLExpr = do
-  keyWord "selectL"
-  c <- float
-  a <- varName
-  return (SelectL c a)
-
-selectSumpExpr :: Parser TableExpr
-selectSumpExpr = do
-  keyWord "selectSump"
-  c <- float
-  a <- varName
-  return (SelectSump c a)
-
-selectSumInfExpr :: Parser TableExpr
-selectSumInfExpr = do
-  keyWord "selectSumInf"
-  a <- varName
-  return (SelectSumInf a)
-
 lpTableExpr :: Parser TableExpr
 lpTableExpr = do
   keyWord "lp"
@@ -287,78 +132,77 @@ linfTableExpr = do
 ------------------------------------------------
 
 -- arithmetic expressions
-powerAExpr :: Parser (AExpr a -> AExpr a)
+-- we add 'String' as parsed component, this is needed for making actual sql queries
+powerAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 powerAExpr = do
   keyWord "^"
   a <- signedFloat
-  return (AUnary (APower a))
+  return $ \(aExpr, aString) -> (AUnary (APower a) aExpr, aString ++ " ^ " ++ (show a))
 
-sqrtAExpr :: Parser (AExpr a -> AExpr a)
+sqrtAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 sqrtAExpr = do
   keyWord "sqrt"
-  return (AUnary (APower 0.5))
+  return $ \(aExpr, aString) -> (AUnary (APower 0.5) aExpr, aString ++ " ^ 0.5")
 
-rootAExpr :: Parser (AExpr a -> AExpr a)
+rootAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 rootAExpr = do
   keyWord "root"
   r <- float
-  return (AUnary (APower (1/r)))
+  return $ \(aExpr, aString) -> (AUnary (APower (1/r)) aExpr, aString ++ " ^ (1/" ++ show r ++ ")")
 
-lnAExpr :: Parser (AExpr a -> AExpr a)
+lnAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 lnAExpr = do
   keyWord "ln"
-  return (AUnary ALn)
+  return $ \(aExpr, aString) -> (AUnary ALn aExpr, "LN(" ++ aString ++ ")")
 
-expAExpr :: Parser (AExpr a -> AExpr a)
+expAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 expAExpr = do
   keyWord "exp"
   r <- signedFloat
-  return (AUnary (AExp r))
+  return $ \(aExpr, aString) -> (AUnary (AExp r) aExpr, "EXP(" ++ (show r) ++ " * " ++ aString ++ ")")
 
-notAExpr :: Parser (AExpr a -> AExpr a)
+notAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 notAExpr = do
   caseInsensKeyWord "not"
-  return (AUnary (ANot))
+  return $ \(aExpr, aString) -> (AUnary (ANot) aExpr, "NOT (" ++ aString ++ ")")
 
-betweenAExpr :: Parser (AExpr VarName -> AExpr VarName)
+betweenAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 betweenAExpr = do
   caseInsensKeyWord "between"
-  aexprLB <- aExpr
+  (aexprLB,sLB) <- aExpr
   caseInsensKeyWord "and"
-  aexprUB <- aExpr
-  return (\e -> ABinary AAnd (ABinary AGT e aexprLB) (ABinary ALT e aexprUB))
+  (aexprUB,sUB) <- aExpr
+  return $ \(aExpr, aString) -> (ABinary AAnd (ABinary AGT aExpr aexprLB) (ABinary ALT aExpr aexprUB), aString ++ " BETWEEN " ++ sLB ++ " AND " ++ sUB)
 
-absBeginAExpr :: Parser (AExpr a -> AExpr a)
+absBeginAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 absBeginAExpr = do
   symbol "|"
-  return (AUnary AAbsBegin)
+  return $ \(aExpr, aString) -> (AUnary AAbsBegin aExpr, "ABS(" ++ aString)
 
-absEndAExpr :: Parser (AExpr a -> AExpr a)
+absEndAExpr :: Parser ((AExpr a, String) -> (AExpr a, String))
 absEndAExpr = do
   symbol "|"
-  return (AUnary AAbsEnd)
+  return $ \(aExpr, aString) -> (AUnary AAbsEnd aExpr, aString ++ ")")
 
-aExpr :: Parser (AExpr VarName)
-aExpr = makeExprParser aTerm aOperators
-
-bExpr :: Parser (AExpr VarName)
-bExpr = makeExprParser bTerm bOperators
-
-namedAExpr :: Parser (VarName, VarName -> TableExpr, AExpr VarName)
+namedAExpr :: Parser (VarName, VarName -> TableExpr, AExpr VarName, String)
 namedAExpr = do
-    g <- sqlAggregator
-    aexpr <- aExpr
+    (g,sAggr) <- sqlAggregator
+    (aexpr,sAexpr) <- aExpr
     caseInsensKeyWord "as"
     newColName <- varName
-    return (newColName, g, aexpr)
+    return (newColName, g, aexpr, sAggr ++ sAexpr ++ " AS " ++ newColName)
 
-unnamedAExpr :: Parser (VarName -> TableExpr, AExpr VarName)
+unnamedAExpr :: Parser (VarName -> TableExpr, AExpr VarName, String)
 unnamedAExpr = do
-    g <- sqlAggregator
-    aexpr <- aExpr
-    return (g, aexpr)
+    (g,sAggr) <- sqlAggregator
+    (aexpr,sAexpr) <- aExpr
+    return (g, aexpr, sAggr ++ sAexpr)
 
-aOperators :: [[Operator Parser (AExpr VarName)]]
+
+aExpr :: Parser (AExpr VarName, String)
+aExpr = makeExprParser aTerm aOperators
+
+aOperators :: [[Operator Parser (AExpr VarName, String)]]
 aOperators =
   [ [ Prefix  absBeginAExpr
     , Postfix absEndAExpr]
@@ -370,48 +214,66 @@ aOperators =
     , Prefix rootAExpr
     , Postfix powerAExpr]
 
-  , [ InfixL (ABinary AMax <$ symbol "\\/")
-    , InfixL (ABinary AMin  <$ symbol "/\\") ]
+  , [ InfixL ((\(aExpr1, aString1) (aExpr2, aString2)  -> (ABinary AMax aExpr1 aExpr2, "MAX(" ++ aString1 + ", " ++ aString2 ++ ")")) <$ symbol "\\/")
+    , InfixL ((\(aExpr1, aString1) (aExpr2, aString2)  -> (ABinary AMin aExpr1 aExpr2, "MIN(" ++ aString1 + ", " ++ aString2 ++ ")")) <$ symbol "/\\") ]
 
-  , [ InfixL (ABinary AMult <$ symbol "*")
-    , InfixL (ABinary ADiv  <$ symbol "/") ]
+  , [ InfixL ((\(aExpr1, aString1) (aExpr2, aString2)  -> (ABinary AMult aExpr1 aExpr2, aString1 ++ " * " ++ aString2)) <$ symbol "*")
+    , InfixL ((\(aExpr1, aString1) (aExpr2, aString2)  -> (ABinary ADiv  aExpr1 aExpr2, aString1 ++ " / " ++ aString2)) <$ symbol "/") ]
 
-  , [ InfixL (ABinary AAdd <$ symbol "+")
-    , InfixL (ABinary ASub <$ symbol "-") ]
+  , [ InfixL ((\(aExpr1, aString1) (aExpr2, aString2)  -> (ABinary AAdd aExpr1 aExpr2, aString1 ++ " + " ++ aString2)) <$ symbol "+")
+    , InfixL ((\(aExpr1, aString1) (aExpr2, aString2)  -> (ABinary ASub aExpr1 aExpr2, aString1 ++ " - " ++ aString2)) <$ symbol "-") ]
 
   ]
 
-aTerm :: Parser (AExpr VarName)
-aTerm = parens aExpr
-  <|> AVar <$> varName
-  <|> AConst <$> signedFloat
-  <|> AConst <$> stringAsInt
+aTerm :: Parser (AExpr VarName, String)
+aTerm = do
+      (aExpr, aString) <- parens aExpr
+      return (aExpr, "(" ++ aString ++ ")")
+  <|> do
+       x <- varName
+       return (AVar x, x)
+  <|> do 
+       a <- signedFloat
+       return (AConst a, show a)
+  <|> do 
+       a <- stringAsInt
+       return (AConst a, show a)
   <|> aDummy
 
 aDummy = do
   symbol "*"
-  return (AConst 0.0)
+  return (AConst 0.0, "*")
 
-bOperators :: [[Operator Parser (AExpr VarName)]]
+bExpr :: Parser (AExpr VarName, [String])
+bExpr = makeExprParser bTerm bOperators
+
+mergeFilters :: ([Aexpr VarName], [String]) -> (Aexpr VarName, String)
+mergeFilters (aexpr:aexprs) astrs = 
+    (foldl (ABinary AAnd) aexpr aexprs, intercalate " AND " astrs)
+
+bOperators :: [[Operator Parser ([AExpr VarName], String])]]
 bOperators =
   [
-    [ Prefix notAExpr
-    , Postfix betweenAExpr]
+    [ Prefix $ map notAExpr
+    , Postfix $ map betweenAExpr
 
-  , [ InfixL (ABinary ALT <$ symbol "<=")
-    , InfixL (ABinary ALT <$ symbol "<")
-    , InfixL (ABinary AEQ <$ symbol "==")
-    , InfixL (ABinary AEQ <$ symbol "=")
-    , InfixL (ABinary AGT <$ symbol ">=")
-    , InfixL (ABinary AGT <$ symbol ">") ]
+  , [ InfixL ((\(aExpr1, aStrs1) (aExpr2, aStrs2)  -> (ABinary ALT aExpr1 aExpr2, (mergeFilters aString1) ++ " < " ++ (mergeFilters aString2))) <$ symbol "<=")
+    , InfixL ((\(aExpr1, aStrs1) (aExpr2, aStrs2)  -> (ABinary ALT aExpr1 aExpr2, (mergeFilters aString1) ++ " < " ++ aString2)) <$ symbol "<")
+    , InfixL ((\(aExpr1, aStrs1) (aExpr2, aStrs2)  -> (ABinary AEQ aExpr1 aExpr2, (mergeFilters aString1) ++ " = " ++ aString2)) <$ symbol "==")
+    , InfixL ((\(aExpr1, aStrs1) (aExpr2, aStrs2)  -> (ABinary AEQ aExpr1 aExpr2, (mergeFilters aString1) ++ " = " ++ aString2)) <$ symbol "=")
+    , InfixL ((\(aExpr1, aStrs1) (aExpr2, aStrs2)  -> (ABinary AGT aExpr1 aExpr2, (mergeFilters aString1) ++ " > " ++ aString2)) <$ symbol ">=")
+    , InfixL ((\(aExpr1, aStrs1) (aExpr2, aStrs2)  -> (ABinary AGT aExpr1 aExpr2, (mergeFilters aString1) ++ " > " ++ aString2)) <$ symbol ">") ]
 
-  , [ InfixL (ABinary AAnd <$ caseInsensKeyWord "and")
-    , InfixL (ABinary AOr  <$ caseInsensKeyWord "or") ]
+  , [ InfixL ((\(aExpr1, aStrs1) (aExpr2, aStrs2)  -> (ABinary AAnd aExpr1 aExpr2, aStrs1 ++ aStrs2)) <$ caseInsensKeyWord "and")
+    , InfixL ((\(aExpr1, aStrs1) (aExpr2, aStrs2)  -> (ABinary AOr  aExpr1 aExpr2, (mergeFilters aString1)  ++ aString2))  <$ caseInsensKeyWord "or") ]
 
   ]
 
-bTerm :: Parser (AExpr VarName)
-bTerm = try aExpr <|> parens bExpr
+bTerm :: Parser (AExpr VarName, [String])
+bTerm = try aExpr <|>
+    do
+      (bExpr, bString) <- parens bExpr
+      return (bExpr, ["(" ++ bString ++ ")"])
 
 ------------------------------------------------------------
 ---- Parsing SQL query (simlpified, could be delegated) ----
@@ -477,80 +339,13 @@ selectAExpr :: Parser (VarName -> TableExpr)
 selectAExpr = do
   return Select
 
-filterVarConst :: Bool -> Parser [Function]
-filterVarConst pos = do
-  aexpr <- aExpr
-  op <- order
-  c <- signedFloat
-  let y = "filt"
-  let as = aexprToExpr y (aexprNormalize $ aexpr)
-  let b  = if pos then Filt op y c else FiltNeg op y c
-  return [F as b]
-
-filterVarVar :: Bool -> Parser [Function]
-filterVarVar pos = do
-  aexpr1 <- aExpr
-  op <- order
-  aexpr2 <- aExpr
-  let y  = "filt~"
-  let y1 = "filty1~"
-  let y2 = "filty2~"
-  let z1 = "filtz1~"
-  let z2 = "filtz2~"
-
-  let as1 = M.toList $ aexprToExpr y1 (aexprNormalize $ aexpr1)
-  let as2 = M.toList $ aexprToExpr y2 (aexprNormalize $ aexpr2)
-
-  let as = M.fromList $ as1 ++ as2 ++ (case op of GT -> [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))]
-                                                  _  -> [(y, Sum [y2, z2]),(z2, Prod [y1,z1]),(z1, Const (-1.0))])
-  let b  = if pos then Filt op y 0.0 else FiltNeg op y 0.0
-  return [F as b]
-
--- this filter makes sense only of applied to booleans
--- otherwise, it treats all values that do not equal 0 as 1
-filterNocomp :: Bool -> Parser [Function]
-filterNocomp pos = do
-  aexpr <- aExpr
-  let y  = "filt~"
-  let as = aexprToExpr y (aexprNormalize $ aexpr)
-  let b  = if pos then FiltNeg EQ y 0.0 else Filt EQ y 0.0
-  return [F as b]
-
-filterBetween :: Bool -> Parser [Function]
-filterBetween pos = do
-  aexpr   <- aExpr
-  caseInsensKeyWord "between"
-  aexprLB <- aExpr
-  caseInsensKeyWord "and"
-  aexprUB <- aExpr
-
-  let y  = "filt~"
-  let y1 = "filty1~"
-  let y2 = "filty2~"
-  let z1 = "filtz1~"
-  let z2 = "filtz2~"
-
-  let as1   = M.toList $ aexprToExpr y1 (aexprNormalize $ aexpr)
-  let asLB2 = M.toList $ aexprToExpr y2 (aexprNormalize $ aexprLB)
-  let asUB2 = M.toList $ aexprToExpr y2 (aexprNormalize $ aexprUB)
-
-  let asLB  = M.fromList (as1 ++ asLB2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
-  let asUB  = M.fromList (as1 ++ asUB2 ++ [(y, Sum [y1, z2]),(z2, Prod [y2,z1]),(z1, Const (-1.0))])
-
-  let bLB  = if pos then Filt GT y 0.0 else FiltNeg GT y 0.0
-  let bUB  = if pos then Filt LT y 0.0 else FiltNeg LT y 0.0
-  return [F asLB bLB, F asUB bUB]
-
 -- ======================================================================= --
 -----------------------------------------------------------------------------
 ----      The code below does not need to be updated with Banach.hs      ----
 -----------------------------------------------------------------------------
-sqlFilter :: Parser [Function]
-sqlFilter = try sqlFilterNeg <|> sqlFilterPos
-
-sqlFilterExpr :: Parser [Function]
+sqlFilterExpr :: Parser [(Function,String)]
 sqlFilterExpr = do
-    bexpr <- bExpr
+    (bexpr,bstrs) <- bExpr
     let y  = "filt"
     let as = aexprToExpr y $ aexprNormalize bexpr
     -- how many filters we actually have if we split them by "and"?
@@ -560,18 +355,6 @@ sqlFilterExpr = do
             _       -> []
     let filters = if length xs == 0 then [F as (Filter y)] else map (\x -> F as (Filter x)) xs
     return filters
-
-sqlFilterPos :: Parser [Function]
-sqlFilterPos = sqlFilterMain True
-
-sqlFilterNeg :: Parser [Function]
-sqlFilterNeg = do
-    caseInsensKeyWord "not"
-    qs <- sqlFilterMain False
-    return qs
-
-sqlFilterMain :: Bool -> Parser [Function]
-sqlFilterMain pos = try (filterBetween pos) <|> try (filterVarConst pos) <|> try (filterVarVar pos) <|> filterNocomp pos
 
 sqlQueries :: Parser (TableName, M.Map TableName Query)
 sqlQueries = try sqlManyQueries <|> sqlOneQuery
@@ -677,7 +460,6 @@ sqlQueryWithFilter :: Parser [Function]
 sqlQueryWithFilter = do
   caseInsensKeyWord "where"
   filters <- sqlFilterExpr
-  --filters <- fmap concat $ sepBy1 sqlFilter (caseInsensKeyWord "and")
   return filters
 
 sqlQueryGroupBy :: Parser [String]
@@ -697,15 +479,6 @@ sqlQueryWithGroupBy = do
 --------------------------------------
 ---- Parsing general input format ----
 --------------------------------------
-query :: Parser Query
-query = do
-  tablePath <- text
-  void (delim)
-  xs <- many varName
-  void (delim)
-  f <- function QueryParsing
-  let tableAliasMap = M.fromList [(tablePath,tablePath)]
-  return $ P [] [f] tableAliasMap []
 
 -- the first row in the norm file is the list of sensitive rows
 -- the second row in the norm file is the list of sensitive columns
@@ -718,18 +491,18 @@ norm = do
   return ((is, xs), f)
 
 customNorm = do
-  f <- function NormParsing
+  f <- function
   return f
 
 defaultNorm xs = do
   let f = F (M.fromList [("z",LInf xs)]) (SelectMax "z")
   return f
 
-asgnStmt :: ParserInstance -> Parser [(VarName,Expr)]
-asgnStmt p = do
+asgnStmt :: Parser [(VarName,Expr)]
+asgnStmt = do
   a  <- varName
   void (asgn)
-  bs <- case p of {QueryParsing -> queryExpr a; NormParsing -> normExpr a}
+  bs <- normExpr a
 
   -- this introduces new temporary variables for complex expressions 
   -- here "~" can be any symbol that is not allowed to use in variable names
@@ -737,17 +510,17 @@ asgnStmt p = do
   void (delim)
   return (zip (a:as) bs)
 
-returnStmt :: ParserInstance -> Parser TableExpr
-returnStmt p = do
+returnStmt :: Parser TableExpr
+returnStmt = do
   keyWord "return"
-  a <- case p of {QueryParsing -> queryTableExpr; NormParsing -> normTableExpr}
+  a <- normTableExpr
   void (delim)
   return a
 
-function :: ParserInstance -> Parser Function
-function p = do
-  ass <- many (asgnStmt p)
-  b  <- returnStmt p
+function :: Parser Function
+function = do
+  ass <- many asgnStmt
+  b  <- returnStmt
   let as = concat ass
   return (F (M.fromList as) b)
 
@@ -795,7 +568,6 @@ parseTestFromFile :: (Show a, ShowErrorComponent e) => Parsec e String a -> File
 parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
 
 parseNormFromFile fileName = parseFromFile norm error_parseNorm fileName
-parseQueryFromFile fileName = parseFromFile query error_parseQuery fileName
 parseSqlQueryFromFile fileName = parseFromFile sqlQueries error_parseSqlQuery fileName
 
 -- a keyword
@@ -898,7 +670,7 @@ readAllTables queryPath usePrefices tableNames tableAliases = do
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> IO (String, Double, B.Table, [(String,[Int])], [(String, [Int], B.TableExpr)])
+getBanachAnalyserInput :: Bool -> String -> IO ( [(String, B.TableExpr)], String )
 getBanachAnalyserInput debug input = do
 
     let queryPath = reverse $ dropWhile (/= '/') (reverse input)
@@ -954,13 +726,11 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show outputQueryFun
     traceIOIfDebug debug $ "Query expr (w/o filter) = " ++ show outputQueryExpr
+    traceIOIfDebug debug $ "Number of Filters:" ++ show (length outputFilterFuns)
+    traceIOIfDebug debug $ "----------------"
 
     -- we may now apply the filter
-    let (filtQueryFuns, filtSensRowMatrix, filtTable) = filteredExpr crossProductTable inputMap sensitiveRowMatrix sensitiveColSet outputFilterFuns [outputQueryFun]
-
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "#rows after filtering:  " ++ show (length filtTable)
-    --traceIOIfDebug debug $ "Filt. sens. row matrix: " ++ show filtSensRowMatrix
+    let (filtQueryFuns, filtWhereQuery) = filteredExpr inputMap sensitiveColSet outputFilterFuns [outputQueryFun]
 
     -- now transform the main query to a banach expression
     let mainQueryFun  = head filtQueryFuns
@@ -973,29 +743,24 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug ("Query aggr (w/ filter) = " ++ show mainQueryAggr)
     
     --bring the input to the form [(String, String, [Int], TableExpr)]
-    let dataWrtEachTable = inputWrtEachTable debug usePrefices inputTableAliases outputQueryExpr mainQueryExpr mainQueryAggr filtSensRowMatrix inputMap inputTableMap
-    let (allTableNames, allSensitiveInputs, allQueries, minQueries, maxQueries) = unzip5 dataWrtEachTable
+    let dataWrtEachTable = inputWrtEachTable debug usePrefices inputTableAliases outputQueryExpr mainQueryExpr mainQueryAggr inputMap inputTableMap
+    let (allTableNames, allQueries, minQueries, maxQueries) = unzip4 dataWrtEachTable
 
-    -- for min/max filters over private values, need find min/max after public rows have been already filtered out
-    let minExprData   = map (\(x,y) -> B.analyzeTableExpr filtTable x y) $ zip allSensitiveInputs minQueries
-    let maxExprData   = map (\(x,y) -> B.analyzeTableExpr filtTable x y) $ zip allSensitiveInputs maxQueries
+    -- TODO how we compute these using an actual database?
+    let minExprData   = map (\(x,y) -> B.analyzeTableExpr crossProductTable x y) $ zip sensitiveRowMatrix minQueries
+    let maxExprData   = map (\(x,y) -> B.analyzeTableExpr crossProductTable x y) $ zip sensitiveRowMatrix maxQueries
 
     -- replace ARMin and ARMax inside the queries with actual precomputed data
-    let tableExprData = zip3 allTableNames allSensitiveInputs (precAggr minExprData maxExprData allQueries)
+    let tableExprData = (zip allTableNames (precAggr minExprData maxExprData allQueries), filtWhereQuery)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "MIN: " ++ show minExprData
-    traceIOIfDebug debug $ "MAX: " ++ show maxExprData ++ "\n"
-    traceIOIfDebug debug $ "filtered table = " ++ show filtTable
+    traceIOIfDebug debug $ "MAX: " ++ show maxExprData
     traceIOIfDebug debug $ "----------------"
 
-    -- compute the query result that is actually correct, without any noise
-    let (_,_,mainExprFiltered) = head tableExprData
-    let qr = B.fx $ B.analyzeTableExprOld filtTable (preciseSigmoidsTableExpr mainExprFiltered)
-
     -- return data to the banach space analyser
-    return (outputTableName, qr, filtTable, taskMap, tableExprData)
+    return tableExprData
 
 

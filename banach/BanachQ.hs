@@ -2,13 +2,15 @@
 
 module BanachQ where
 
-import Banach (Expr(..), TableExpr(..), (!!), chooseBeta, dualnorm, skipith)
+import Banach (Expr(..), TableExpr(..), (!!), chooseBeta, chooseBetaCustom, gamma, dualnorm, skipith)
+import ProgramOptions
 
 import qualified Prelude as P
 import qualified Data.List as L
 import Prelude hiding (fromInteger,fromRational,(!!),(+),(-),(*),(/),(**),(==),(/=),(<=),(>=),(<),(>),exp,abs,sum,product,minimum,maximum)
 import Data.List hiding ((!!),sum,product,minimum,maximum)
 import Text.Printf
+import Control.Monad
 
 fromInteger :: Integer -> Double
 fromInteger = P.fromInteger
@@ -192,6 +194,12 @@ data AnalysisResult = AR {
   subf :: SmoothUpperBound, -- smooth upper bound of the absolute value of the analyzed function itself
   sdsf :: SmoothUpperBound} -- smooth upper bound of the derivative sensitivity of the analyzed function
   deriving Show
+
+chooseSUBBeta :: Double -> Maybe Double -> SmoothUpperBound -> Double
+chooseSUBBeta defaultBeta fixedBeta (SUB g beta0) =
+                              let beta = chooseBetaCustom defaultBeta fixedBeta beta0
+                              in if beta >= beta0 then beta
+                                                  else error $ printf "ERROR (beta = %0.3f but must be >= %0.3f)" beta beta0
 
 -- compute ||(x_1,...,x_n)||_p
 lpnorm :: Double -> [ExprQ] -> ExprQ
@@ -477,3 +485,32 @@ analyzeTableExprQ :: String -> String -> [String] -> TableExpr -> AnalysisResult
 analyzeTableExprQ fr wh colNames te =
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) = analyzeTableExpr colNames te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta)
+
+performAnalyses :: ProgramOptions -> [String] -> String -> Double -> [(String,[Int])] -> [(String, [Int], TableExpr)] -> IO ()
+performAnalyses args colNames outputTableName qr taskMap tableExprData = do
+  let debug = not (alternative args)
+  let (tableNames,_,_) = unzip3 tableExprData
+  let fromPart = intercalate ", " tableNames
+  let wherePart = ""
+  forM_ tableExprData $ \ (tableName, cs, te) -> do
+    when debug $ putStrLn ""
+    when debug $ putStrLn "--------------------------------"
+    when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="
+    let ar = analyzeTableExprQ fromPart wherePart colNames te
+    putStrLn "Analysis result:"
+    print ar
+    let epsilon = getEpsilon args
+    when debug $ printf "epsilon = %0.6f\n" epsilon
+    when debug $ printf "gamma = %0.6f\n" gamma
+    let defaultBeta = epsilon / (2 * (gamma + 1))
+    let fixedBeta = getBeta args
+    let beta = chooseSUBBeta defaultBeta fixedBeta (sdsf ar)
+    when debug $ printf "beta = %0.6f\n" beta
+    let b = epsilon / (gamma + 1) - beta
+    when debug $ printf "b = %0.6f\n" b
+    let qr = fx ar
+    when debug $ putStrLn "Query result:"
+    when debug $ print qr
+    let sds = subg (sdsf ar) beta
+    when debug $ putStrLn "beta-smooth derivative sensitivity:"
+    when debug $ print sds

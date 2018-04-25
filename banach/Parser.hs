@@ -898,7 +898,7 @@ readAllTables queryPath usePrefices tableNames tableAliases = do
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> IO (String, Double, B.Table, [(String,[Int])], [(String, [Int], B.TableExpr)])
+getBanachAnalyserInput :: Bool -> String -> IO (String, Double, B.Table, [(String,[Int])], [(String, [Int], B.TableExpr)], [String])
 getBanachAnalyserInput debug input = do
 
     let queryPath = reverse $ dropWhile (/= '/') (reverse input)
@@ -996,6 +996,6 @@ getBanachAnalyserInput debug input = do
     let qr = B.fx $ B.analyzeTableExprOld filtTable (preciseSigmoidsTableExpr mainExprFiltered)
 
     -- return data to the banach space analyser
-    return (outputTableName, qr, filtTable, taskMap, tableExprData)
+    return (outputTableName, qr, filtTable, taskMap, tableExprData, inputVarList)
 
 

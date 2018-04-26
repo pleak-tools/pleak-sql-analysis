@@ -299,7 +299,7 @@ inputWrtEachTable debug usePrefices colNames inputMap (tableAlias : ts) queryFun
     -- a query that creates the large croos product table
     let selectStatement = "SELECT " ++ intercalate ", " colNames in
     let fromStatement   = " FROM "  ++ intercalate ", "    usedTables  ++ ", "    ++ sensRowTable in
-    let whereStatement  = " WHERE " ++ intercalate " AND " queryFilter ++ " AND " ++ sensRowFilter in
+    let whereStatement  = " WHERE " ++ intercalate " AND " (queryFilter ++ [sensRowFilter]) in
     let sqlQuery = selectStatement ++ fromStatement ++ whereStatement in
     (tableName, adjustedQuery, adjustedMinQuery, adjustedMaxQuery,sqlQuery) : inputWrtEachTable debug usePrefices colNames inputMap ts queryFun filterFuns tableMap
 

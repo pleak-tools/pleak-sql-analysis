@@ -48,21 +48,14 @@ niceOrdering GT = " > "
 -- applies the list of filters to a table (computes AND of all filters for each row)
 -- if all variables that are used in the filter are non-sensitive, add the filter directly to the initial SQL query
 -- if at least one variable is sensitive, use a sigmoid or something similar, it depends on the filter and the aggregating function
-applyFilters :: String -> [Function] -> [Function] -> [S.Set B.Var] -> ([Function], String)
-applyFilters whereQuery queries [] [] = (queries, whereQuery)
-applyFilters whereQuery queries (filt:filts) (fvar:fvars) =
+applyFilters :: [Function] -> [Function] -> [Function] -> [S.Set B.Var] -> ([Function], [Function])
+applyFilters pubFilters queries [] [] = (queries, pubFilters)
+applyFilters pubFilters queries (filt:filts) (fvar:fvars) =
 
     let tag = show (length filts) ++ "~" in -- use this to ensure that we assing unique new variables to each filter
     let newQueries = map (rewriteQuery filt tag fvar) queries in
-    let newWhereQuery = if (S.size fvar == 0) then " AND " ++ extractWhereQuery filt  else "" in
-    applyFilters (whereQuery ++ newWhereQuery) newQueries filts fvars
-
-extractWhereQuery :: Function -> String
-extractWhereQuery (F _ filterAggr) =
-    case filterAggr of
-            Filt ord x c    -> x ++ niceOrdering ord ++ (show c)
-            FiltNeg ord x c -> "NOT " ++ x ++ niceOrdering ord ++ (show c)
-            Filter x        -> x ++ "> 0.5"
+    let newFilters = if (S.size fvar == 0) then [filt]  else [] in
+    applyFilters (pubFilters ++ newFilters) newQueries filts fvars
 
 rewriteQuery :: Function -> String ->  S.Set B.Var -> Function -> Function
 rewriteQuery (F fas filterAggr) tag fvar query@(F as b) =

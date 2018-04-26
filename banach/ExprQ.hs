@@ -1,6 +1,7 @@
 module ExprQ where
 
-import Data.List
+import Prelude hiding ((!!))
+import Data.List hiding ((!!))
 import qualified Data.Set as S
 import qualified Data.Map as M
 
@@ -205,46 +206,49 @@ markTableExprCols sensitiveVars expr =
         B.SelectSumInf es  -> B.SelectSumInf $ map (snd . markExprCols sensitiveVars) es
 
 -- updates variable names
-updatePrefices :: VarName -> VarName -> VarName
-updatePrefices prefix var = prefix ++ var
+updatePrefices :: (S.Set String) -> VarName -> VarName -> VarName
+updatePrefices fullTablePaths prefix var = 
+    -- if the used table name equals to its full prefix, then it is an actual input
+    let varAlias = takeWhile (/= '.') var in
+    prefix ++ if S.member varAlias fullTablePaths then var else map (\x -> if x == '.' then '_' else x) var
 
-updatePreficesExpr :: VarName -> Expr -> Expr
-updatePreficesExpr prefix expr =
+updatePreficesExpr :: (S.Set String) -> VarName -> Expr -> Expr
+updatePreficesExpr fullTablePaths prefix expr =
     case expr of
-        Power x c        -> Power (updatePrefices prefix x) c
-        PowerLN x c      -> PowerLN (updatePrefices prefix x) c
-        Exp c x          -> Exp c (updatePrefices prefix x)
-        Sigmoid a c x    -> Sigmoid a c (updatePrefices prefix x)
-        Tauoid a c x     -> Tauoid a c (updatePrefices prefix x)
+        Power x c        -> Power (updatePrefices fullTablePaths prefix x) c
+        PowerLN x c      -> PowerLN (updatePrefices fullTablePaths prefix x) c
+        Exp c x          -> Exp c (updatePrefices fullTablePaths prefix x)
+        Sigmoid a c x    -> Sigmoid a c (updatePrefices fullTablePaths prefix x)
+        Tauoid a c x     -> Tauoid a c (updatePrefices fullTablePaths prefix x)
         Const c          -> Const c
-        ScaleNorm a x    -> ScaleNorm a (updatePrefices prefix x)
-        ZeroSens x       -> ZeroSens (updatePrefices prefix x)
-        L p xs           -> L p $ map (updatePrefices prefix) xs
-        LInf xs          -> LInf $ map (updatePrefices prefix) xs
-        Prod xs          -> Prod $ map (updatePrefices prefix) xs
-        Min xs           -> Min $ map (updatePrefices prefix) xs
-        Max xs           -> Max $ map (updatePrefices prefix) xs
-        Sump p xs        -> Sump p $ map (updatePrefices prefix) xs
-        SumInf xs        -> SumInf $ map (updatePrefices prefix) xs
-        Sum xs           -> Sum $ map (updatePrefices prefix) xs
-        Id  x            -> Id (updatePrefices prefix x)
+        ScaleNorm a x    -> ScaleNorm a (updatePrefices fullTablePaths prefix x)
+        ZeroSens x       -> ZeroSens (updatePrefices fullTablePaths prefix x)
+        L p xs           -> L p $ map (updatePrefices fullTablePaths prefix) xs
+        LInf xs          -> LInf $ map (updatePrefices fullTablePaths prefix) xs
+        Prod xs          -> Prod $ map (updatePrefices fullTablePaths prefix) xs
+        Min xs           -> Min $ map (updatePrefices fullTablePaths prefix) xs
+        Max xs           -> Max $ map (updatePrefices fullTablePaths prefix) xs
+        Sump p xs        -> Sump p $ map (updatePrefices fullTablePaths prefix) xs
+        SumInf xs        -> SumInf $ map (updatePrefices fullTablePaths prefix) xs
+        Sum xs           -> Sum $ map (updatePrefices fullTablePaths prefix) xs
+        Id  x            -> Id (updatePrefices fullTablePaths prefix x)
 
-updatePreficesTableExpr :: VarName -> TableExpr -> TableExpr
-updatePreficesTableExpr prefix expr =
+updatePreficesTableExpr :: (S.Set String) -> VarName -> TableExpr -> TableExpr
+updatePreficesTableExpr fullTablePaths prefix expr =
     case expr of
-        SelectProd x     -> SelectProd     (updatePrefices prefix x)
-        SelectMin x      -> SelectMin      (updatePrefices prefix x)
-        SelectMax x      -> SelectMax      (updatePrefices prefix x)
-        SelectL p x      -> SelectL p      (updatePrefices prefix x)
-        SelectSump p x   -> SelectSump p   (updatePrefices prefix x)
-        SelectSumInf x   -> SelectSumInf   (updatePrefices prefix x)
-        SelectSum  x     -> SelectSum      (updatePrefices prefix x)
-        SelectCount x    -> SelectCount    (updatePrefices prefix x)
-        SelectDistinct x -> SelectDistinct (updatePrefices prefix x)
-        Select x         -> Select         (updatePrefices prefix x)
-        Filt a x c       -> Filt a         (updatePrefices prefix x) c
-        FiltNeg a x c    -> FiltNeg a      (updatePrefices prefix x) c
-        Filter x         -> Filter         (updatePrefices prefix x)
+        SelectProd x     -> SelectProd     (updatePrefices fullTablePaths prefix x)
+        SelectMin x      -> SelectMin      (updatePrefices fullTablePaths prefix x)
+        SelectMax x      -> SelectMax      (updatePrefices fullTablePaths prefix x)
+        SelectL p x      -> SelectL p      (updatePrefices fullTablePaths prefix x)
+        SelectSump p x   -> SelectSump p   (updatePrefices fullTablePaths prefix x)
+        SelectSumInf x   -> SelectSumInf   (updatePrefices fullTablePaths prefix x)
+        SelectSum  x     -> SelectSum      (updatePrefices fullTablePaths prefix x)
+        SelectCount x    -> SelectCount    (updatePrefices fullTablePaths prefix x)
+        SelectDistinct x -> SelectDistinct (updatePrefices fullTablePaths prefix x)
+        Select x         -> Select         (updatePrefices fullTablePaths prefix x)
+        Filt a x c       -> Filt a         (updatePrefices fullTablePaths prefix x) c
+        FiltNeg a x c    -> FiltNeg a      (updatePrefices fullTablePaths prefix x) c
+        Filter x         -> Filter         (updatePrefices fullTablePaths prefix x)
 
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa
@@ -449,4 +453,45 @@ pairwiseDisjoint [] = True
 pairwiseDisjoint (vs:vss) =
     let n = length $ filter (\vs' -> not (S.null (S.intersection vs vs'))) vss in
     if (n == 0) then pairwiseDisjoint vss else False
+
+-- converts expressions to Strings that can be read as a part of SQL query
+exprToString :: [String] -> B.Expr -> String
+exprToString colnames expr =
+
+    case expr of
+        B.PowerLN x c      -> "(" ++ z ++ " ^ " ++ show c ++ ")" where z = colnames !! x
+        B.Power x c        -> "(" ++ z ++ " ^ " ++ show c ++ ")" where z = colnames !! x
+        B.ComposePower e c -> "(" ++ z ++ " ^ " ++ show c ++ ")" where z = exprToString colnames e
+        B.Exp c x          -> "exp(" ++ show c ++ " * " ++ z ++ ")" where z = colnames !! x
+        B.ComposeExp c e   -> "exp(" ++ show c ++ " * " ++ z ++ ")" where z = exprToString colnames e
+        B.Sigmoid a c x        -> "exp(" ++ z ++ ") / (exp(" ++ z ++ ") + 1)" where z = show a ++ " * (" ++ (colnames !! x) ++ " - " ++ show c ++ ")"
+        B.ComposeSigmoid a c e -> "exp(" ++ z ++ ") / (exp(" ++ z ++ ") + 1)" where z = show a ++ " * (" ++ (exprToString colnames e) ++ " - " ++ show c ++ ")"
+        B.Tauoid a c x         -> "2 / (exp(" ++ z ++ ") + exp(-" ++ z ++ "))" where z = show a ++ " * (" ++ (colnames !! x) ++ " - " ++ show c ++ ")"
+        B.ComposeTauoid a c e  -> "2 / (exp(" ++ z ++ ") + exp(-" ++ z ++ "))" where z = show a ++ " * (" ++ (exprToString colnames e) ++ " - " ++ show c ++ ")"
+        B.Const c          -> show c
+        B.ScaleNorm a e    -> exprToString colnames e
+        B.ZeroSens e       -> exprToString colnames e
+        B.L p xs           -> "("    ++ intercalate " + " (map (\x -> (colnames !! x) ++ "^" ++ show p) xs) ++ ")^" ++ show (1/p)
+        B.LInf xs          -> "greatest(" ++ intercalate " + " (map (\x -> "abs(" ++ (colnames !! x) ++ ")") xs) ++ ")"
+        B.Prec ar          -> show $ B.fx ar
+
+        B.ComposeL p es    -> "(" ++ intercalate " + " (map (\e -> (exprToString colnames e) ++ "^" ++ show p) es) ++ ")^" ++ show (1/p)
+        B.Prod es          -> intercalate " * " $ map (exprToString colnames) es
+        B.Prod2 es         -> intercalate " * " $ map (exprToString colnames) es
+        B.Min es           -> "least(" ++ (intercalate ", " $ map (exprToString colnames) es) ++ ")"
+        B.Max es           -> "greatest(" ++ (intercalate ", " $ map (exprToString colnames) es) ++ ")"
+        B.Sump p es        -> intercalate " + " $ map (exprToString colnames) es
+        B.SumInf es        -> intercalate " + " $ map (exprToString colnames) es
+        B.Sum2 es          -> intercalate " + " $ map (exprToString colnames) es
+
+-- if an expression does not contain sensitive variables (a public filter), we do not need to use sigmoids
+pubExprToString :: [String] -> B.Expr -> String
+pubExprToString colnames expr =
+
+    case expr of
+        B.Sigmoid a c x        -> "(" ++ z ++ " < " ++ show c where z = colnames !! x
+        B.ComposeSigmoid a c e -> "(" ++ z ++ " < " ++ show c where z = exprToString colnames e
+        B.Tauoid a c x         -> "(" ++ z ++ " = " ++ show c where z = colnames !! x
+        B.ComposeTauoid a c e  -> "(" ++ z ++ " = " ++ show c where z = exprToString colnames e
+        _                      -> exprToString colnames expr
 

@@ -65,6 +65,11 @@ readDB dbFileName = do
     let table    = readDoubles (foldr (\x y -> x ++ "\n" ++ y) "" ls)
     return (varNames, table)
 
+filterExprToString :: (M.Map VarName B.Var) -> S.Set B.Var -> [String] -> Function -> String
+filterExprToString inputMap sensitiveCols colnames filterFun =
+    let (_,expr) = query2Expr inputMap sensitiveCols filterFun in
+    exprToString colnames expr
+
 query2Expr :: (M.Map VarName B.Var) -> (S.Set B.Var) -> Function -> (S.Set B.Var, B.Expr)
 query2Expr inputMap sensitiveColSet (F asgnMap y) =
     let x = extractArg y in
@@ -240,20 +245,25 @@ deriveExprNorm debug usePrefices inputMap sensitiveCols dbNormTableAliases dbNor
     traceIfDebug debug ("----------------") $
     adjustedQuery
 
-
-filteredExpr :: (M.Map VarName B.Var) -> S.Set B.Var -> [Function] -> [Function] -> ([Function], String)
-filteredExpr inputMap sensitiveCols filterFuns queryFuns =
+filteredExpr :: [VarName] -> (M.Map VarName B.Var) -> S.Set B.Var -> [Function] -> [Function] -> ([Function], [Function])
+filteredExpr colnames inputMap sensitiveCols filterFuns queryFuns =
 
     -- collect sensitive variables used by each filter, compute all values upon which a filter makes its decision about a row
-    let (filterSensVars, filterExprs) = unzip $ map (query2Expr inputMap sensitiveCols) filterFuns in
-    applyFilters "" queryFuns filterFuns filterSensVars
+    let (filterSensVars, _) = unzip $ map (query2Expr inputMap sensitiveCols) filterFuns in
+    applyFilters [] queryFuns filterFuns filterSensVars
+
+joinWithSensRowTable :: TableAlias -> TableName -> String
+joinWithSensRowTable tableAlias tableName =
+    let alias = if tableName == tableAlias then "" else " AS " ++ tableAlias in
+    tableName ++ " JOIN " ++ tableName ++ "_sensRows ON " ++ tableName ++ ".ID = " ++ tableName ++ "_sensRows.ID" ++ alias
 
 -- construct input for multitable Banach analyser
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
-inputWrtEachTable   :: Bool -> Bool -> [TableAlias] -> B.Expr -> B.Expr -> B.TableExpr ->
-                      (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> [(TableName, B.TableExpr, B.TableExpr,B.TableExpr)]
-inputWrtEachTable _ _ [] _ _ _ _ _ = []
-inputWrtEachTable debug usePrefices (tableAlias : ts) minmaxQueryExpr queryExpr queryAggr inputMap tableMap =
+inputWrtEachTable   :: Bool -> Bool -> [VarName] -> (M.Map VarName B.Var) ->
+                       [TableAlias] -> Function -> [Function] -> (M.Map TableAlias TableData) ->
+                       [(TableName, B.TableExpr, B.TableExpr,B.TableExpr, String)]
+inputWrtEachTable _ _ _ _ [] _ _ _ = []
+inputWrtEachTable debug usePrefices colNames inputMap (tableAlias : ts) queryFun filterFuns tableMap =
 
     let tableData     = tableMap ! tableAlias in
 
@@ -262,19 +272,36 @@ inputWrtEachTable debug usePrefices (tableAlias : ts) minmaxQueryExpr queryExpr 
     let tableSensVars = getSensitiveCols tableData in
     let tableSensCols = S.fromList $ map (inputMap ! ) tableSensVars in
 
-    let newQueryExpr = snd $ markExprCols      tableSensCols queryExpr in
-    let newQueryAggr =       markTableExprCols tableSensCols queryAggr in
+    -- now we know which variables are sensitive and may apply the filter
+    let (filtQueryFuns, pubFilterFuns) = filteredExpr colNames inputMap tableSensCols filterFuns [queryFun] in
+
+    -- now transform the main query to a banach expression
+    let filtQueryFun = head filtQueryFuns in
+    let queryExpr    = snd $ query2Expr inputMap tableSensCols filtQueryFun in
+    let queryAggr    = queryExprAggregate filtQueryFun queryExpr in
+    let queryFilter  = map (pubExprToString colNames . snd . query2Expr inputMap tableSensCols) pubFilterFuns in
 
     -- these subqueries are needed to compute aggregates that will be used for _filtered_ MIN and MAX
-    let minmaxNewQueryExpr = snd $ markExprCols      tableSensCols minmaxQueryExpr in
-    let minQueryAggr       = B.SelectMin [minmaxNewQueryExpr] in
-    let maxQueryAggr       = B.SelectMax [minmaxNewQueryExpr] in
+    let minQueryAggr       = B.SelectMin [queryExpr] in
+    let maxQueryAggr       = B.SelectMax [queryExpr] in
 
-    let adjustedMinQuery = deriveExprNorm debug usePrefices inputMap tableSensCols [tableAlias] [tableNorm] minmaxNewQueryExpr minQueryAggr in
-    let adjustedMaxQuery = deriveExprNorm debug usePrefices inputMap tableSensCols [tableAlias] [tableNorm] minmaxNewQueryExpr maxQueryAggr in
+    let adjustedMinQuery = deriveExprNorm debug usePrefices inputMap tableSensCols [tableAlias] [tableNorm] queryExpr minQueryAggr in
+    let adjustedMaxQuery = deriveExprNorm debug usePrefices inputMap tableSensCols [tableAlias] [tableNorm] queryExpr maxQueryAggr in
 
-    let adjustedQuery    = deriveExprNorm debug usePrefices inputMap tableSensCols [tableAlias] [tableNorm] newQueryExpr newQueryAggr in
-    (tableName, adjustedQuery, adjustedMinQuery, adjustedMaxQuery) : inputWrtEachTable debug usePrefices ts minmaxQueryExpr queryExpr queryAggr inputMap tableMap
+    let adjustedQuery    = deriveExprNorm debug usePrefices inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
+
+    -- the query will also take into account sensitive rows of the current sensitive table
+    --let uniqueInputTableNames = S.toList $ S.fromList (map getTableName (M.elems tableMap)) in
+    let usedTables    = map (\(x,y) -> let z = getTableName y in if x == z then z else z ++ " AS " ++ x) (M.toList tableMap) in
+    let sensRowTable  = tableName ++ "_sensRows" in
+    let sensRowFilter = tableName ++ "_sensRows.ID = " ++ tableAlias ++ ".ID" in
+
+    -- a query that creates the large croos product table
+    let selectStatement = "SELECT " ++ intercalate ", " colNames in
+    let fromStatement   = " FROM "  ++ intercalate ", "    usedTables  ++ ", "    ++ sensRowTable in
+    let whereStatement  = " WHERE " ++ intercalate " AND " queryFilter ++ " AND " ++ sensRowFilter in
+    let sqlQuery = selectStatement ++ fromStatement ++ whereStatement in
+    (tableName, adjustedQuery, adjustedMinQuery, adjustedMaxQuery,sqlQuery) : inputWrtEachTable debug usePrefices colNames inputMap ts queryFun filterFuns tableMap
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
 -- we use the structure that marks all insensitive entries with '-1'
@@ -296,10 +323,10 @@ traceIOIfDebug debug msg = do
     if debug then traceIO msg
     else return ()
 
-updateVariableNames :: TableAlias -> Function -> Function
-updateVariableNames prefix (F as b) =
-    let as' = M.map (updatePreficesExpr prefix) $ M.mapKeys (updatePrefices prefix) as in
-    let b'  = updatePreficesTableExpr prefix b in
+updateVariableNames :: (S.Set String) -> TableAlias -> Function -> Function
+updateVariableNames fullTablePaths prefix (F as b) =
+    let as' = M.map (updatePreficesExpr fullTablePaths prefix) $ M.mapKeys (updatePrefices fullTablePaths prefix) as in
+    let b'  = updatePreficesTableExpr fullTablePaths prefix b in
     F as' b'
 
 -- puts nested non-aggregating queries directly into the last query to get one big query
@@ -336,13 +363,13 @@ processQuery outputTableName queryMap taskName tableAlias tableName =
         let subFiltFuns   = concat subFiltFuns'  in
 
         -- add the current table alias as a prefix to all variables in all queries and filters
-        let prefix = if tableAlias == outputTableName then "" else tableAlias ++ "." in
+        let prefix = if tableAlias == outputTableName then "" else tableAlias ++ "_" in
+        let fullTablePaths = S.fromList tableAliases in
+        let newQueryFuns    = map (updateVariableNames fullTablePaths prefix) queryFuns in
+        let newFilterFuns   = map (updateVariableNames fullTablePaths prefix) filterFuns in
 
-        let newQueryFuns    = map (updateVariableNames prefix) queryFuns in
-        let newFilterFuns   = map (updateVariableNames prefix) filterFuns in
-
-        let newSubQueryFuns = map (updateVariableNames prefix) subQueryFuns in
-        let newSubFiltFuns  = map (updateVariableNames prefix) subFiltFuns in
+        let newSubQueryFuns = map (updateVariableNames fullTablePaths prefix) subQueryFuns in
+        let newSubFiltFuns  = map (updateVariableNames fullTablePaths prefix) subFiltFuns in
 
         -- put all subquery funs and all filters together with the current query's funs and filters
         let outputQueryFuns = mergeQueryFuns newQueryFuns newSubQueryFuns in

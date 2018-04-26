@@ -9,6 +9,7 @@ import qualified Prelude as P
 import qualified Data.List as L
 import Prelude hiding (fromInteger,fromRational,(!!),(+),(-),(*),(/),(**),(==),(/=),(<=),(>=),(<),(>),exp,abs,sum,product,minimum,maximum)
 import Data.List hiding ((!!),sum,product,minimum,maximum)
+import Data.List.Split
 import Text.Printf
 import Control.Monad
 
@@ -486,13 +487,15 @@ analyzeTableExprQ fr wh colNames te =
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) = analyzeTableExpr colNames te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta)
 
-performAnalyses :: ProgramOptions -> [String] -> String -> Double -> [(String,[Int])] -> [(String, [Int], TableExpr)] -> IO ()
-performAnalyses args colNames outputTableName qr taskMap tableExprData = do
+performAnalyses :: ProgramOptions -> [String] -> [(String, TableExpr, String)] -> IO ()
+performAnalyses args colNames tableExprData = do
   let debug = not (alternative args)
-  let (tableNames,_,_) = unzip3 tableExprData
-  let fromPart = intercalate ", " tableNames
-  let wherePart = ""
-  forM_ tableExprData $ \ (tableName, cs, te) -> do
+  --let (tableNames,_,_) = unzip3 tableExprData
+  --let fromPart = intercalate ", " tableNames
+  --let wherePart = ""
+  forM_ tableExprData $ \ (tableName, te, sqlQuery) -> do
+    let [_, fromWhere] = splitOn " FROM " sqlQuery
+    let [fromPart, wherePart] = splitOn " WHERE " fromWhere
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="

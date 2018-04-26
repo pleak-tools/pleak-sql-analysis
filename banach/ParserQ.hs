@@ -1,4 +1,4 @@
-module Parser where
+module ParserQ where
 
 import System.Environment
 import System.IO.Unsafe

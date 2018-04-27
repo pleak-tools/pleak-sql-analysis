@@ -489,9 +489,9 @@ pubExprToString :: [String] -> B.Expr -> String
 pubExprToString colnames expr =
 
     case expr of
-        B.Sigmoid a c x        -> "(" ++ z ++ " < " ++ show c where z = colnames !! x
-        B.ComposeSigmoid a c e -> "(" ++ z ++ " < " ++ show c where z = exprToString colnames e
-        B.Tauoid a c x         -> "(" ++ z ++ " = " ++ show c where z = colnames !! x
-        B.ComposeTauoid a c e  -> "(" ++ z ++ " = " ++ show c where z = exprToString colnames e
+        B.Sigmoid a c x        -> "(" ++ z ++ " < " ++ show c ++ ")" where z = colnames !! x
+        B.ComposeSigmoid a c e -> "(" ++ z ++ " < " ++ show c ++ ")" where z = exprToString colnames e
+        B.Tauoid a c x         -> "(" ++ z ++ " = " ++ show c ++ ")" where z = colnames !! x
+        B.ComposeTauoid a c e  -> "(" ++ z ++ " = " ++ show c ++ ")" where z = exprToString colnames e
         _                      -> exprToString colnames expr
 

@@ -3,7 +3,9 @@
 module BanachQ where
 
 import Banach (Expr(..), TableExpr(..), (!!), chooseBeta, chooseBetaCustom, gamma, dualnorm, skipith)
+import qualified Banach as B
 import ProgramOptions
+import CreateTablesQ
 
 import qualified Prelude as P
 import qualified Data.List as L
@@ -193,8 +195,15 @@ instance Show SmoothUpperBound where
 data AnalysisResult = AR {
   fx :: ExprQ,             -- value of the analyzed function (f(x))
   subf :: SmoothUpperBound, -- smooth upper bound of the absolute value of the analyzed function itself
-  sdsf :: SmoothUpperBound} -- smooth upper bound of the derivative sensitivity of the analyzed function
+  sdsf :: SmoothUpperBound, -- smooth upper bound of the derivative sensitivity of the analyzed function
+  gsens :: Double}          -- (upper bound on) global sensitivity of the analyzed function, may be infinity
   deriving Show
+
+infinity :: Double
+infinity = 1/0
+
+aR :: AnalysisResult
+aR = AR {gsens = infinity}
 
 chooseSUBBeta :: Double -> Maybe Double -> SmoothUpperBound -> Double
 chooseSUBBeta defaultBeta fixedBeta (SUB g beta0) =
@@ -235,71 +244,115 @@ analyzeExpr row expr = res where
     Power i r ->
       let x = row !! i
       in if r == 1
-           then AR {fx = x,
+           then aR {fx = x,
                     subf = SUB (\ beta -> ifThenElse (abs x >= 1 / beta) (abs x) (exp (beta * abs x - 1) / beta)) 0,
-                    sdsf = SUB (const (Q 1)) 0}
+                    sdsf = SUB (const (Q 1)) 0,
+                    gsens = 1}
            else if r >= 1
              then if x > 0
-                   then AR {fx = x ** r,
+                   then aR {fx = x ** r,
                             subf = SUB (\ beta -> ifThenElse (x >= r/beta) (x ** r) (exp (beta*x - r) * (r/beta)**r)) 0,
                             sdsf = SUB (\ beta -> ifThenElse (x >= (r-1)/beta) (r * x**(r-1)) (r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1))) 0}
                    else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
              else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
+    ComposePower e1 r ->
+      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) _ = analyzeExpr row e1
+          beta3 = (r-1)*beta1 + beta2
+          b1 = if beta3 > 0 then beta1 / beta3 else 1/r
+          b2 = if beta3 > 0 then beta2 / beta3 else 1/r
+      in if r >= 1
+           then if gx > 0
+                 then AR {fx = gx ** r,
+                          subf = SUB (\ beta -> subf1g (beta / r) ** r) (r*beta1),
+                          sdsf = SUB (\ beta -> r * (subf1g (b1 * beta))**(r-1) * sdsf1g (b2 * beta)) beta3}
+                 else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
+           else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
     Exp r i ->
       let x = row !! i
-      in AR {fx = exp (r * x),
+      in aR {fx = exp (r * x),
              subf = SUB (const $ exp (r * x)) (abs r),
              sdsf = SUB (const $ abs r * exp (r * x)) (abs r)}
+    ComposeExp r e1 ->
+      let AR gx _ (SUB sdsf1g beta2) gsens = analyzeExpr row e1
+          b = gsens
+          f_x = exp (r * gx)
+      in AR {fx = f_x,
+             subf = SUB (const f_x) (abs r * b),
+             sdsf = SUB (\ beta -> abs r * f_x * sdsf1g (beta - abs r * b)) (abs r * b + beta2)}
     Sigmoid a c i ->
       let x = row !! i
           y = exp (a * (x - c))
           z = y / (y + 1)
           a' = abs a
-      in AR {fx = z,
+      in aR {fx = z,
              subf = SUB (const z) a',
              sdsf = SUB (const $ a' * y / (y+1)**2) a'}
+    ComposeSigmoid a c e1 ->
+      let AR gx _ (SUB sdsf1g beta2) gsens = analyzeExpr row e1
+          b = gsens
+          y = exp (a * (gx - c))
+          z = y / (y + 1)
+          a' = abs a
+      in AR {fx = z,
+             subf = SUB (const z) (a' * b),
+             sdsf = SUB (\ beta -> a' * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
     Tauoid a c i ->
       let x = row !! i
           y1 = exp ((-a) * (x - c))
           y2 = exp (a * (x - c))
           z = 2 / (y1 + y2)
           a' = abs a
-      in AR {fx = z,
+      in aR {fx = z,
              subf = SUB (const z) a',
              sdsf = SUB (const $ a' * z) a'}
+    ComposeTauoid a c e1 ->
+      let AR gx _ (SUB sdsf1g beta2) gsens = analyzeExpr row e1
+          b = gsens
+          y1 = exp ((-a) * (gx - c))
+          y2 = exp (a * (gx - c))
+          z = 2 / (y1 + y2)
+          a' = abs a
+      in aR {fx = z,
+             subf = SUB (const z) (a' * b),
+             sdsf = SUB (\ beta -> a' * z * sdsf1g (beta - a' * b)) (a' * b + beta2)}
     PowerLN i r ->
       let x = row !! i
       in if x > 0
-           then AR {fx = x ** r,
+           then aR {fx = x ** r,
                     subf = SUB (const $ x ** r) (abs r),
                     sdsf = SUB (const $ abs r * x ** r) (abs r)}
            else error "analyzeExpr/PowerLN: condition (x > 0) not satisfied"
     Const c ->
-      AR {fx = Q c,
+      aR {fx = Q c,
           subf = SUB (const (Q $ abs c)) 0,
-          sdsf = SUB (const (Q 0)) 0}
+          sdsf = SUB (const (Q 0)) 0,
+          gsens = 0}
     ScaleNorm a e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) = analyzeExpr row e1
-      in AR {fx = fx1,
+      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gsens = analyzeExpr row e1
+      in aR {fx = fx1,
              subf = SUB (\ beta -> subf1g (beta*a)) (subf1beta/a),
-             sdsf = SUB (\ beta -> sdsf1g (beta*a) / a) (sdsf1beta/a)}
+             sdsf = SUB (\ beta -> sdsf1g (beta*a) / a) (sdsf1beta/a),
+             gsens = gsens/a}
     ZeroSens e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) = analyzeExpr row e1
-      in AR {fx = fx1,
+      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) _ = analyzeExpr row e1
+      in aR {fx = fx1,
              subf = SUB (const fx1) 0,
-             sdsf = SUB (const (Q 0)) 0}
+             sdsf = SUB (const (Q 0)) 0,
+             gsens = 0}
     L p is ->
       let xs = map (row !!) is
           y = lpnorm p xs
-      in AR {fx = y,
+      in aR {fx = y,
              subf = SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
-             sdsf = SUB (const (Q 1)) 0}
+             sdsf = SUB (const (Q 1)) 0,
+             gsens = 1}
     LInf is ->
       let xs = map (row !!) is
           y = linfnorm xs
-      in AR {fx = y,
+      in aR {fx = y,
              subf = SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
-             sdsf = SUB (const (Q 1)) 0}
+             sdsf = SUB (const (Q 1)) 0,
+             gsens = 1}
     Prod es -> combineArsProd $ map (analyzeExpr row) es
     Prod2 es -> combineArsProd2 $ map (analyzeExpr row) es
     Min es -> combineArsMin $ map (analyzeExpr row) es
@@ -320,7 +373,7 @@ combineArsProd ars =
       sdsgs = map subg sdsfs
       n = length ars
       c i beta = let s = ((sdsgs !! i) beta) in if s == 0 then Q 0 else s * product (map ($ beta) $ skipith i subgs)
-  in AR {fx = product fxs,
+  in aR {fx = product fxs,
          subf = SUB (\ beta -> product (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> linfnorm (map (\ i -> c i beta) [round 0..n P.- round 1])) (maximum (subfBetas ++ sdsfBetas))}
 
@@ -337,7 +390,7 @@ combineArsProd2 ars =
       divByn :: Double -> Double
       divByn x = x / (fromIntegral n :: Double)
       c i beta = ((sdsgs !! i) (divByn beta)) * product (map ($ (divByn beta)) $ skipith i subgs)
-  in AR {fx = product fxs,
+  in aR {fx = product fxs,
          subf = SUB (\ beta -> product (map ($ (divByn beta)) subgs)) (sum subfBetas),
          sdsf = SUB (\ beta -> sum (map (\ i -> c i beta) [round 0..n P.- round 1])) (sum subfBetas + maximum (zipWith (-) sdsfBetas subfBetas))}
 
@@ -350,13 +403,13 @@ combineArsMin ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
-  in AR {fx = minimum fxs,
+  in aR {fx = minimum fxs,
          subf = SUB (\ beta -> minimum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
 combineArsMinT :: AnalysisResult -> AnalysisResult
 combineArsMinT ar =
-  AR {fx = minimumT (fx ar),
+  aR {fx = minimumT (fx ar),
       subf = SUB (\ beta -> minimumT (subg (subf ar) beta)) (subBeta (subf ar)),
       sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
@@ -369,13 +422,13 @@ combineArsMax ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
-  in AR {fx = maximum fxs,
+  in aR {fx = maximum fxs,
          subf = SUB (\ beta -> maximum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
 combineArsMaxT :: AnalysisResult -> AnalysisResult
 combineArsMaxT ar =
-  AR {fx = maximumT (fx ar),
+  aR {fx = maximumT (fx ar),
       subf = SUB (\ beta -> maximumT (subg (subf ar) beta)) (subBeta (subf ar)),
       sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
@@ -388,13 +441,15 @@ combineArsL p ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
-  in AR {fx = lpnorm p fxs,
+      gsenss = map gsens ars
+  in aR {fx = lpnorm p fxs,
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gsens = maximum gsenss}
 
 combineArsLT :: Double -> AnalysisResult -> AnalysisResult
 combineArsLT p ar =
-  AR {fx = lpnormT p (fx ar),
+  aR {fx = lpnormT p (fx ar),
       subf = SUB (\ beta -> lpnormT p (subg (subf ar) beta)) (subBeta (subf ar)),
       sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
@@ -408,13 +463,15 @@ combineArsLpInf p ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
-  in AR {fx = lpnorm p fxs,
+      gsenss = map gsens ars
+  in aR {fx = lpnorm p fxs,
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gsens = B.lpnorm 1 gsenss}
 
 combineArsLpInfT :: Double -> AnalysisResult -> AnalysisResult
 combineArsLpInfT p ar =
-  AR {fx = lpnormT p (fx ar),
+  aR {fx = lpnormT p (fx ar),
       subf = SUB (\ beta -> lpnormT p (subg (subf ar) beta)) (subBeta (subf ar)),
       sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
@@ -427,13 +484,15 @@ combineArsSump p ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
-  in AR {fx = sum fxs,
+      gsenss = map gsens ars
+  in aR {fx = sum fxs,
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> lqnorm p (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> lqnorm p (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gsens = B.lqnorm p gsenss}
 
 combineArsSumpT :: Double -> AnalysisResult -> AnalysisResult
 combineArsSumpT p ar =
-  AR {fx = sumT (fx ar),
+  aR {fx = sumT (fx ar),
       subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
       sdsf = SUB (\ beta -> lqnormT p (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
@@ -446,13 +505,15 @@ combineArsSumInf ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
-  in AR {fx = sum fxs,
+      gsenss = map gsens ars
+  in aR {fx = sum fxs,
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gsens = B.lpnorm 1 gsenss}
 
 combineArsSumInfT :: AnalysisResult -> AnalysisResult
 combineArsSumInfT ar =
-  AR {fx = sumT (fx ar),
+  aR {fx = sumT (fx ar),
       subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
       sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
@@ -465,7 +526,7 @@ combineArsSum2 ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
-  in AR {fx = sum fxs,
+  in aR {fx = sum fxs,
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
@@ -484,13 +545,19 @@ analyzeTableExpr cols te =
 -- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
 analyzeTableExprQ :: String -> String -> [String] -> TableExpr -> AnalysisResult
 analyzeTableExprQ fr wh colNames te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) = analyzeTableExpr colNames te
-  in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta)
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gsens = analyzeTableExpr colNames te
+  in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gsens
 
 performAnalyses :: ProgramOptions -> [String] -> [(String, TableExpr, String)] -> IO ()
 performAnalyses args colNames tableExprData = do
   let debug = not (alternative args)
-  --let (tableNames,_,_) = unzip3 tableExprData
+  let (tableNames,_,_) = unzip3 tableExprData
+  let uniqueTableNames = nub tableNames
+  when debug $ putStrLn "================================="
+  when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
+  forM_ uniqueTableNames (\ t -> createTableSql t >>= putStr)
+  when debug $ putStrLn "================================="
+  when debug $ putStrLn "Generating SQL queries for computing the analysis results:"
   --let fromPart = intercalate ", " tableNames
   --let wherePart = ""
   forM_ tableExprData $ \ (tableName, te, sqlQuery) -> do

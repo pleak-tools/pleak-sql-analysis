@@ -13,8 +13,6 @@ main = do
   if generateQueries args
     then do
       (colNames,tableExprData) <- PQ.getBanachAnalyserInput debug (inputFp args)
-      when debug $ putStrLn "================================="
-      when debug $ putStrLn "Generating SQL queries for computing the analysis results:"
       BQ.performAnalyses args colNames tableExprData
     else do
       (outputTableName,qr,table,taskMap,tableExprData,colNames) <- P.getBanachAnalyserInput debug (inputFp args)

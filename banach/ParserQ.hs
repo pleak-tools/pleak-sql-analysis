@@ -716,7 +716,7 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug $ "----------------"
     
     --bring the input to the form [(String, String, [Int], TableExpr)]
-    let dataWrtEachTable = inputWrtEachTable debug usePrefices inputVarList inputMap inputTableAliases outputQueryFun outputFilterFuns inputTableMap
+    let dataWrtEachTable = inputWrtEachTable debug usePrefices inputVarList inputMap sensitiveColSet inputTableAliases outputQueryFun outputFilterFuns inputTableMap
     let (allTableNames, allQueries, minQueries, maxQueries, sqlQueries) = unzip5 dataWrtEachTable
 
     -- TODO how we compute these using an actual database?

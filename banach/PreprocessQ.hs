@@ -259,11 +259,11 @@ joinWithSensRowTable tableAlias tableName =
 
 -- construct input for multitable Banach analyser
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
-inputWrtEachTable   :: Bool -> Bool -> [VarName] -> (M.Map VarName B.Var) ->
+inputWrtEachTable   :: Bool -> Bool -> [VarName] -> (M.Map VarName B.Var) -> (S.Set B.Var) ->
                        [TableAlias] -> Function -> [Function] -> (M.Map TableAlias TableData) ->
                        [(TableName, B.TableExpr, B.TableExpr,B.TableExpr, String)]
-inputWrtEachTable _ _ _ _ [] _ _ _ = []
-inputWrtEachTable debug usePrefices colNames inputMap (tableAlias : ts) queryFun filterFuns tableMap =
+inputWrtEachTable _ _ _ _ _ [] _ _ _ = []
+inputWrtEachTable debug usePrefices colNames inputMap sensitiveColSet (tableAlias : ts) queryFun filterFuns tableMap =
 
     let tableData     = tableMap ! tableAlias in
 
@@ -272,10 +272,10 @@ inputWrtEachTable debug usePrefices colNames inputMap (tableAlias : ts) queryFun
     let tableSensVars = getSensitiveCols tableData in
     let tableSensCols = S.fromList $ map (inputMap ! ) tableSensVars in
 
-    -- now we know which variables are sensitive and may apply the filter
-    let (filtQueryFuns, pubFilterFuns) = filteredExpr colNames inputMap tableSensCols filterFuns [queryFun] in
+    -- we filter out rows using globally public filters, since different filterings would be bad for combined sensitivity over all tables
+    let (filtQueryFuns, pubFilterFuns) = filteredExpr colNames inputMap sensitiveColSet filterFuns [queryFun] in
 
-    -- now transform the main query to a banach expression
+    -- now transform the main query to a banach expression, now it is fine to use only the current table's sensitive columns
     let filtQueryFun = head filtQueryFuns in
     let queryExpr    = snd $ query2Expr inputMap tableSensCols filtQueryFun in
     let queryAggr    = queryExprAggregate filtQueryFun queryExpr in
@@ -301,7 +301,7 @@ inputWrtEachTable debug usePrefices colNames inputMap (tableAlias : ts) queryFun
     let fromStatement   = " FROM "  ++ intercalate ", "    usedTables  ++ ", "    ++ sensRowTable in
     let whereStatement  = " WHERE " ++ intercalate " AND " (queryFilter ++ [sensRowFilter]) in
     let sqlQuery = selectStatement ++ fromStatement ++ whereStatement in
-    (tableName, adjustedQuery, adjustedMinQuery, adjustedMaxQuery,sqlQuery) : inputWrtEachTable debug usePrefices colNames inputMap ts queryFun filterFuns tableMap
+    (tableName, adjustedQuery, adjustedMinQuery, adjustedMaxQuery,sqlQuery) : inputWrtEachTable debug usePrefices colNames inputMap sensitiveColSet ts queryFun filterFuns tableMap
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
 -- we use the structure that marks all insensitive entries with '-1'

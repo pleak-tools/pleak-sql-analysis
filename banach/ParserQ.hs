@@ -10,12 +10,10 @@ import qualified Text.Megaparsec.Char as C
 import qualified Text.Megaparsec.Char.Lexer as L
 --
 import qualified Control.Exception as Exc
-import Control.Monad (void,when)
-import Debug.Trace
+import Control.Monad (void)
 
-import Data.Bits
+import Debug.Trace
 import Data.Char
-import Data.Either
 import Data.List
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -26,14 +24,18 @@ import qualified Banach as B
 import AexprQ
 import ErrorMsg
 import ExprQ
-import NormsQ
-import PreprocessQ
 import QueryQ
+import ReaderQ
 
 -- Define the parser type
 -- 'Void' means 'no custom error messages'
 -- 'String' means 'input comes in form of a String'
 type Parser = Parsec Void String
+
+
+-- we agree that this key will be used for the output query if not specified otherwise
+defaultOutputTableName :: String
+defaultOutputTableName = "output"
 
 ---------------------------------------------------------------------------------------------
 -- TODO: parsing of 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
@@ -538,24 +540,6 @@ blockCommentEnd = "*/"
 ---- Some auxiliary subparsers   ----
 -------------------------------------
 
--- this is to extract the actual parsed data
--- seems very ugly, there should be some easier way to extract data from "Either"
-parseData :: (Parser a) -> (String -> String) -> String -> a
-parseData p err s = 
-    let res = parse p "" s in
-    case res of
-        Left  x -> error $ err (parseErrorPretty x)
-        Right x -> x
-
-parseFromFile :: (Parser a) -> (String -> String -> String) -> String -> IO a
-parseFromFile p err s = fmap (parseData p (err s)) (readInput s)
-
-parseTestFromFile :: (Show a, ShowErrorComponent e) => Parsec e String a -> FilePath -> IO ()
-parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
-
-parseNormFromFile fileName = parseFromFile norm error_parseNorm fileName
-parseSqlQueryFromFile fileName = parseFromFile sqlQueries error_parseSqlQuery fileName
-
 -- a keyword
 keyWord :: String -> Parser ()
 keyWord w = lexeme (C.string w *> notFollowedBy C.alphaNumChar)
@@ -631,116 +615,25 @@ stringAsInt = hash <$> text
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
--- assume that the tables are located in the same place where the query is
-readAllTables :: String -> Bool -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
-readAllTables queryPath usePrefices tableNames tableAliases = do
+--------------------------
+---- Parser embedding ----
+--------------------------
 
-    -- collect all tables and all column names that will be used in our query
-    -- read table sensitivities from corresponding files
-    -- mapM is a standard function [IO a] -> IO [a]
-    let dbData     = mapM (\tableName -> readDB            $ queryPath ++ tableName ++ ".db")  tableNames
-    let dbNormData = mapM (\tableName -> parseNormFromFile $ queryPath ++ tableName ++ ".nrm") tableNames
+-- this is to extract the actual parsed data
+-- seems very ugly, there should be some easier way to extract data from "Either"
+parseData :: (Parser a) -> (String -> String) -> String -> a
+parseData p err s = 
+    let res = parse p "" s in
+    case res of
+        Left  x -> error $ err (parseErrorPretty x)
+        Right x -> x
 
-    (tableColNames,  tableValues)   <- fmap unzip dbData
-    (tableSensitives,tableNormFuns) <- fmap unzip dbNormData
-    let (tableSensitiveRows,tableSensitiveVars) = unzip tableSensitives
+parseFromFile :: (Parser a) -> (String -> String -> String) -> String -> IO a
+parseFromFile p err s = fmap (parseData p (err s)) (readInput s)
 
-    -- we put table names in front of column names
-    let namePrefices = map (\tableAlias -> if usePrefices then tableAlias ++ "." else "") tableAliases
-    let taggedTableColNames = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableColNames
-    let taggedSensitiveVars = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableSensitiveVars
+parseTestFromFile :: (Show a, ShowErrorComponent e) => Parsec e String a -> FilePath -> IO ()
+parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
 
-    -- put all table data together
-    let tableMap = processAllTables tableAliases tableNames taggedTableColNames tableValues tableNormFuns taggedSensitiveVars tableSensitiveRows
-    return (M.fromList tableMap)
-
--- putting everything together
---getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> IO ([String], [(TableName, B.TableExpr,String)])
-getBanachAnalyserInput debug input = do
-
-    let queryPath = reverse $ dropWhile (/= '/') (reverse input)
-
-    -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
-    (outputTableName,queryMap) <- parseSqlQueryFromFile input
-    let usePrefices = True
-
-    -- "query" parses the old format where the query function is computed line by line
-    --let queryMap = M.fromList [(outputTableName,parseQueryFromFile input)]
-    --let usePrefices = False
-
-    -- extract the tables that should be read from input files, take into account copies
-    -- substitute intermediate queries into the aggregated query
-    let (taskNames, inputTableAliases, inputTableNames, outputQueryFuns, outputFilterFuns) = processQuery outputTableName queryMap "" outputTableName outputTableName
-
-    let indexedTaskNames = zip taskNames [0..(length taskNames) - 1]
-    let taskMaps = concat $ map (\(ts,i) -> (map (\t -> (t,[i])) ) ts) indexedTaskNames
-    let taskMap  = M.toList $ M.fromListWith (++) $ filter (\(t,_) -> t /= "") taskMaps
-
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Input table names:   " ++ show inputTableNames
-    traceIOIfDebug debug $ "Input table aliases: " ++ show inputTableAliases
-    traceIOIfDebug debug $ "Task names:          " ++ show taskNames
-    traceIOIfDebug debug $ "Task map:            " ++ show taskMap
-
-    --traceIOIfDebug debug $ "----------------"
-    --traceIOIfDebug debug $ "TableQ " ++ show outputQueryFuns
-    traceIOIfDebug debug $ "TableF " ++ show outputFilterFuns
-
-    -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
-    inputTableMap <- readAllTables queryPath usePrefices inputTableNames inputTableAliases
-
-    -- we assume that each input table has been copied as many times as it is used, and we take the cross product of all resulting tables
-    -- the columns of the cross product are ordered according to the list 'inputTableAliases'
-    let (crossProductTable, sensitiveRowMatrix, inputVarList, sensitiveVarList) = getTableCrossProductData inputTableAliases inputTableMap
-
-    -- assign a unique integer to each column name, which is the order of this column in the cross product table
-    let inputMap        = M.fromList $ zip inputVarList [0..length inputVarList - 1]
-    let sensitiveColSet = S.fromList $ map (inputMap ! ) sensitiveVarList
-
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "All input variables:    " ++ show (M.toList inputMap)
-    traceIOIfDebug debug $ "All sensitive cols:     " ++ show sensitiveColSet
-    traceIOIfDebug debug $ "#rows before filtering: " ++ show (length crossProductTable)
-    --traceIOIfDebug debug $ "Sensitive row matrix:   " ++ show sensitiveRowMatrix
-
-    -- we assume that the output query table has only one column
-    when (length outputQueryFuns > 1) $ error $ error_queryExpr_singleColumn
-    let outputQueryFun  = head outputQueryFuns
-    let outputQueryExpr = snd $ query2Expr inputMap sensitiveColSet outputQueryFun
-
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show outputQueryFun
-    traceIOIfDebug debug $ "Query expr (w/o filter) = " ++ show outputQueryExpr
-    traceIOIfDebug debug $ "Number of Filters:" ++ show (length outputFilterFuns)
-    traceIOIfDebug debug $ "----------------"
-    
-    --bring the input to the form [(String, String, [Int], TableExpr)]
-    let dataWrtEachTable = inputWrtEachTable debug usePrefices inputVarList inputMap sensitiveColSet inputTableAliases outputQueryFun outputFilterFuns inputTableMap
-    let (allTableNames, allQueries, minQueries, maxQueries, sqlQueries) = unzip5 dataWrtEachTable
-
-    -- TODO how we compute these using an actual database?
-    let minExprData    = map (\(x,y) -> B.analyzeTableExpr crossProductTable x y) $ zip sensitiveRowMatrix minQueries
-    let maxExprData    = map (\(x,y) -> B.analyzeTableExpr crossProductTable x y) $ zip sensitiveRowMatrix maxQueries
-    -- replace ARMin and ARMax inside the queries with actual precomputed data
-    let finalTableExpr = (precAggr minExprData maxExprData allQueries)
-
-    -- the first column now always marks sensitive rows
-    let extInputVarList = inputVarList ++ ["sensitive"]
-    let tableExprData = (extInputVarList, zip3 allTableNames finalTableExpr sqlQueries)
-
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "MIN: " ++ show minExprData
-    traceIOIfDebug debug $ "MAX: " ++ show maxExprData
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "queries: " ++ show sqlQueries
-    traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "column names: " ++ show extInputVarList
-    traceIOIfDebug debug $ "----------------"
-
-    -- return data to the banach space analyser
-    return tableExprData
-
+parseNormFromFile fileName = parseFromFile norm error_parseNorm fileName
+parseSqlQueryFromFile fileName = parseFromFile sqlQueries error_parseSqlQuery fileName
 

@@ -1,7 +1,7 @@
 module CreateTablesQ where
 
 import qualified Banach as B
-import PreprocessQ (readDB)
+import ReaderQ (readDB)
 import ParserQ (parseNormFromFile)
 
 import Data.List

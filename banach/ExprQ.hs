@@ -13,8 +13,8 @@ import NormsQ
 -- let the variable names be alphanumeric strings starting with a character
 type VarName = String
 
------------------------------------------------------------------------------------
--- TODO: Expr and TableExpr are being synchronized with B.Expr and B.TableExpr
+------------------------------------------------------------------------------------------------------
+-- TODO: all transformations of Expr and TableExpr are being synchronized with B.Expr and B.TableExpr
 
 -- these are single-step Banach expressions, all 'Expr' and 'Var' substituted with 'VarName'
 data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm N
@@ -55,6 +55,8 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | Filter VarName
   deriving Show
 
+--------------------------
+-- extract row expressions from an aggregation
 getExprFromTableExpr :: B.TableExpr -> [B.Expr]
 getExprFromTableExpr expr =
     case expr of
@@ -65,9 +67,8 @@ getExprFromTableExpr expr =
         B.SelectSump _ es  -> es
         B.SelectSumInf es  -> es
 
------------------------------------------------------------------------------------
--- TODO: reconstruction of terms is being synchronized with B.Expr and B.TableExpr
-
+--------------------------
+-- extract arguments
 extractArg :: TableExpr -> VarName
 extractArg t =
     case t of
@@ -85,34 +86,6 @@ extractArg t =
         FiltNeg _ x _  -> x
         Filter x       -> x
 
-queryArg :: TableExpr -> [B.Expr] -> B.TableExpr
-queryArg t ys =
-    case t of
-        SelectProd _   -> B.SelectProd ys
-        SelectMin _    -> B.SelectMin ys
-        SelectMax _    -> B.SelectMax ys
-        SelectL c _    -> B.SelectL c ys
-        SelectSump c _ -> B.SelectSump c ys
-        SelectSumInf _ -> B.SelectSumInf ys
-        -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
-        SelectSum  _   -> B.SelectSump 1.0 ys
-        -- if it turns out that, if SelectCount is left as it is,
-        -- then all filters are defined over non-sensitive variables, so they are discarded completely
-        SelectCount _  -> B.SelectSump 1.0 $ map (\_ -> B.ZeroSens (B.Const 1.0)) ys
-        SelectDistinct  _  -> error $ error_queryExpr_syntax t
-        Select _       -> error $ error_queryExpr_syntax t
-        Filt _ _ _     -> error $ error_internal_queryExprFilter t
-        FiltNeg _ _ _  -> error $ error_internal_queryExprFilter t
-        Filter _       -> error $ error_internal_queryExprFilter t
-
-normArg :: TableExpr -> ADouble
-normArg t =
-    case t of
-        SelectMax _  -> Any
-        SelectL c _  -> Exactly c
-
--- Expr constructor variable arguments can be Var, Expr
--- we put all of them into one list and later check whether a variable is an input or an assignment variable
 extractArgs :: Expr -> [VarName]
 extractArgs t =
     case t of
@@ -136,6 +109,35 @@ extractArgs t =
         ARMin            -> []
         ARMax            -> []
 
+normArg :: TableExpr -> ADouble
+normArg t =
+    case t of
+        SelectMax _  -> Any
+        SelectL c _  -> Exactly c
+
+--------------------------
+-- insert arguments
+queryArg :: TableExpr -> [B.Expr] -> B.TableExpr
+queryArg t ys =
+    case t of
+        SelectProd _   -> B.SelectProd ys
+        SelectMin _    -> B.SelectMin ys
+        SelectMax _    -> B.SelectMax ys
+        SelectL c _    -> B.SelectL c ys
+        SelectSump c _ -> B.SelectSump c ys
+        SelectSumInf _ -> B.SelectSumInf ys
+        -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
+        SelectSum  _   -> B.SelectSump 1.0 ys
+        -- if it turns out that, if SelectCount is left as it is,
+        -- then all filters are defined over non-sensitive variables, so they are discarded completely
+        SelectCount _  -> B.SelectSump 1.0 $ map (\_ -> B.ZeroSens (B.Const 1.0)) ys
+        SelectDistinct  _  -> error $ error_queryExpr_syntax t
+        Select _       -> error $ error_queryExpr_syntax t
+        Filt _ _ _     -> error $ error_internal_queryExprFilter t
+        FiltNeg _ _ _  -> error $ error_internal_queryExprFilter t
+        Filter _       -> error $ error_internal_queryExprFilter t
+
+--------------------------
 -- puts zeroSens in front of all insensitive variables, remove zeroSens from sensitive variables
 -- collect and return also all used sens.variables
 -- if a sigmoid/tauoid is applied to an insensitive quantity, we make it more accurate by taking large alpha
@@ -205,6 +207,7 @@ markTableExprCols sensitiveVars expr =
         B.SelectSump p es  -> B.SelectSump p $ map (snd . markExprCols sensitiveVars) es
         B.SelectSumInf es  -> B.SelectSumInf $ map (snd . markExprCols sensitiveVars) es
 
+--------------------------
 -- updates variable names
 updatePrefices :: (S.Set String) -> VarName -> VarName -> VarName
 updatePrefices fullTablePaths prefix var = 
@@ -388,7 +391,7 @@ preciseSigmoidsTableExpr expr =
         B.SelectSumInf es  -> B.SelectSumInf $ map preciseSigmoidsExpr es
 
 -- puts preanalysed aggregated function results into correspoding placeholders
-applyPrecAggr :: B.AnalysisResult -> B.AnalysisResult -> B.Expr -> B.Expr
+applyPrecAggr :: Double -> Double -> B.Expr -> B.Expr
 applyPrecAggr arMin arMax expr =
 
     case expr of
@@ -406,7 +409,8 @@ applyPrecAggr arMin arMax expr =
         B.ZeroSens e       -> B.ZeroSens (applyPrecAggr arMin arMax e)
         B.L p xs           -> B.L p xs
         B.LInf xs          -> B.LInf xs
-        B.Prec ar          -> if B.fx ar < 0 then B.Prec arMin else B.Prec arMax
+        --B.Prec ar          -> if B.fx ar < 0 then B.Prec arMin else B.Prec arMax
+        B.Prec ar          -> if B.fx ar < 0 then B.Const arMin else B.Const arMax
 
         B.ComposeL p es    -> B.ComposeL p $ map (applyPrecAggr arMin arMax) es
         B.Prod es          -> B.Prod       $ map (applyPrecAggr arMin arMax) es
@@ -417,7 +421,7 @@ applyPrecAggr arMin arMax expr =
         B.SumInf es        -> B.SumInf     $ map (applyPrecAggr arMin arMax) es
         B.Sum2 es          -> B.Sum2       $ map (applyPrecAggr arMin arMax) es
 
-applyPrecAggrTable :: B.AnalysisResult -> B.AnalysisResult -> B.TableExpr -> B.TableExpr
+applyPrecAggrTable :: Double -> Double ->  B.TableExpr -> B.TableExpr
 applyPrecAggrTable arMin arMax expr =
     case expr of
         B.SelectProd es    -> B.SelectProd   $ map (applyPrecAggr arMin arMax) es
@@ -428,7 +432,7 @@ applyPrecAggrTable arMin arMax expr =
         B.SelectSumInf es  -> B.SelectSumInf $ map (applyPrecAggr arMin arMax) es
 
 -- uses preanalysed aggregated function results
-precAggr :: [B.AnalysisResult] -> [B.AnalysisResult] -> [B.TableExpr] -> [B.TableExpr]
+precAggr :: [Double] -> [Double] -> [B.TableExpr] -> [B.TableExpr]
 precAggr (arMin:arMins) (arMax:arMaxs) (e:es) =
     (applyPrecAggrTable arMin arMax e) : precAggr arMins arMaxs es
 
@@ -495,3 +499,108 @@ pubExprToString colnames expr =
         B.ComposeTauoid a c e  -> "(" ++ z ++ " = " ++ show c ++ ")" where z = exprToString colnames e
         _                      -> exprToString colnames expr
 
+---------------------------------------------------------------------------------------------
+deriveNorm :: (Show a) => [a] -> B.Expr -> Norm a
+deriveNorm colnames expr = 
+    case expr of
+        B.PowerLN x _      -> NormLN (Col (colnames !! x))
+        B.Power x _        -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposePower e c -> deriveNorm colnames e
+        B.Exp _ x          -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposeExp c e   -> deriveNorm colnames e
+        B.Sigmoid _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposeSigmoid _ _ e -> deriveNorm colnames e
+        B.Tauoid  _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposeTauoid  _ _ e -> deriveNorm colnames e
+        B.Const a          -> NormZero
+        B.ScaleNorm a e    -> NormScale a (deriveNorm colnames e)
+        B.ZeroSens e       -> NormZero
+        -- TODO should we use p or dual norm here?
+        B.L p xs           -> NormL (Exactly p) $ map (\x -> Col (colnames !! x)) xs
+        B.ComposeL p es    -> NormL (Exactly p) $ map (deriveNorm colnames) es
+        B.LInf xs          -> NormL Any $ map (\x -> Col (colnames !! x)) xs
+
+        B.Prod es          -> NormL (Exactly 1.0) $ map (deriveNorm colnames) es
+        B.Prod2 es         -> let subNorms = map (deriveNorm colnames) es in
+                              foldr upperBoundNorm NormZero subNorms
+        B.Min es           -> NormL Any $ map (deriveNorm colnames) es
+        B.Max es           -> NormL Any $ map (deriveNorm colnames) es
+        B.Sump p es        -> NormL (Exactly p) $ map (deriveNorm colnames) es
+        B.SumInf es        -> NormL Any $ map (deriveNorm colnames) es
+        B.Sum2 es          -> let subNorms = map (deriveNorm colnames) es in
+                              foldr upperBoundNorm NormZero subNorms
+        B.Prec _           -> NormZero -- we do not need a norm here since its sensitivity is computed separately
+
+deriveTableNorm :: B.TableExpr -> ADouble
+deriveTableNorm expr = 
+    case expr of
+
+        B.SelectProd _     -> Exactly 1.0
+        B.SelectMin  _     -> Any
+        B.SelectMax  _     -> Any
+        B.SelectL p  _     -> Exactly p
+        B.SelectSump p _   -> Exactly p
+        B.SelectSumInf _   -> Any
+
+-- puts zeroSens in front of all sensitive variables
+-- analogous to markExprCols
+markNormCols :: Ord a => S.Set a -> Norm a -> Norm a
+markNormCols sensitiveVars expr =
+    case expr of
+          Col x          -> if S.member x sensitiveVars then expr else NormZero
+          NormLN e       -> NormLN (markNormCols sensitiveVars e)
+          NormL p es     -> NormL p $ map (markNormCols sensitiveVars) es
+          NormScale c e  -> NormScale c (markNormCols sensitiveVars e)
+          NormZero       -> NormZero
+
+-- if x belongs to the map, take map[x], otherwise take a default value y
+takeIfExists :: (Show a, Show b, Ord a) => M.Map a b -> a -> b -> b
+takeIfExists mapX x y =
+    if M.member x mapX then (mapX ! x)
+    else y
+
+scale :: M.Map B.Var Double -> B.Var -> Double
+scale mapX x = takeIfExists mapX x 1.0
+
+-- takes into account modifications in the norm and applies them to the query expression
+updateExpr :: M.Map B.Var Double -> M.Map B.Var Double -> B.Expr -> B.Expr
+updateExpr mapCol mapLN expr =
+    case expr of
+        B.PowerLN x c      -> B.ScaleNorm (scale mapLN  x) (B.PowerLN x c)
+        B.Power x c        -> B.ScaleNorm (scale mapCol x) (B.Power x c)
+        B.ComposePower e c -> B.ComposePower (updateExpr mapCol mapLN e) c
+        B.Exp c x          -> B.ScaleNorm (scale mapCol x) (B.Exp c x)
+        B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN e)
+        B.Sigmoid a c x    -> B.ScaleNorm (scale mapCol x) (B.Sigmoid a c x)
+        B.ComposeSigmoid a c e -> B.ComposeSigmoid a c (updateExpr mapCol mapLN e)
+        B.Tauoid a c x     -> B.ScaleNorm (scale mapCol x) (B.Tauoid a c x)
+        B.ComposeTauoid a c e -> B.ComposeTauoid a c (updateExpr mapCol mapLN e)
+        B.Const a          -> B.Const a
+        B.ScaleNorm a e    -> B.ScaleNorm a $ updateExpr mapCol mapLN e
+        B.ZeroSens e       -> B.ZeroSens e
+        B.L p xs           -> B.ScaleNorm (foldr min 100000 $ map (scale mapCol) xs) (B.L p xs)
+        B.ComposeL p es    -> B.ComposeL p $ map (updateExpr mapCol mapLN) es
+        B.LInf xs          -> B.ScaleNorm (foldr min 100000 $ map (scale mapCol) xs) (B.LInf xs)
+        B.Prod es          -> B.Prod  $ map (updateExpr mapCol mapLN) es
+        B.Prod2 es         -> B.Prod2 $ map (updateExpr mapCol mapLN) es -- we assume that equality of subnorms has been already checked
+        B.Min es           -> B.Min $ map (updateExpr mapCol mapLN) es
+        B.Max es           -> B.Max $ map (updateExpr mapCol mapLN) es
+        B.Sump p es        -> B.Sump p $ map (updateExpr mapCol mapLN) es
+        B.SumInf es        -> B.SumInf $ map (updateExpr mapCol mapLN) es
+        B.Sum2 es          -> B.Sum2   $ map (updateExpr mapCol mapLN) es -- we assume that equality of subnorms has been already checked
+        B.Prec ar          -> B.Prec ar
+
+updateTableExpr :: Int -> B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> B.TableExpr
+updateTableExpr numOfRows expr mapCol mapLN queryAggrNorm dbAggrNorm =
+    let n = fromIntegral numOfRows in
+    let a = scalingLpNorm queryAggrNorm dbAggrNorm n in
+    let g = updateExpr mapCol mapLN in
+    case expr of
+        B.SelectProd es    -> B.SelectProd   $ map (g . B.ScaleNorm a) es
+        B.SelectL p  es    -> B.SelectL p    $ map (g . B.ScaleNorm a) es
+        B.SelectMin  es    -> B.SelectMin    $ map g es
+        B.SelectMax  es    -> B.SelectMax    $ map g es
+        B.SelectSump _ es  -> case dbAggrNorm of
+                                  Any       -> B.SelectSumInf $ map g es
+                                  Exactly p -> B.SelectSump p $ map g es
+        B.SelectSumInf es  -> B.SelectSumInf $ map g es

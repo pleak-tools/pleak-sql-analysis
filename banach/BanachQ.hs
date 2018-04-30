@@ -196,6 +196,7 @@ data AnalysisResult = AR {
   fx :: ExprQ,             -- value of the analyzed function (f(x))
   subf :: SmoothUpperBound, -- smooth upper bound of the absolute value of the analyzed function itself
   sdsf :: SmoothUpperBound, -- smooth upper bound of the derivative sensitivity of the analyzed function
+  gub :: Double,            -- global (constant) upper bound on the absolute value of the analyzed function itself
   gsens :: Double}          -- (upper bound on) global sensitivity of the analyzed function, may be infinity
   deriving Show
 
@@ -203,7 +204,7 @@ infinity :: Double
 infinity = 1/0
 
 aR :: AnalysisResult
-aR = AR {gsens = infinity}
+aR = AR {gub = infinity, gsens = infinity}
 
 chooseSUBBeta :: Double -> Maybe Double -> SmoothUpperBound -> Double
 chooseSUBBeta defaultBeta fixedBeta (SUB g beta0) =
@@ -256,7 +257,7 @@ analyzeExpr row expr = res where
                    else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
              else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
     ComposePower e1 r ->
-      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) _ = analyzeExpr row e1
+      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) gub _ = analyzeExpr row e1
           beta3 = (r-1)*beta1 + beta2
           b1 = if beta3 > 0 then beta1 / beta3 else 1/r
           b2 = if beta3 > 0 then beta2 / beta3 else 1/r
@@ -264,7 +265,8 @@ analyzeExpr row expr = res where
            then if gx > 0
                  then AR {fx = gx ** r,
                           subf = SUB (\ beta -> subf1g (beta / r) ** r) (r*beta1),
-                          sdsf = SUB (\ beta -> r * (subf1g (b1 * beta))**(r-1) * sdsf1g (b2 * beta)) beta3}
+                          sdsf = SUB (\ beta -> r * (subf1g (b1 * beta))**(r-1) * sdsf1g (b2 * beta)) beta3,
+                          gub = gub ** r}
                  else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
            else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
     Exp r i ->
@@ -273,12 +275,13 @@ analyzeExpr row expr = res where
              subf = SUB (const $ exp (r * x)) (abs r),
              sdsf = SUB (const $ abs r * exp (r * x)) (abs r)}
     ComposeExp r e1 ->
-      let AR gx _ (SUB sdsf1g beta2) gsens = analyzeExpr row e1
+      let AR gx _ (SUB sdsf1g beta2) gub gsens = analyzeExpr row e1
           b = gsens
           f_x = exp (r * gx)
       in AR {fx = f_x,
              subf = SUB (const f_x) (abs r * b),
-             sdsf = SUB (\ beta -> abs r * f_x * sdsf1g (beta - abs r * b)) (abs r * b + beta2)}
+             sdsf = SUB (\ beta -> abs r * f_x * sdsf1g (beta - abs r * b)) (abs r * b + beta2),
+             gub = exp (abs r * gub)}
     Sigmoid a c i ->
       let x = row !! i
           y = exp (a * (x - c))
@@ -288,12 +291,12 @@ analyzeExpr row expr = res where
              subf = SUB (const z) a',
              sdsf = SUB (const $ a' * y / (y+1)**2) a'}
     ComposeSigmoid a c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) gsens = analyzeExpr row e1
+      let AR gx _ (SUB sdsf1g beta2) _ gsens = analyzeExpr row e1
           b = gsens
           y = exp (a * (gx - c))
           z = y / (y + 1)
           a' = abs a
-      in AR {fx = z,
+      in aR {fx = z,
              subf = SUB (const z) (a' * b),
              sdsf = SUB (\ beta -> a' * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
     Tauoid a c i ->
@@ -306,7 +309,7 @@ analyzeExpr row expr = res where
              subf = SUB (const z) a',
              sdsf = SUB (const $ a' * z) a'}
     ComposeTauoid a c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) gsens = analyzeExpr row e1
+      let AR gx _ (SUB sdsf1g beta2) _ gsens = analyzeExpr row e1
           b = gsens
           y1 = exp ((-a) * (gx - c))
           y2 = exp (a * (gx - c))
@@ -326,18 +329,21 @@ analyzeExpr row expr = res where
       aR {fx = Q c,
           subf = SUB (const (Q $ abs c)) 0,
           sdsf = SUB (const (Q 0)) 0,
+          gub = c,
           gsens = 0}
     ScaleNorm a e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gsens = analyzeExpr row e1
+      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeExpr row e1
       in aR {fx = fx1,
              subf = SUB (\ beta -> subf1g (beta*a)) (subf1beta/a),
              sdsf = SUB (\ beta -> sdsf1g (beta*a) / a) (sdsf1beta/a),
+             gub = gub,
              gsens = gsens/a}
     ZeroSens e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) _ = analyzeExpr row e1
+      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub _ = analyzeExpr row e1
       in aR {fx = fx1,
              subf = SUB (const fx1) 0,
              sdsf = SUB (const (Q 0)) 0,
+             gub = gub,
              gsens = 0}
     L p is ->
       let xs = map (row !!) is
@@ -371,11 +377,16 @@ combineArsProd ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
+      gsenss = map gsens ars
       n = length ars
       c i beta = let s = ((sdsgs !! i) beta) in if s == 0 then Q 0 else s * product (map ($ beta) $ skipith i subgs)
+      gc i = let s = (gsenss !! i) in if s == 0 then 0 else s * product (skipith i gubs)
   in aR {fx = product fxs,
          subf = SUB (\ beta -> product (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> linfnorm (map (\ i -> c i beta) [round 0..n P.- round 1])) (maximum (subfBetas ++ sdsfBetas))}
+         sdsf = SUB (\ beta -> linfnorm (map (\ i -> c i beta) [round 0..n P.- round 1])) (maximum (subfBetas ++ sdsfBetas)),
+         gub = product gubs,
+         gsens = B.linfnorm (map gc [round 0..n P.- round 1])}
 
 combineArsProd2 :: [AnalysisResult] -> AnalysisResult
 combineArsProd2 ars =
@@ -545,8 +556,8 @@ analyzeTableExpr cols te =
 -- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
 analyzeTableExprQ :: String -> String -> [String] -> TableExpr -> AnalysisResult
 analyzeTableExprQ fr wh colNames te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gsens = analyzeTableExpr colNames te
-  in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gsens
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames te
+  in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
 
 performAnalyses :: ProgramOptions -> [String] -> [(String, TableExpr, String)] -> IO ()
 performAnalyses args colNames tableExprData = do

@@ -7,12 +7,15 @@ import ParserQ (parseNormFromFile)
 import Data.List
 import qualified Data.Set as S
 
+sensRows :: String -> String
+sensRows tableName = tableName ++ "_sensRows"
+
 createTableSql :: String -> IO String
 createTableSql tableName = do
   let dbFileName = tableName ++ ".db"
   (colNames, tbl) <- readDB dbFileName
   let numRows = length tbl
-  let sensTableName = tableName ++ "_sensRows"
+  let sensTableName = sensRows tableName
   let normFileName = tableName ++ ".nrm"
   ((sensRows, _), _) <- parseNormFromFile normFileName
   let sensRowsSet = S.fromList sensRows

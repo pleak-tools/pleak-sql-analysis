@@ -33,6 +33,10 @@ data ExprQ = Q Double                -- a constant
            | (:/) ExprQ ExprQ
            | (:**) ExprQ ExprQ        -- exponentiation
            | Select ExprQ String String -- SELECT x FROM y WHERE z
+           | GroupBy ExprQ String String -- x GROUP BY y HAVING z
+           | ExprQ `As` String        -- x AS y
+           | ExprQ `Where` String     -- x WHERE y
+           | Subquery ExprQ ExprQ     -- SELECT x FROM (subquery y)
 
 data BoolExprQ = CmpOpQ String ExprQ ExprQ -- an SQL comparison operator
 
@@ -167,7 +171,8 @@ productQ = foldl1 (:*)
 --dbl = id
 
 instance Show ExprQ where
-  show (Q x) = show x
+  show (Q x) | x >= 0    = show x
+             | otherwise = '(' : show x ++ ")"
   show (VarQ x) = x
   show (FunQ f x) = f ++ '(' : show x ++ ")"
   show (OpQ op x y) = '(' : show x ++ ' ' : op ++ ' ' : show y ++ ")"
@@ -178,7 +183,16 @@ instance Show ExprQ where
   show (x :* y) = '(' : show x ++ " * " ++ show y ++ ")"
   show (x :/ y) = '(' : show x ++ " / " ++ show y ++ ")"
   show (x :** y) = '(' : show x ++ " ^ " ++ show y ++ ")"
-  show (Select x fr wh) = "SELECT " ++ show x ++ (if null fr then "" else " FROM ") ++ fr ++ (if null wh then "" else " WHERE ") ++ wh ++ ";"
+  show (Select (Subquery x y) fr wh) = show (Subquery x (Select y fr wh))
+  show (Select (GroupBy (x `Where` y) g h) fr wh) = show (Select (GroupBy x g h) fr ('(' : wh ++ ") AND " ++ y))
+  show (Select (GroupBy x g h) fr wh) = "SELECT " ++ show x ++
+                                        (if null fr then "" else " FROM ") ++ fr ++ (if null wh then "" else " WHERE ") ++ wh ++
+                                        " GROUP BY " ++ g ++ (if null h then "" else " HAVING ") ++ h
+  show (Select (x `Where` y) fr wh) = show (Select x fr ('(' : wh ++ ") AND " ++ y))
+  show (Select x fr wh) = "SELECT " ++ show x ++ (if null fr then "" else " FROM ") ++ fr ++ (if null wh then "" else " WHERE ") ++ wh
+  show (GroupBy x g h) = show x ++ " GROUP BY " ++ g ++ (if null h then "" else " HAVING ") ++ h
+  show (x `As` a) = show x ++ " AS " ++ a
+  show (Subquery x y) = "SELECT " ++ show x ++ " FROM (" ++ show y ++ ") AS sub"
 
 instance Show BoolExprQ where
   show (CmpOpQ op x y) = '(' : show x ++ ' ' : op ++ ' ' : show y ++ ")"
@@ -188,9 +202,11 @@ data SmoothUpperBound = SUB {
   subBeta :: Double}
 
 instance Show SmoothUpperBound where
-  show (SUB g beta0) = let beta = chooseBeta beta0
+  show (SUB g beta0)
+        | beta0 >= 0 = let beta = chooseBeta beta0
                        in if beta >= beta0 then (printf "%s (beta = %0.3f)" (show (g beta)) beta :: String)
                                            else ((error $ printf "ERROR (beta = %0.3f but must be >= %0.3f)" beta beta0) :: String)
+        | otherwise  = "unknown"
 
 data AnalysisResult = AR {
   fx :: ExprQ,             -- value of the analyzed function (f(x))
@@ -203,8 +219,10 @@ data AnalysisResult = AR {
 infinity :: Double
 infinity = 1/0
 
+unknownSUB = SUB undefined (-1)
+
 aR :: AnalysisResult
-aR = AR {gub = infinity, gsens = infinity}
+aR = AR {subf = unknownSUB, gub = infinity, gsens = infinity}
 
 chooseSUBBeta :: Double -> Maybe Double -> SmoothUpperBound -> Double
 chooseSUBBeta defaultBeta fixedBeta (SUB g beta0) =
@@ -541,22 +559,44 @@ combineArsSum2 ars =
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
-analyzeTableExpr :: [String] -> TableExpr -> AnalysisResult
-analyzeTableExpr cols te =
+analyzeTableExpr :: [String] -> String -> TableExpr -> AnalysisResult
+analyzeTableExpr cols srt te =
   case te of
-    SelectMin (expr : _) -> combineArsMinT (analyzeExprQ cols expr)
-    SelectMax (expr : _) -> combineArsMaxT (analyzeExprQ cols expr)
-    SelectL p (expr : _) -> combineArsLT p (analyzeExprQ cols expr)
-    SelectSump p (expr : _) -> combineArsSumpT p (analyzeExprQ cols expr)
-    SelectSumInf (expr : _) -> combineArsSumInfT (analyzeExprQ cols expr)
+    SelectMin (expr : _) -> oneStepCombine combineArsMinT expr
+    SelectMax (expr : _) -> oneStepCombine combineArsMaxT expr
+    SelectL p (expr : _) -> twoStepCombine (combineArsLT p) (combineArsLpInfT p) expr
+    SelectSump p (expr : _) -> twoStepCombine (combineArsSumpT p) combineArsSumInfT expr
+    SelectSumInf (expr : _) -> oneStepCombine combineArsSumInfT expr
+  where
+    fixedArg arg expr arg' | arg' P.== arg = expr
+    oneStepCombine combine expr =
+      let
+        AR fx _ (SUB sdsg subBeta) _ _ = combine (analyzeExprQ cols expr)
+      in
+        aR {fx = fx,
+            sdsf = SUB (\ beta -> sdsg beta `Where` (srt ++ ".sensitive")) subBeta}
+    twoStepCombine combine_p combine_inf expr =
+      let
+        AR fx _ (SUB sdsg subBeta) _ _ = combine_inf (analyzeExprQ cols expr)
+        AR _ _ (SUB _ subBeta2) _ _ = combine_p $ AR {sdsf = SUB undefined subBeta}
+      in aR {fx = fx,
+             sdsf = SUB (\ beta ->
+                           let
+                             subquery = GroupBy ((sdsg beta `As` "sdsg") `Where` (srt ++ ".sensitive")) (srt ++ ".ID") ""
+                             AR _ _ (SUB sdsg2 _) _ _ = combine_p $ AR {sdsf = SUB (fixedArg beta $ VarQ "sdsg") subBeta}
+                             mainquery = sdsg2 beta
+                           in
+                             Subquery mainquery subquery)
+                        subBeta2}
 
 -- SELECT expr FROM fr WHERE wh
 -- (colNames !! i) is the name of the variable with number i in expr
 -- fr may contain multiple tables and aliases, e.g. "t as t1, t as t2, t3"
 -- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
-analyzeTableExprQ :: String -> String -> [String] -> TableExpr -> AnalysisResult
-analyzeTableExprQ fr wh colNames te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames te
+-- srt is the name of the sensitive rows table
+analyzeTableExprQ :: String -> String -> String -> [String] -> TableExpr -> AnalysisResult
+analyzeTableExprQ fr wh srt colNames te =
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
 
 performAnalyses :: ProgramOptions -> [String] -> [(String, TableExpr, String)] -> IO ()
@@ -577,7 +617,7 @@ performAnalyses args colNames tableExprData = do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="
-    let ar = analyzeTableExprQ fromPart wherePart colNames te
+    let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames te
     putStrLn "Analysis result:"
     print ar
     let epsilon = getEpsilon args
@@ -591,7 +631,7 @@ performAnalyses args colNames tableExprData = do
     when debug $ printf "b = %0.6f\n" b
     let qr = fx ar
     when debug $ putStrLn "Query result:"
-    when debug $ print qr
+    when debug $ putStrLn (show qr ++ ";")
     let sds = subg (sdsf ar) beta
     when debug $ putStrLn "beta-smooth derivative sensitivity:"
-    when debug $ print sds
+    when debug $ putStrLn (show sds ++ ";")

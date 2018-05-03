@@ -260,6 +260,9 @@ analyzeExpr :: [ExprQ] -> Expr -> AnalysisResult
 analyzeExpr row expr = res where
  res =
   case expr of
+    Prec (B.AR fx (B.SUB subg subBeta) (B.SUB sdsg sdsBeta)) -> AR {fx = Q fx, subf = SUB (Q . subg) subBeta, sdsf = SUB (Q . subg) subBeta,
+                                                                    gub = if subBeta > 0 then infinity else subg 0,
+                                                                    gsens = if sdsBeta > 0 then infinity else sdsg 0}
     Power i r ->
       let x = row !! i
       in if r == 1

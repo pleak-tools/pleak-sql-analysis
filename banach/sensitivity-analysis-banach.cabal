@@ -60,7 +60,7 @@ executable banach
   -- other-extensions:    
   
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.8 && <4.9, megaparsec >=6.4 && <6.5, containers >=0.5 && <0.6, optparse-applicative, semigroups, split
+  build-depends:       base >=4.8 && <4.9, megaparsec >=6.4 && <6.5, containers >=0.5 && <0.6, optparse-applicative, semigroups, split, HDBC, HDBC-postgresql
   
   -- Directories containing source files.
   -- hs-source-dirs:      

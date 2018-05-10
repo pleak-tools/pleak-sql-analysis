@@ -6,6 +6,7 @@ import Banach (Expr(..), TableExpr(..), (!!), chooseBeta, chooseBetaCustom, gamm
 import qualified Banach as B
 import ProgramOptions
 import CreateTablesQ
+import DatabaseQ
 
 import qualified Prelude as P
 import qualified Data.List as L
@@ -749,7 +750,10 @@ performAnalyses args colNames tableExprData = do
   let uniqueTableNames = nub tableNames
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
-  forM_ uniqueTableNames (\ t -> createTableSql t >>= putStr)
+  ctss <- forM uniqueTableNames $ \ t -> do cts <- createTableSql t
+                                            putStr (concatMap (++ ";\n") cts)
+                                            return cts
+  when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL queries for computing the analysis results:"
   --let fromPart = intercalate ", " tableNames
@@ -778,3 +782,4 @@ performAnalyses args colNames tableExprData = do
     let sds = constProp $ subg (sdsf ar) beta
     when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
     when debug $ putStrLn (show sds ++ ";")
+    when (dbSensitivity args) $ sendDoubleQueryToDb args (show sds) >>= printf "database returns %0.6f\n"

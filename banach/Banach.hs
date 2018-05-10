@@ -1,4 +1,5 @@
 -- This module computes smooth derivative sensitivity in Banach spaces.
+{-# LANGUAGE FlexibleInstances #-}
 module Banach where
 
 import ProgramOptions
@@ -30,6 +31,7 @@ data Expr = Power Var Double         -- x^r with norm | |
           | ComposeSigmoid Double Double Expr-- s(a,c,E) = e^(a*(E-c))/(e^(a*(E-c)) + 1)
           | Tauoid Double Double Var -- t(a,c,x) = 2/(e^(-a*(x-c)) + e^(a*(x-c)))
           | ComposeTauoid Double Double Expr-- t(a,c,E) = 2/(e^(-a*(E-c)) + e^(a*(E-c)))
+          | L0Predicate Var (String -> String)-- p(x) with "l_0 norm": ||x||_0 = |x|^0 = 1 if x != 0 and 0 if x = 0
           | Const Double             -- constant c (real number, may be negative) in a zero-dimensional Banach space (with trivial norm)
           | ScaleNorm Double Expr    -- E with norm a * N
           | ZeroSens Expr            -- E with sensitivity forced to zero (the same as ScaleNorm with a -> infinity)
@@ -45,6 +47,9 @@ data Expr = Power Var Double         -- x^r with norm | |
           | Sum2 [Expr]              -- E1+...+En with norm N, where N is the common norm of all Ei
           | Prec AnalysisResult      -- use precomputed AR for this node
   deriving Show
+
+instance Show (String -> String) where
+  show f = "\\ x -> " ++ f "x"
 
 -- expressions of type TableExpr use values from the whole table
 data TableExpr = SelectProd [Expr]        -- product (map E rows) with norm ||(N1,...,Nn)||_1 where Ni is N applied to ith row

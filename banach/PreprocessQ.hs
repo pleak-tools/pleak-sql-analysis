@@ -307,19 +307,19 @@ getBanachAnalyserInput debug input = do
     let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap x)) filterAexprs
     let (filtQueryFuns, pubFilterAexprs) = addFiltersToQueries [outputQueryFun] filterAexprs filterSensVars
     let filtQueryFun = head filtQueryFuns
-    let (queryExpr,queryAggr,_) = queryToExpr inputMap sensitiveColSet filtQueryFun
+    let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet filtQueryFun
     let pubFilter  = map aexprToString pubFilterAexprs
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Public filter: " ++ show pubFilter
-    traceIOIfDebug debug $ "Query with private filters: " ++ show filtQueryFun
+    traceIOIfDebug debug $ "Query with private filters: " ++ filtQueryStr
     traceIOIfDebug debug $ "filterSensVars: " ++ show filterSensVars
 
     -- a query that creates the large cross product table
     let usedTables    = map (\(x,y) -> let z = getTableName y in if x == z then z else z ++ " AS " ++ x) (M.toList inputTableMap)
     let sel = "SELECT " ++ intercalate ", " colNames
     let fr  = " FROM "  ++ intercalate ", " usedTables
-    let wh  = " WHERE " ++ intercalate " AND " pubFilter
+    let wh  = " WHERE " ++ (if length pubFilter == 0 then "true" else intercalate " AND " pubFilter)
 
     args <- getProgramOptions
 

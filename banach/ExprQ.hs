@@ -36,8 +36,7 @@ data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm
           | ARMax                         -- special placeholder for aggregated maximum
           | Text String                   -- this is needed to store strings that remain public and go only into the filters
           | Like VarName VarName          -- stores LIKE expressions for filtering
-          | PubComp Ordering VarName VarName -- used for public filtering only
-          | StringCond VarName                   -- currently used for public filtering only
+          | Comp Ordering VarName VarName -- compares two variables, turns to sigmoid/tauoid if necessary
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
@@ -106,8 +105,7 @@ extractArgs t =
         ARMax            -> []
         Text _           -> []
         Like x y         -> [x,y]
-        PubComp _ x y    -> [x,y]
-        StringCond x         -> [x]
+        Comp _ x y       -> [x,y]
 
 normArg :: TableExpr -> ADouble
 normArg t =
@@ -229,8 +227,7 @@ getAllExprVars asgnMap expr =
         Id  x            -> processRec x
         Text c           -> S.empty
         Like x y         -> S.union (processRec x) (processRec y)
-        PubComp c x y    -> S.union (processRec x) (processRec y)
-        StringCond x         -> (processRec x)
+        Comp c x y       -> S.union (processRec x) (processRec y)
     where processRec x = takeAlteredIfExists x asgnMap (getAllExprVars asgnMap) S.singleton
 
 getAllTableExprVars :: M.Map VarName Expr -> TableExpr -> S.Set VarName
@@ -266,8 +263,7 @@ updatePreficesExpr fullTablePaths prefix expr =
         Id  x            -> Id (updatePrefices fullTablePaths prefix x)
         Text c           -> Text c
         Like x y         -> Like (updatePrefices fullTablePaths prefix x) (updatePrefices fullTablePaths prefix y)
-        PubComp c x y    -> PubComp c (updatePrefices fullTablePaths prefix x) (updatePrefices fullTablePaths prefix y)
-        StringCond x         -> StringCond (updatePrefices fullTablePaths prefix x)
+        Comp c x y       -> Comp c (updatePrefices fullTablePaths prefix x) (updatePrefices fullTablePaths prefix y)
 
 updatePreficesTableExpr :: (S.Set String) -> VarName -> TableExpr -> TableExpr
 updatePreficesTableExpr fullTablePaths prefix expr =
@@ -446,13 +442,13 @@ pairwiseDisjoint (vs:vss) =
 -- converts expressions to Strings that can be read as a part of SQL query
 exprToString :: Bool -> M.Map VarName Expr -> Expr -> String
 exprToString isPublic asgnMap expr =
-
+    let alpha = 0.1 in
     case expr of
         PowerLN x c      -> "(" ++ z ++ " ^ " ++ show c ++ ")" where z = processRec x
         Power x c        -> "(" ++ z ++ " ^ " ++ show c ++ ")" where z = processRec x
         Exp c x          -> "exp(" ++ show c ++ " * " ++ z ++ ")" where z = processRec x
         Sigmoid a c x    -> if isPublic then
-                                "(case when " ++ z ++ " < " ++ show c ++ " then 1 else 0 end)"
+                                "(case when " ++ z ++ " > " ++ show c ++ " then 1 else 0 end)"
                             else
                                 "exp(" ++ w ++ ") / (exp(" ++ w ++ ") + 1)"
                             where
@@ -460,7 +456,7 @@ exprToString isPublic asgnMap expr =
                                 w = show a ++ " * (" ++ z ++ " - " ++ show c ++ ")"
 
         Tauoid a c x     -> if isPublic then
-                                "(" ++ z ++ " < " ++ show c ++ ")"
+                                "(case when " ++ z ++ " = " ++ show c ++ " then 1 else 0 end)"
                             else
                                 "2 / (exp(" ++ w ++ ") + exp(-" ++ w ++ "))"
                             where
@@ -481,8 +477,22 @@ exprToString isPublic asgnMap expr =
         ARMax            -> "(ArMax PLACEHOLDER)"
         Text c           -> "\'" ++ c ++ "\'"
         Like x y         -> "(" ++ processRec x ++ " LIKE " ++ processRec y ++ ")"
-        PubComp EQ x y   -> "(" ++ processRec x ++ " = " ++ processRec y ++ ")"
-        PubComp LT x y   -> "(" ++ processRec x ++ " < " ++ processRec y ++ ")"
+        Comp EQ x1 x2    -> if isPublic then
+                                "(case when " ++ z1 ++ " = " ++ z2 ++ " then 1 else 0 end)"
+                            else
+                                "2 / (exp(" ++ w ++ ") + exp(-" ++ w ++ "))"
+                            where
+                                z1 = processRec x1
+                                z2 = processRec x2
+                                w = show alpha ++ " * (" ++ z1 ++ " - " ++ show z2 ++ ")"
+        Comp GT x1 x2   -> if isPublic then
+                                "(case when " ++ z1 ++ " > " ++ z2 ++ " then 1 else 0 end)"
+                            else
+                                "exp(" ++ w ++ ") / (exp(" ++ w ++ ") + 1)"
+                            where
+                                z1 = processRec x1
+                                z2 = processRec x2
+                                w = show alpha ++ " * (" ++ z1 ++ " - " ++ z2 ++ ")"
 
     where processRec x = takeAlteredIfExists x asgnMap (exprToString isPublic asgnMap) id
 
@@ -616,6 +626,8 @@ exprToBExpr :: S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> Expr 
 exprToBExpr sensitiveCols inputMap asgnMap t = 
     let alpha = 0.1 in
     case t of
+        Text s      -> (S.empty, B.Const 0.0) -- the value B.Const 0.0 will not be used anyway
+                                              -- TODO we would like error message if it is not converted to a string later
         Power x c   -> processRec (\z -> B.ComposePower z c) (\z -> B.Power z c) x
 
         PowerLN x c -> processRec (const (error err)) (\z -> B.PowerLN z c) x
@@ -674,7 +686,7 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
         -- in the following, 1.0 and -1.0 are used only to show whether it was min or max, and will be modified later
         ARMax            -> (S.empty, B.Prec (B.AR {B.fx =  1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}}))
         ARMin            -> (S.empty, B.Prec (B.AR {B.fx = -1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}}))
-        PubComp EQ x1 x2 -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
+        Comp GT x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
                             let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
                             let usedVars = S.union usedVars1 usedVars2 in
                             if S.size (S.intersection usedVars sensitiveCols) == 0 then
@@ -685,7 +697,17 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
                                 else
                                     (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
 
-        _ -> error $ show t
+        Comp EQ x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
+                            let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
+                            let usedVars = S.union usedVars1 usedVars2 in
+                            if S.size (S.intersection usedVars sensitiveCols) == 0 then
+                                (usedVars, B.StringCond (exprToString True asgnMap t))
+                            else
+                                if (pairwiseDisjoint [usedVars1,usedVars2]) then
+                                    (usedVars, B.ComposeTauoid alpha 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                else
+                                    (usedVars, B.ComposeTauoid alpha 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
+        _ -> error $ error_queryExpr_syntax t
    where err = error_queryExpr_repeatingVars t
          allInputVars xs  = foldr (\x y -> (not (M.member x asgnMap)) && y) True xs
          processRec f g x = if M.member x asgnMap then

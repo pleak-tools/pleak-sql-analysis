@@ -165,7 +165,7 @@ rewriteQuery faexpr (F qaexpr qaggr) =
     -- inf = max - min
     let maxRef    = AVar "max~" in
     let minRef    = AVar "min~" in
-    let inf       = ASum [maxRef, AProd [minRef, oneNeg]] in
+    let inf       = ABinary AAdd maxRef (ABinary AMult minRef oneNeg) in
 
     case qaggr of
 
@@ -177,30 +177,30 @@ rewriteQuery faexpr (F qaexpr qaggr) =
 
         -- for sum and L-norms, we just multiply the value by the filter output
         SelectSum qx ->
-                 let aRw = AProd [faexpr, qaexpr] in
+                 let aRw = ABinary AMult faexpr qaexpr in
                  let bRw = SelectSum qx in
                  F aRw bRw
 
         SelectL p qx ->
-                 let aRw = AProd [faexpr, qaexpr] in
+                 let aRw = ABinary AMult faexpr qaexpr in
                  let bRw = SelectL p qx in
                  F aRw bRw
 
         -- for product, take 1 + b*(qx - 1), where b is the filter output, so the values that are filtered out become 1
         -- this is not good to be sigmoid-approximated since the error becomes too large with multiplication
         SelectProd qx ->
-                 let aRw = ASum [one, AProd [faexpr, ASum[qaexpr,oneNeg]]] in
+                 let aRw = ABinary AAdd one (ABinary AMult faexpr (ABinary AAdd qaexpr oneNeg)) in
                  let bRw = SelectProd qx in
                  F aRw bRw
 
         -- for min/max, add/subtract a large quantity from the values that are filtered out, so that they would be ignored
         SelectMax qx ->
-                 let aRw = ASum [qaexpr, AProd[ASum[faexpr,oneNeg], inf]] in
+                 let aRw = ABinary AAdd qaexpr (ABinary AMult (ABinary ASub faexpr one) inf) in
                  let bRw = SelectMax qx in
                  F aRw bRw
 
         SelectMin qx ->
-                 let aRw = ASum [qaexpr, AProd[ASum[oneNeg,faexpr], inf]] in
+                 let aRw = ABinary AAdd qaexpr (ABinary AMult (ABinary ASub one faexpr) inf) in
                  let bRw = SelectMin qx in
                  F aRw bRw
 

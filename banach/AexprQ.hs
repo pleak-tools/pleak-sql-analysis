@@ -77,6 +77,14 @@ toCNF = toCNF' . toNNF
     dist e1 (ABinary AAnd e21 e22) = (e1 `dist` e21) `conj` (e1 `dist` e22)
     dist e1 e2                    = e1 `disj` e2
 
+-- fix the abs constructions
+aexprFixAbs (AUnary AAbsEnd (AUnary AAbsBegin x)) = AAbs (aexprFixAbs x)
+
+-- if none of the previous cases matched, go deeper into the term
+aexprFixAbs (AUnary f x)    = AUnary  f (aexprFixAbs x)
+aexprFixAbs (ABinary f x y) = ABinary f (aexprFixAbs x) (aexprFixAbs y)
+aexprFixAbs x = x
+
 -- some normalization to simplify the transformation, merge some binary operations to n-ary
 aexprNormalize :: AExpr a -> AExpr a
 aexprNormalize (ABinary AAdd x y) =
@@ -189,6 +197,8 @@ aexprToExpr y (AVar "min~") = M.fromList [(y,ARMin)]
 aexprToExpr y (AVar "max~") = M.fromList [(y,ARMax)]
 
 --
+aexprToExpr y (AText s) = M.fromList [(y, Text s)]
+
 aexprToExpr y (AUnary (AExp c) (AVar x)) = M.fromList [(y, Exp c x)]
 aexprToExpr y (AUnary (AExp c) x) = 
     let z = y ++ "~0" in
@@ -209,15 +219,9 @@ aexprToExpr y (AConst c)   = M.fromList [(y, Const c)]
 aexprToExpr y (AVar x)     = M.fromList [(y, Id x)]
 --aexprToExpr y (ASubExpr e) = M.fromList [(y, e)]
 
-aexprToExpr y (ABinary ALike x (AText c)) = 
-    let z      = y ++ "~0" in
+aexprToExpr y (ABinary ALike x1 x2) =
     let z1     = y ++ "~1" in
     let z2     = y ++ "~2" in
-    M.union (aexprToExpr z x) $ M.fromList [(y, StringCond z2), (z2, Like z z1), (z1, Text c)]
-
-aexprToExpr y (ABinary ALike x1 x2) =
-    let z1      = y ++ "~1" in
-    let z2      = y ++ "~2" in
     M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Like z1 z2)]
 
 aexprToExpr y (ABinary ALT x (AConst c)) = 
@@ -226,42 +230,34 @@ aexprToExpr y (ABinary ALT x (AConst c)) =
     let w2     = y ++ "~2" in
     M.union (aexprToExpr z x) $ M.fromList [(y, Sum ["1",w2]), (w2, Prod ["-1",w1]), (w1, Sigmoid a c z), ("1", Const (1.0)), ("-1", Const (-1.0))]
 
-aexprToExpr y (ABinary AEQ x (AText c)) = 
-    let z      = y ++ "~0" in
-    let z1     = y ++ "~1" in
-    let z2     = y ++ "~2" in
-    M.union (aexprToExpr z x) $ M.fromList [(y, StringCond z2), (z2, PubComp EQ z z1), (z1, Text c)]
+aexprToExpr y (ABinary ALT x1 x2) = 
+    let z       = y ++ "~0" in 
+    let z1      = y ++ "~1" in
+    let z2      = y ++ "~2" in
+    let w       = y ++ "~3" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp GT z1 z2)]
 
 aexprToExpr y (ABinary AEQ x (AConst c)) = 
     let z      = y ++ "~0" in
     M.union (aexprToExpr z x) $ M.fromList [(y, Tauoid  a c z)]
+
+aexprToExpr y (ABinary AEQ x1 x2) = 
+    let z      = y ++ "~0" in 
+    let z1     = y ++ "~1" in
+    let z2     = y ++ "~2" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp EQ z1 z2)]
 
 aexprToExpr y (ABinary AGT x (AConst c)) = 
     let z      = y ++ "~0" in
     let z1     = y ++ "~1" in
     M.union (aexprToExpr z x) $ M.fromList [(y, Sigmoid a c z)]
 
-aexprToExpr y (ABinary ALT x1 x2) = 
-    let z       = y ++ "~0" in 
-    let z1      = y ++ "~1" in
-    let z2      = y ++ "~2" in
-    let w       = y ++ "~3" in
-    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Sigmoid a 0.0 z), (z, Sum [z2,w]), (w, Prod ["-1",z1]), ("-1", Const (-1.0))]
-
--- TODO this is temporary for benchmarks, we need to think how we do it!
-aexprToExpr y (ABinary AEQ x1 x2) = 
-    let z      = y ++ "~0" in 
-    let z1     = y ++ "~1" in
-    let z2     = y ++ "~2" in
-    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, StringCond z), (z, PubComp EQ z1 z2)]
---    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Tauoid  a 0.0 z), (z, Sum [z1,w]), (w, Prod ["-1",z2]), ("-1", Const (-1.0))]
-
 aexprToExpr y (ABinary AGT x1 x2) = 
     let z      = y ++ "~0" in 
     let z1     = y ++ "~1" in
     let z2     = y ++ "~2" in
     let w      = y ++ "~3" in
-    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Sigmoid a 0.0 z), (z, Sum [z1,w]), (w, Prod ["-1",z2]), ("-1", Const (-1.0))]
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp GT z2 z1)]
 
 -- lp-norm
 aexprToExpr y aexpr@(AUnary (APower pinv) (ASum xs)) =

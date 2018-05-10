@@ -346,7 +346,7 @@ selectAExpr = do
 sqlFilterExpr :: Parser [AExpr VarName]
 sqlFilterExpr = do
     bexpr <- bExpr
-    let aexpr = aexprNormalize bexpr
+    let aexpr = aexprFixAbs bexpr
     -- how many filters we actually have if we split them by "and"?
     let xs = case aexpr of
             AAnds ys -> ys
@@ -373,7 +373,7 @@ sqlAsgnQuery = do
   tableName <- tableName
   void (asgn)
   (gs,colNames,groups,aexprs,tableNames,tableAliases,filters,internalQueries) <- sqlQuery
-  let fs = zipWith3 (\g x y -> F (aexprNormalize x) (g y)) gs aexprs colNames
+  let fs = zipWith3 (\g x y -> F (aexprFixAbs x) (g y)) gs aexprs colNames
   let tableAliasMap = M.fromList $ zip tableAliases tableNames
   let subquery = P groups fs tableAliasMap filters
   return $ M.insert tableName subquery internalQueries
@@ -415,7 +415,7 @@ sqlAggrQueryUnnamed outputTableName = do
   groups  <- sqlQueryGroupBy
 
   let ys = map (\i -> "y~" ++ show i) [0..length gs - 1]
-  let queryFuns = zipWith3 (\g aexpr y -> F (aexprNormalize aexpr) (g y)) gs aexprs ys
+  let queryFuns = zipWith3 (\g aexpr y -> F (aexprFixAbs aexpr) (g y)) gs aexprs ys
   let tableAliasMap = M.fromList $ zip tableAliases tableNames
   let subquery = P groups queryFuns tableAliasMap filters
   let tableName = outputTableName
@@ -436,7 +436,7 @@ internalTableQuery = do
     (gs,colNames,groups,aexprs,tableNames,tableAliases,filters,internalQueries) <- parens sqlQuery
     caseInsensKeyWord "as"
     tableAlias <- identifier
-    let fs = zipWith3 (\g x y -> F (aexprNormalize x) (g y)) gs aexprs colNames
+    let fs = zipWith3 (\g x y -> F (aexprFixAbs x) (g y)) gs aexprs colNames
     let tableAliasMap = M.fromList $ zip tableAliases tableNames
     let subquery = P groups fs tableAliasMap filters
     let tableName = tableAlias

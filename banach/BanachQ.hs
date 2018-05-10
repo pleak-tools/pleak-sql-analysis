@@ -40,6 +40,7 @@ data ExprQ = Q Double                -- a constant
            | Subquery ExprQ ExprQ     -- SELECT x FROM (subquery y)
 
 data BoolExprQ = CmpOpQ String ExprQ ExprQ -- an SQL comparison operator
+               | BoolExprQ String          -- an SQL expression of boolean type
 
 infix 4 ==
 infix 4 /=
@@ -269,7 +270,7 @@ constProp expr =
                                                    nz1 = constProp z1
                                                    nz2 = constProp z2
                                                    z = constPropBool op nz1 nz2
-        --IfThenElseQ b x y -> IfThenElseQ b (constProp x) (constProp y)
+        IfThenElseQ b x y -> IfThenElseQ b (constProp x) (constProp y)
         (x :+ y)  -> applyOpQ "+" (constProp x) (constProp y)
         (x :- y)  -> applyOpQ "-" (constProp x) (constProp y)
         (x :* y)  -> applyOpQ "*" (constProp x) (constProp y)
@@ -330,6 +331,7 @@ instance Show ExprQ where
 
 instance Show BoolExprQ where
   show (CmpOpQ op x y) = '(' : show x ++ ' ' : op ++ ' ' : show y ++ ")"
+  show (BoolExprQ x) = '(' : x ++ ")"
 
 data SmoothUpperBound = SUB {
   subg :: Double -> ExprQ,
@@ -480,6 +482,13 @@ analyzeExpr row expr = res where
       in aR {fx = z,
              subf = SUB (const z) (a' * b),
              sdsf = SUB (\ beta -> a' * z * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+    L0Predicate i p ->
+      let VarQ x = row !! i
+      in aR {fx = if BoolExprQ (p x) then Q 1 else Q 0,
+             subf = SUB (\ beta -> if BoolExprQ (p x) then Q 1 else Q (exp (-beta))) 0,
+             sdsf = SUB (const (Q 1)) 0,
+             gub = 1,
+             gsens = 1}
     PowerLN i r ->
       let x = row !! i
       in if x > 0

@@ -46,6 +46,7 @@ data Expr = Power Var Double         -- x^r with norm | |
           | SumInf [Expr]            -- E1+...+En with norm ||(N1,...,Nn)||_infinity
           | Sum2 [Expr]              -- E1+...+En with norm N, where N is the common norm of all Ei
           | Prec AnalysisResult      -- use precomputed AR for this node
+          | StringCond String        -- we may want to leave some non-sensitive conditionals in string form
   deriving Show
 
 instance Show (String -> String) where

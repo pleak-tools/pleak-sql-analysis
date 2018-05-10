@@ -2,6 +2,7 @@ module AexprQ where
 
 import Data.List
 import qualified Data.Map as M
+import qualified Data.Set as S
 
 import ErrorMsg
 import ExprQ
@@ -13,7 +14,8 @@ a = 0.1
 data AExpr a
   = AVar a
   | AConst Double
-  | ASubExpr Expr
+  | AText String
+--  | ASubExpr Expr
   | AUnary  AUnOp (AExpr a)
   | ABinary ABinOp (AExpr a) (AExpr a)
   | AAbs  (AExpr a)
@@ -21,6 +23,9 @@ data AExpr a
   | AProd [AExpr a]
   | AMins [AExpr a]
   | AMaxs [AExpr a]
+  | AAnds [AExpr a]
+  | AOrs  [AExpr a]
+  | AXors [AExpr a] -- we assume that it is applied only to mutually exclusive conditions
   deriving (Show)
 
 data AUnOp
@@ -34,9 +39,43 @@ data AUnOp
 data ABinOp
   = ADiv | AMult | AAdd | ASub
   | AMin | AMax 
-  | AAnd | AOr 
-  | ALT | AEQ | AGT
+  | AAnd | AOr | AXor
+  | ALT | AEQ | AGT | ALike
   deriving (Show)
+
+-- this has been stolen from Data.Logic.Propositional.NormalForms and adjusted to our data types
+neg :: AExpr a -> AExpr a
+neg = AUnary ANot
+
+disj :: AExpr a -> AExpr a -> AExpr a
+disj = ABinary AOr
+
+conj :: AExpr a -> AExpr a -> AExpr a
+conj = ABinary AAnd
+
+toNNF :: AExpr a -> AExpr a
+toNNF (AUnary ANot (AUnary ANot expr))       = toNNF expr
+
+toNNF (ABinary AAnd exp1 exp2)              = toNNF exp1 `conj` toNNF exp2
+toNNF (AUnary ANot (ABinary AAnd exp1 exp2)) = toNNF $ neg exp1 `disj` neg exp2
+
+toNNF (ABinary AOr exp1 exp2)               = toNNF exp1 `disj` toNNF exp2
+toNNF (AUnary ANot (ABinary AOr exp1 exp2))  = toNNF $ neg exp1 `conj` neg exp2
+
+toNNF expr                                 = expr
+
+toCNF :: AExpr a -> AExpr a
+toCNF = toCNF' . toNNF
+  where
+    toCNF' :: AExpr a -> AExpr a
+    toCNF' (ABinary AAnd exp1 exp2) = toCNF' exp1 `conj` toCNF' exp2
+    toCNF' (ABinary AOr  exp1 exp2) = toCNF' exp1 `dist` toCNF' exp2
+    toCNF' expr                    = expr
+    
+    dist :: AExpr a -> AExpr a -> AExpr a
+    dist (ABinary AAnd e11 e12) e2 = (e11 `dist` e2) `conj` (e12 `dist` e2)
+    dist e1 (ABinary AAnd e21 e22) = (e1 `dist` e21) `conj` (e1 `dist` e22)
+    dist e1 e2                    = e1 `disj` e2
 
 -- some normalization to simplify the transformation, merge some binary operations to n-ary
 aexprNormalize :: AExpr a -> AExpr a
@@ -100,8 +139,38 @@ aexprNormalize (ABinary AMax x y) =
                 (_       , AMaxs ys) -> AMaxs (x': map f ys)
                 (_       , _       ) -> AMaxs [x',f y']
 
-aexprNormalize (ABinary AAnd x y) = aexprNormalize $ ABinary AMult x y
-aexprNormalize (ABinary AOr  x y) = aexprNormalize $ ABinary ASub (ABinary AAdd x y) (ABinary AMult x y)
+aexprNormalize (ABinary AAnd x y) =
+            let f  = id in
+            let x' = aexprNormalize x in
+            let y' = aexprNormalize y in
+            case (x',y') of
+                (AAnds xs, AAnds ys) -> AAnds (xs ++ map f ys)
+                (AAnds xs, _       ) -> AAnds (f y':xs)
+                (_       , AAnds ys) -> AAnds (x': map f ys)
+                (_       , _       ) -> AAnds [x',f y']
+
+aexprNormalize (ABinary AOr x y) =
+            let f  = id in
+            let x' = aexprNormalize x in
+            let y' = aexprNormalize y in
+            case (x',y') of
+                (AOrs xs, AOrs ys) -> AOrs (xs ++ map f ys)
+                (AOrs xs, _      ) -> AOrs (f y':xs)
+                (_      , AOrs ys) -> AOrs (x': map f ys)
+                (_      , _      ) -> AOrs [x',f y']
+
+aexprNormalize (ABinary AXor x y) =
+            let f  = id in
+            let x' = aexprNormalize x in
+            let y' = aexprNormalize y in
+            case (x',y') of
+                (AXors xs, AXors ys) -> AXors (xs ++ map f ys)
+                (AXors xs, _       ) -> AXors (f y':xs)
+                (_       , AXors ys) -> AXors (x': map f ys)
+                (_       , _       ) -> AXors [x',f y']
+
+--aexprNormalize (ABinary AAnd x y) = aexprNormalize $ ABinary AMult x y
+--aexprNormalize (ABinary AOr  x y) = aexprNormalize $ ABinary ASub (ABinary AAdd x y) (ABinary AMult x y)
 
 aexprNormalize (AUnary AAbsEnd (AUnary AAbsBegin x)) = AAbs (aexprNormalize x)
 
@@ -110,10 +179,16 @@ aexprNormalize (AUnary f x)    = AUnary  f (aexprNormalize x)
 aexprNormalize (ABinary f x y) = ABinary f (aexprNormalize x) (aexprNormalize y)
 aexprNormalize x = x
 
+---------------------------------------------------------------------------------------------------------
 -- we do not convert to aggregation since it comes separately
 -- we do not convert to scaleNorm and zeroSens since they come from the database norm
 aexprToExpr :: VarName -> AExpr VarName -> (M.Map VarName Expr)
 
+-- TODO this is temporary, can be improved
+aexprToExpr y (AVar "min~") = M.fromList [(y,ARMin)]
+aexprToExpr y (AVar "max~") = M.fromList [(y,ARMax)]
+
+--
 aexprToExpr y (AUnary (AExp c) (AVar x)) = M.fromList [(y, Exp c x)]
 aexprToExpr y (AUnary (AExp c) x) = 
     let z = y ++ "~0" in
@@ -132,13 +207,30 @@ aexprToExpr y (AUnary ANot x) =
 aexprToExpr y (AUnary ALn  (AConst c)) = M.fromList [(y, Const (log c))]
 aexprToExpr y (AConst c)   = M.fromList [(y, Const c)]
 aexprToExpr y (AVar x)     = M.fromList [(y, Id x)]
-aexprToExpr y (ASubExpr e) = M.fromList [(y, e)]
+--aexprToExpr y (ASubExpr e) = M.fromList [(y, e)]
+
+aexprToExpr y (ABinary ALike x (AText c)) = 
+    let z      = y ++ "~0" in
+    let z1     = y ++ "~1" in
+    let z2     = y ++ "~2" in
+    M.union (aexprToExpr z x) $ M.fromList [(y, StringCond z2), (z2, Like z z1), (z1, Text c)]
+
+aexprToExpr y (ABinary ALike x1 x2) =
+    let z1      = y ++ "~1" in
+    let z2      = y ++ "~2" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Like z1 z2)]
 
 aexprToExpr y (ABinary ALT x (AConst c)) = 
     let z      = y ++ "~0" in
     let w1     = y ++ "~1" in
     let w2     = y ++ "~2" in
     M.union (aexprToExpr z x) $ M.fromList [(y, Sum ["1",w2]), (w2, Prod ["-1",w1]), (w1, Sigmoid a c z), ("1", Const (1.0)), ("-1", Const (-1.0))]
+
+aexprToExpr y (ABinary AEQ x (AText c)) = 
+    let z      = y ++ "~0" in
+    let z1     = y ++ "~1" in
+    let z2     = y ++ "~2" in
+    M.union (aexprToExpr z x) $ M.fromList [(y, StringCond z2), (z2, PubComp EQ z z1), (z1, Text c)]
 
 aexprToExpr y (ABinary AEQ x (AConst c)) = 
     let z      = y ++ "~0" in
@@ -156,12 +248,13 @@ aexprToExpr y (ABinary ALT x1 x2) =
     let w       = y ++ "~3" in
     M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Sigmoid a 0.0 z), (z, Sum [z2,w]), (w, Prod ["-1",z1]), ("-1", Const (-1.0))]
 
+-- TODO this is temporary for benchmarks, we need to think how we do it!
 aexprToExpr y (ABinary AEQ x1 x2) = 
     let z      = y ++ "~0" in 
     let z1     = y ++ "~1" in
     let z2     = y ++ "~2" in
-    let w      = y ++ "~3" in
-    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Tauoid  a 0.0 z), (z, Sum [z1,w]), (w, Prod ["-1",z2]), ("-1", Const (-1.0))]
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, StringCond z), (z, PubComp EQ z1 z2)]
+--    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Tauoid  a 0.0 z), (z, Sum [z1,w]), (w, Prod ["-1",z2]), ("-1", Const (-1.0))]
 
 aexprToExpr y (ABinary AGT x1 x2) = 
     let z      = y ++ "~0" in 
@@ -298,6 +391,170 @@ aexprToExpr y (AProd xs) =
     let ws = map (\(x,z) -> aexprToExpr z x) (zip xs zs) in
     M.union (foldr M.union M.empty ws) $ M.fromList [(y, Prod zs)]
 
+aexprToExpr y (AAnds xs) = aexprToExpr y $ AProd xs
+aexprToExpr y (AOrs  xs) = aexprToExpr y $ AUnary ANot (AProd (map (AUnary ANot) xs))
+aexprToExpr y (AXors xs) = aexprToExpr y $ ASum xs
+
+
 -- we may possibly add more interesting expressions that can be reduced to Expr
 aexprToExpr y aexpr = error $ error_queryExpr aexpr
+------------------------------------------------------------------------------------
+aexprToString :: AExpr String -> String
+aexprToString aexpr =
+    case aexpr of
+        AVar x -> x
+        AConst c -> show c
+        AText c -> "\'" ++ c ++ "\'"
+
+        AAbs x -> "abs(" ++ aexprToString x ++ ")"
+        ASum xs -> "(" ++ intercalate " + " (map aexprToString xs) ++ ")"
+        AProd xs -> "(" ++ intercalate " * " (map aexprToString xs) ++ ")"
+        AMins xs -> "least(" ++ intercalate "," (map aexprToString xs) ++ ")"
+        AMaxs xs -> "greatest(" ++ intercalate "," (map aexprToString xs) ++ ")"
+        AAnds xs -> "(" ++ intercalate " AND " (map aexprToString xs) ++ ")"
+        AOrs  xs -> "(" ++ intercalate " OR " (map aexprToString xs) ++ ")"
+        AXors xs -> "(" ++ intercalate " OR " (map aexprToString xs) ++ ")"
+
+        AUnary ALn x -> "log(" ++ aexprToString x ++ ")"
+        AUnary ANeg x -> "( - " ++ aexprToString x ++ ")"
+        AUnary ANot x -> "not(" ++ aexprToString x ++ ")"
+        AUnary (AExp c) x -> "exp(" ++ show c ++ " * " ++ aexprToString x ++ ")"
+        AUnary (APower c) x -> "(" ++ aexprToString x ++ " ^ " ++ show c ++ ")"
+
+        ABinary ADiv x1 x2 -> "(" ++ aexprToString x1 ++ " / " ++ aexprToString x2 ++ ")"
+        ABinary AMult x1 x2 -> "(" ++ aexprToString x1 ++ " * " ++ aexprToString x2 ++ ")"
+        ABinary AAdd x1 x2 -> "(" ++ aexprToString x1 ++ " + " ++ aexprToString x2 ++ ")"
+        ABinary ASub x1 x2 -> "(" ++ aexprToString x1 ++ " - " ++ aexprToString x2 ++ ")"
+        ABinary AMin x1 x2 -> "least(" ++ aexprToString x1 ++ ", " ++ aexprToString x2 ++ ")"
+        ABinary AMax x1 x2 -> "greatest(" ++ aexprToString x1 ++ ", " ++ aexprToString x2 ++ ")"
+        ABinary AAnd x1 x2 -> "(" ++ aexprToString x1 ++ " AND " ++ aexprToString x2 ++ ")"
+        ABinary AOr  x1 x2 -> "(" ++ aexprToString x1 ++ " OR " ++ aexprToString x2 ++ ")"
+        ABinary AXor  x1 x2 -> "(" ++ aexprToString x1 ++ " OR " ++ aexprToString x2 ++ ")"
+        ABinary ALT x1 x2  -> "(" ++ aexprToString x1 ++ " < " ++ aexprToString x2 ++ ")"
+        ABinary AEQ  x1 x2 -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
+        ABinary AGT x1 x2  -> "(" ++ aexprToString x1 ++ " > " ++ aexprToString x2 ++ ")"
+        ABinary ALike x1 x2 -> "(" ++ aexprToString x1 ++ " LIKE " ++ aexprToString x2 ++ ")"
+
+------------------------------------------------------------------------------------
+updatePreficesAexpr :: (S.Set String) -> VarName -> AExpr VarName -> AExpr VarName
+updatePreficesAexpr fullTablePaths prefix aexpr =
+    case aexpr of
+        AVar x -> AVar $ processBase x
+        AConst c -> AConst c
+        AText c -> AText c
+
+        AAbs x -> AAbs $ processRec x
+        ASum xs -> ASum (map processRec xs)
+        AProd xs -> AProd (map processRec xs)
+        AMins xs -> AMins (map processRec xs)
+        AMaxs xs -> AMaxs (map processRec xs)
+        AAnds xs -> AAnds (map processRec xs)
+        AOrs  xs -> AOrs (map processRec xs)
+        AXors xs -> AXors (map processRec xs)
+
+        AUnary ALn x -> AUnary ALn $ processRec x
+        AUnary ANeg x -> AUnary ANeg $ processRec x
+        AUnary ANot x -> AUnary ANot $ processRec x
+        AUnary (AExp c) x -> AUnary (AExp c) $ processRec x
+        AUnary (APower c) x -> AUnary (APower c) $ processRec x
+
+        ABinary ADiv x1 x2 -> ABinary ADiv (processRec x1) (processRec x2)
+        ABinary AMult x1 x2 -> ABinary AMult (processRec x1) (processRec x2)
+        ABinary AAdd x1 x2 -> ABinary AAdd (processRec x1) (processRec x2)
+        ABinary ASub x1 x2 -> ABinary ASub (processRec x1) (processRec x2)
+        ABinary AMin x1 x2 -> ABinary AMin (processRec x1) (processRec x2)
+        ABinary AMax x1 x2 -> ABinary AMax (processRec x1) (processRec x2)
+        ABinary AAnd x1 x2 -> ABinary AAnd (processRec x1) (processRec x2)
+        ABinary AOr  x1 x2 -> ABinary AOr (processRec x1) (processRec x2)
+        ABinary AXor x1 x2 -> ABinary AXor (processRec x1) (processRec x2)
+        ABinary ALT x1 x2  -> ABinary ALT (processRec x1) (processRec x2)
+        ABinary AEQ  x1 x2 -> ABinary AEQ (processRec x1) (processRec x2)
+        ABinary AGT x1 x2  -> ABinary AGT (processRec x1) (processRec x2)
+        ABinary ALike x1 x2 -> ABinary ALike (processRec x1) (processRec x2)
+
+   where processRec  x = updatePreficesAexpr fullTablePaths prefix x
+         processBase x = updatePrefices      fullTablePaths prefix x
+
+--------------------------
+-- get all variables
+getAllAExprVars :: (Ord a, Show a) => AExpr a -> S.Set a
+getAllAExprVars aexpr =
+    case aexpr of
+        AVar x -> processBase x
+        AConst c -> S.empty
+        AText c -> S.empty
+
+        AAbs x  -> processRec x
+        ASum  xs -> foldr S.union S.empty $ map processRec xs
+        AProd xs -> foldr S.union S.empty $ map processRec xs
+        AMins xs -> foldr S.union S.empty $ map processRec xs
+        AMaxs xs -> foldr S.union S.empty $ map processRec xs
+        AAnds xs -> foldr S.union S.empty $ map processRec xs
+        AOrs  xs -> foldr S.union S.empty $ map processRec xs
+        AXors xs -> foldr S.union S.empty $ map processRec xs
+
+        AUnary ALn x -> processRec x
+        AUnary ANeg x -> processRec x
+        AUnary ANot x -> processRec x
+        AUnary (AExp c) x -> processRec x
+        AUnary (APower c) x -> processRec x
+
+        ABinary ADiv x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AMult x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AAdd x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ASub x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AMin x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AMax x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AAnd x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AOr  x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AXor x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ALT x1 x2  -> S.union (processRec x1) (processRec x2)
+        ABinary AEQ  x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AGT x1 x2  -> S.union (processRec x1) (processRec x2)
+        ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
+    where processRec x = getAllAExprVars x
+          processBase x = S.singleton x
+
+aexprToColSet :: (Show a, Ord a, Show b, Ord b) => M.Map a b -> AExpr a -> S.Set b
+aexprToColSet inputMap aexpr = S.map (inputMap ! ) $ getAllAExprVars aexpr
+
+--------------------------
+-- substitute variable subexpressions
+aexprSubstitute :: (Ord a, Show a) => (M.Map a (AExpr a)) -> AExpr a -> AExpr a
+aexprSubstitute aexprMap aexpr =
+    case aexpr of
+        AVar x -> processBase x
+        AConst c -> AConst c
+        AText c -> AText c
+
+        AAbs x -> AAbs $ processRec x
+        ASum xs -> ASum (map processRec xs)
+        AProd xs -> AProd (map processRec xs)
+        AMins xs -> AMins (map processRec xs)
+        AMaxs xs -> AMaxs (map processRec xs)
+        AAnds xs -> AAnds (map processRec xs)
+        AOrs  xs -> AOrs (map processRec xs)
+        AXors xs -> AXors (map processRec xs)
+
+        AUnary ALn x -> AUnary ALn $ processRec x
+        AUnary ANeg x -> AUnary ANeg $ processRec x
+        AUnary ANot x -> AUnary ANot $ processRec x
+        AUnary (AExp c) x -> AUnary (AExp c) $ processRec x
+        AUnary (APower c) x -> AUnary (APower c) $ processRec x
+
+        ABinary ADiv x1 x2 -> ABinary ADiv (processRec x1) (processRec x2)
+        ABinary AMult x1 x2 -> ABinary AMult (processRec x1) (processRec x2)
+        ABinary AAdd x1 x2 -> ABinary AAdd (processRec x1) (processRec x2)
+        ABinary ASub x1 x2 -> ABinary ASub (processRec x1) (processRec x2)
+        ABinary AMin x1 x2 -> ABinary AMin (processRec x1) (processRec x2)
+        ABinary AMax x1 x2 -> ABinary AMax (processRec x1) (processRec x2)
+        ABinary AAnd x1 x2 -> ABinary AAnd (processRec x1) (processRec x2)
+        ABinary AOr  x1 x2 -> ABinary AOr (processRec x1) (processRec x2)
+        ABinary AXor x1 x2 -> ABinary AXor (processRec x1) (processRec x2)
+        ABinary ALT x1 x2  -> ABinary ALT (processRec x1) (processRec x2)
+        ABinary AEQ  x1 x2 -> ABinary AEQ (processRec x1) (processRec x2)
+        ABinary AGT x1 x2  -> ABinary AGT (processRec x1) (processRec x2)
+        ABinary ALike x1 x2 -> ABinary ALike (processRec x1) (processRec x2)
+    where processRec x = aexprSubstitute aexprMap x
+          processBase x = if M.member x aexprMap then aexprMap ! x else AVar x
 

@@ -19,8 +19,6 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Void
 
--- import Expr directly from Banach.hs, 'qualified' because we want to reuse the names
-import qualified Banach as B
 import AexprQ
 import ErrorMsg
 import ExprQ
@@ -38,8 +36,6 @@ defaultOutputTableName :: String
 defaultOutputTableName = "output"
 
 ---------------------------------------------------------------------------------------------
--- TODO: parsing of 'expr' and 'tableExpr' is being synchronized with B.Expr and B.TableExpr
-
 -- keywords
 allKeyWordList :: [String]
 allKeyWordList = ["return",
@@ -50,7 +46,7 @@ allKeyWords :: S.Set String -- set of reserved "words"
 allKeyWords = S.fromList allKeyWordList
 
 allCaseInsensKeyWords :: S.Set String -- set of reserved "words"
-allCaseInsensKeyWords = S.fromList ["select","as","from","where","not","and","min","max","sum","product","count","distinct","group","by","between"]
+allCaseInsensKeyWords = S.fromList ["select","as","from","where","not","and","min","max","sum","product","count","distinct","group","by","between","like","in"]
 
 -- a norm expression
 normExpr :: Parser [Expr]
@@ -176,6 +172,19 @@ betweenAExpr = do
   aexprUB <- aExpr
   return (\e -> ABinary AAnd (ABinary AGT e aexprLB) (ABinary ALT e aexprUB))
 
+inAExpr :: Parser (AExpr VarName -> AExpr VarName)
+inAExpr = do
+  caseInsensKeyWord "in"
+  (a:as) <- parens $ sepBy1 aExpr (symbol ",")
+  -- we assume that "in" conditions are mutually exclusive
+  return (\e -> foldr (\ae aes -> ABinary AXor (ABinary AEQ e ae) aes) (ABinary AEQ e a) as)
+
+likeAExpr :: Parser (AExpr VarName -> AExpr VarName)
+likeAExpr = do
+  caseInsensKeyWord "like"
+  aexpr <- aExpr
+  return (\e -> ABinary ALike e aexpr)
+
 absBeginAExpr :: Parser (AExpr a -> AExpr a)
 absBeginAExpr = do
   symbol "|"
@@ -231,7 +240,7 @@ aTerm :: Parser (AExpr VarName)
 aTerm = parens aExpr
   <|> AVar <$> varName
   <|> AConst <$> signedFloat
-  <|> AConst <$> stringAsInt
+  <|> AText <$> text
   <|> aDummy
 
 aDummy = do
@@ -245,9 +254,12 @@ bOperators :: [[Operator Parser (AExpr VarName)]]
 bOperators =
   [
     [ Prefix notAExpr
-    , Postfix betweenAExpr]
+    , Postfix betweenAExpr
+    , Postfix inAExpr
+    , Postfix likeAExpr]
 
   , [ InfixL (ABinary ALT <$ symbol "<=")
+    , InfixL ((\x y -> AUnary ANot (ABinary AEQ x y)) <$ symbol "<>")
     , InfixL (ABinary ALT <$ symbol "<")
     , InfixL (ABinary AEQ <$ symbol "==")
     , InfixL (ABinary AEQ <$ symbol "=")
@@ -255,7 +267,8 @@ bOperators =
     , InfixL (ABinary AGT <$ symbol ">") ]
 
   , [ InfixL (ABinary AAnd <$ caseInsensKeyWord "and")
-    , InfixL (ABinary AOr  <$ caseInsensKeyWord "or") ]
+    , InfixL (ABinary AOr  <$ caseInsensKeyWord "or") 
+    , InfixL (ABinary AXor  <$ caseInsensKeyWord "xor")]
 
   ]
 
@@ -330,17 +343,15 @@ selectAExpr = do
 -----------------------------------------------------------------------------
 ----      The code below does not need to be updated with Banach.hs      ----
 -----------------------------------------------------------------------------
-sqlFilterExpr :: Parser [Function]
+sqlFilterExpr :: Parser [AExpr VarName]
 sqlFilterExpr = do
     bexpr <- bExpr
-    let y  = "filt"
-    let as = aexprToExpr y $ aexprNormalize bexpr
+    let aexpr = aexprNormalize bexpr
     -- how many filters we actually have if we split them by "and"?
-    let last = as ! y
-    let xs = case last of
-            Prod xs -> xs
-            _       -> []
-    let filters = if length xs == 0 then [F as (Filter y)] else map (\x -> F as (Filter x)) xs
+    let xs = case aexpr of
+            AAnds ys -> ys
+            _        -> []
+    let filters = if length xs == 0 then [aexpr] else xs
     return filters
 
 sqlQueries :: Parser (TableName, M.Map TableName Query)
@@ -362,12 +373,12 @@ sqlAsgnQuery = do
   tableName <- tableName
   void (asgn)
   (gs,colNames,groups,aexprs,tableNames,tableAliases,filters,internalQueries) <- sqlQuery
-  let fs = zipWith3 (\g x y -> F (aexprToExpr y $ aexprNormalize x) (g y)) gs aexprs colNames
+  let fs = zipWith3 (\g x y -> F (aexprNormalize x) (g y)) gs aexprs colNames
   let tableAliasMap = M.fromList $ zip tableAliases tableNames
   let subquery = P groups fs tableAliasMap filters
   return $ M.insert tableName subquery internalQueries
 
-sqlQuery :: Parser ([VarName -> TableExpr],[VarName],[VarName],[AExpr VarName],[TableName],[TableAlias],[Function],(M.Map TableName Query))
+sqlQuery :: Parser ([VarName -> TableExpr],[VarName],[VarName],[AExpr VarName],[TableName],[TableAlias],[AExpr VarName],(M.Map TableName Query))
 sqlQuery = do
   caseInsensKeyWord "select"
   namedAExprs <- sepBy1 namedAExpr (symbol ",")
@@ -404,7 +415,7 @@ sqlAggrQueryUnnamed outputTableName = do
   groups  <- sqlQueryGroupBy
 
   let ys = map (\i -> "y~" ++ show i) [0..length gs - 1]
-  let queryFuns = zipWith3 (\g aexpr y -> F (aexprToExpr y (aexprNormalize $ aexpr)) (g y)) gs aexprs ys
+  let queryFuns = zipWith3 (\g aexpr y -> F (aexprNormalize aexpr) (g y)) gs aexprs ys
   let tableAliasMap = M.fromList $ zip tableAliases tableNames
   let subquery = P groups queryFuns tableAliasMap filters
   let tableName = outputTableName
@@ -425,7 +436,7 @@ internalTableQuery = do
     (gs,colNames,groups,aexprs,tableNames,tableAliases,filters,internalQueries) <- parens sqlQuery
     caseInsensKeyWord "as"
     tableAlias <- identifier
-    let fs = zipWith3 (\g x y -> F (aexprToExpr y $ aexprNormalize x) (g y)) gs aexprs colNames
+    let fs = zipWith3 (\g x y -> F (aexprNormalize x) (g y)) gs aexprs colNames
     let tableAliasMap = M.fromList $ zip tableAliases tableNames
     let subquery = P groups fs tableAliasMap filters
     let tableName = tableAlias
@@ -436,14 +447,14 @@ internalTableName = do
     tableName <- identifier
     return (tableName, tableName, M.empty)
 
-sqlQueryFilter :: Parser [Function]
+sqlQueryFilter :: Parser [AExpr VarName]
 sqlQueryFilter = sqlQueryWithFilter <|> sqlQueryWithoutFilter
 
-sqlQueryWithoutFilter :: Parser [Function]
+sqlQueryWithoutFilter :: Parser [AExpr VarName]
 sqlQueryWithoutFilter = do
   return []
 
-sqlQueryWithFilter :: Parser [Function]
+sqlQueryWithFilter :: Parser [AExpr VarName]
 sqlQueryWithFilter = do
   caseInsensKeyWord "where"
   filters <- sqlFilterExpr
@@ -470,11 +481,12 @@ sqlQueryWithGroupBy = do
 
 -- the first row in the norm file is the list of sensitive rows
 -- the second row in the norm file is the list of sensitive columns
-norm :: Parser (([Int], [VarName]), Function)
+norm :: Parser (([Int], [VarName]), NormFunction)
 norm = do
   is <- many integer
   xs <- many varName
   void (delim)
+  --TODO such approach fails to detect parsing errors in custom norms
   f <- try customNorm <|> defaultNorm xs
   return ((is, xs), f)
 
@@ -483,7 +495,7 @@ customNorm = do
   return f
 
 defaultNorm xs = do
-  let f = F (M.fromList [("z",LInf xs)]) (SelectMax "z")
+  let f = NF (M.fromList [("z",LInf xs)]) (SelectL 1.0 "z")
   return f
 
 asgnStmt :: Parser [(VarName,Expr)]
@@ -505,12 +517,12 @@ returnStmt = do
   void (delim)
   return a
 
-function :: Parser Function
+function :: Parser NormFunction
 function = do
   ass <- many asgnStmt
   b  <- returnStmt
   let as = concat ass
-  return (F (M.fromList as) b)
+  return (NF (M.fromList as) b)
 
 
 ------------------------------
@@ -579,7 +591,7 @@ constant = do
 
 --reads an arbitrary string, all characters up to the first space
 text :: Parser String
-text = lexeme (C.char '"' >> manyTill L.charLiteral (C.char '"'))
+text = lexeme (C.char '\'' >> manyTill L.charLiteral (C.char '\''))
 
 -- this thing eats all spaces and comments
 spaceConsumer :: Parser ()

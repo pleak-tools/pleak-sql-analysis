@@ -1,7 +1,7 @@
 feasible_ports =
 SELECT ports.port_id AS id, ports.latitude AS latitude, ports.longitude AS longitude
 FROM ports
-WHERE ports.available
+WHERE ports.available = 1.0
 
 ship_distance_from_port = 
 SELECT ships.ship_id AS ship_id, fports.id AS port_id,  ships.length AS length, ships.maxspeed AS speed,

@@ -8,10 +8,12 @@ import Data.List
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Void
+import ProgramOptions
 
 -- import Expr directly from Banach.hs, 'qualified' because we want to reuse the names
 import qualified Banach as B
 import qualified BanachQ as BQ
+import qualified DatabaseQ as DQ
 import AexprQ
 import ErrorMsg
 import ExprQ
@@ -146,11 +148,11 @@ deriveExprNorm debug numOfRows inputMap sensitiveCols dbNormTableAliases dbNormF
 
 -- construct input for multitable Banach analyser
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
-inputWrtEachTable   :: Bool -> [VarName] -> (M.Map VarName B.Var) -> (S.Set B.Var) ->
-                       [TableAlias] -> B.TableExpr -> [AExpr VarName] -> (M.Map TableAlias TableData) ->
+inputWrtEachTable   :: Bool -> (M.Map VarName B.Var) -> (S.Set B.Var) ->
+                       [TableAlias] -> B.TableExpr -> (String,String,String) -> Int -> (M.Map TableAlias TableData) ->
                        [(TableName, B.TableExpr, String)]
-inputWrtEachTable _ _ _ _ [] _ _ _ = []
-inputWrtEachTable debug colNames inputMap allSensCols (tableAlias : ts) filtQuery pubFilterAexprs tableMap =
+inputWrtEachTable _ _ _ [] _ _ _ _ = []
+inputWrtEachTable debug inputMap allSensCols (tableAlias : ts) filtQuery (sel,fr,wh) numOfRows tableMap =
 
     let tableData     = tableMap ! tableAlias in
 
@@ -161,11 +163,6 @@ inputWrtEachTable debug colNames inputMap allSensCols (tableAlias : ts) filtQuer
 
     -- now transform the main query to a banach expression, now it is fine to use only the current table's sensitive columns
     let (queryExpr,  queryAggr)  = insertZeroSens tableSensCols filtQuery in
-    let queryFilter  = map aexprToString pubFilterAexprs in
-
-    -- these subqueries are needed to compute aggregates that will be used for _filtered_ MIN and MAX
-    let minQueryAggr       = B.SelectMin [queryExpr] in
-    let maxQueryAggr       = B.SelectMax [queryExpr] in
 
     -- the query will also take into account sensitive rows of the current sensitive table
     --let uniqueInputTableNames = S.toList $ S.fromList (map getTableName (M.elems tableMap)) in
@@ -174,35 +171,14 @@ inputWrtEachTable debug colNames inputMap allSensCols (tableAlias : ts) filtQuer
     let sensRowFilter = tableName ++ "_sensRows.ID = " ++ tableAlias ++ ".ID" in
 
     -- a query that creates the large cross product table
-    let sel = "SELECT " ++ intercalate ", " colNames in
-    let fr  = " FROM "  ++ intercalate ", "    usedTables  ++ ", "    ++ sensRowTable in
-    let wh  = " WHERE " ++ intercalate " AND " (queryFilter ++ [sensRowFilter]) in
-    let sqlQuery = sel ++ fr ++ wh in
-
-    -- TODO compute the number of rows using BQ and sel, fr, wh
-    -- let numOfRowsQuery = "SELECT COUNT(*)" ++ fr ++ wh in
-    -- let numOfRows = BQ.getQueryOutput numOfRowsQuery in
-    let crossProductTable = getTableCrossProductTable tableMap in
-    let numOfRows = length crossProductTable in
+    let fr1  = fr ++ ", " ++ sensRowTable in
+    let wh1  = wh ++ " AND " ++ sensRowFilter in
+    let sqlQuery = sel ++ fr1 ++ wh1 in
 
     -- the query expressions defined over the large cross product table
-    let adjMinQuery = deriveExprNorm debug numOfRows inputMap tableSensCols [tableAlias] [tableNorm] queryExpr minQueryAggr in
-    let adjMaxQuery = deriveExprNorm debug numOfRows inputMap tableSensCols [tableAlias] [tableNorm] queryExpr maxQueryAggr in
-    let adjQuery    = deriveExprNorm debug numOfRows inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
+    let adjTableExpr = deriveExprNorm debug numOfRows inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
 
-    -- TODO compute these min/max queries using BQ and sel, fr, wh
-    -- let minExprQuery = BQ.analyzeTableExprQ fr wh colNames adjMinQuery in
-    -- let maxExprQuery = BQ.analyzeTableExprQ fr wh colNames adjMaxQuery in
-    -- let arMin = BQ.getQueryOutput minExprQuery in
-    -- let arMax = BQ.getQueryOutput maxExprQuery in
-    let sensitiveRows = replicate numOfRows (-1) in
-    let arMin = B.fx $ B.analyzeTableExpr crossProductTable sensitiveRows adjMinQuery in
-    let arMax = B.fx $ B.analyzeTableExpr crossProductTable sensitiveRows adjMaxQuery in
-
-    -- replace ARMin and ARMax inside the queries with actual precomputed data
-    let finalTableExpr = applyPrecAggrTable arMin arMax adjQuery in
-
-    (tableName, finalTableExpr, sqlQuery) : inputWrtEachTable debug colNames inputMap allSensCols ts filtQuery pubFilterAexprs tableMap
+    (tableName, adjTableExpr, sqlQuery) : inputWrtEachTable debug inputMap allSensCols ts filtQuery (sel,fr,wh) numOfRows tableMap
 
 
 processQuery :: TableName -> (M.Map TableName Query) -> TableName -> TableAlias -> TableName -> ([[TableName]], [TableAlias],[TableName], [Function], [AExpr VarName])
@@ -319,9 +295,10 @@ getBanachAnalyserInput debug input = do
     -- we assume that the output query table has only one column
     when (length outputQueryFuns > 1) $ error $ error_queryExpr_singleColumn
     let outputQueryFun  = head outputQueryFuns
+    let queryStr = queryToString outputQueryFun
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show outputQueryFun
+    traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show queryStr
     traceIOIfDebug debug $ "Number of Filters:" ++ show (length filterAexprs)
     traceIOIfDebug debug $ "Filters:" ++ show filterAexprs
     traceIOIfDebug debug $ "----------------"
@@ -330,15 +307,43 @@ getBanachAnalyserInput debug input = do
     let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap x)) filterAexprs
     let (filtQueryFuns, pubFilterAexprs) = addFiltersToQueries [outputQueryFun] filterAexprs filterSensVars
     let filtQueryFun = head filtQueryFuns
-    let filtQuery = queryToExpr inputMap sensitiveColSet filtQueryFun
+    let (queryExpr,queryAggr,_) = queryToExpr inputMap sensitiveColSet filtQueryFun
+    let pubFilter  = map aexprToString pubFilterAexprs
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Public filters: " ++ show pubFilterAexprs
+    traceIOIfDebug debug $ "Public filter: " ++ show pubFilter
     traceIOIfDebug debug $ "Query with private filters: " ++ show filtQueryFun
     traceIOIfDebug debug $ "filterSensVars: " ++ show filterSensVars
 
+    -- a query that creates the large cross product table
+    let usedTables    = map (\(x,y) -> let z = getTableName y in if x == z then z else z ++ " AS " ++ x) (M.toList inputTableMap)
+    let sel = "SELECT " ++ intercalate ", " colNames
+    let fr  = " FROM "  ++ intercalate ", " usedTables
+    let wh  = " WHERE " ++ intercalate " AND " pubFilter
+
+    args <- getProgramOptions
+
+    -- compute the number of rows using sel, fr, wh
+    let numOfRowsQuery = "SELECT COUNT(*)" ++ fr ++ wh
+    traceIOIfDebug debug $ "--Num_of_rows--------------"
+    traceIOIfDebug debug $ numOfRowsQuery
+    numOfRows <- DQ.sendDoubleQueryToDb args numOfRowsQuery
+
+    -- compute min/max queries using sel, fr, wh
+    let minExprQuery = "SELECT MIN(" ++ queryStr ++ ")" ++ fr ++ wh
+    let maxExprQuery = "SELECT MAX(" ++ queryStr ++ ")" ++ fr ++ wh
+    traceIOIfDebug debug $ "--Min--------------"
+    traceIOIfDebug debug $ minExprQuery
+    traceIOIfDebug debug $ "--Max--------------"
+    traceIOIfDebug debug $ maxExprQuery
+    arMin <- DQ.sendDoubleQueryToDb args minExprQuery
+    arMax <- DQ.sendDoubleQueryToDb args maxExprQuery
+
+    -- replace ARMin and ARMax inside the queries with actual precomputed data
+    let finalTableExpr = applyPrecAggrTable arMin arMax queryAggr
+
     --bring the input to the form [(TableName, TableExpr, QueryString)]
-    let dataWrtEachTable = inputWrtEachTable debug colNames inputMap sensitiveColSet (M.keys inputTableMap) filtQuery pubFilterAexprs inputTableMap
+    let dataWrtEachTable = inputWrtEachTable debug inputMap sensitiveColSet (M.keys inputTableMap) finalTableExpr (sel,fr,wh) (round numOfRows) inputTableMap
     let (allTableNames, finalTableExpr, sqlQueries) = unzip3 dataWrtEachTable
 
     -- the first column now always marks sensitive rows

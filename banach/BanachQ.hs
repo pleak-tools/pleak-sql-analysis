@@ -270,7 +270,7 @@ constProp expr =
                                                    nz1 = constProp z1
                                                    nz2 = constProp z2
                                                    z = constPropBool op nz1 nz2
-        --IfThenElseQ b x y -> IfThenElseQ b (constProp x) (constProp y)
+        IfThenElseQ b x y -> IfThenElseQ b (constProp x) (constProp y)
         (x :+ y)  -> applyOpQ "+" (constProp x) (constProp y)
         (x :- y)  -> applyOpQ "-" (constProp x) (constProp y)
         (x :* y)  -> applyOpQ "*" (constProp x) (constProp y)

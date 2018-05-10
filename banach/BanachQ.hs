@@ -170,8 +170,141 @@ productQ = foldl1 (:*)
 --dbl :: Double -> Double
 --dbl = id
 
+---------------- a simple constant propagation block
+applyListFunQ :: String -> [ExprQ] -> ExprQ
+applyListFunQ "greatest" [x] = x
+applyListFunQ "greatest" xs =
+  let ys = filter (\x -> case x of {Q _ -> True; _ -> False}) xs in
+  case ys of
+    [] -> ListFunQ "greatest" xs
+    _  -> let zs = filter (\x -> case x of {Q _ -> False; _ -> True}) xs in
+          let z  = Q $ maximum (map (\(Q c) -> c) ys) in
+          case zs of
+              [] -> z
+              -- if z = 0 and all others are 'abs', then we may discard z
+              _  -> case z of
+                       Q 0 -> let ws = filter (\x -> case x of {FunQ "abs" _ -> True; _ -> False}) zs in
+                              case compare (length zs) (length ws) of
+                                  EQ -> case zs of
+                                            [w] -> w
+                                            _   -> ListFunQ "greatest" zs
+                                  _  -> ListFunQ "greatest" (z:zs)
+                       _   -> ListFunQ "greatest" (z:zs)
+
+applyListFunQ "least" [x] = x
+applyListFunQ "least" xs =
+  let ys = filter (\x -> case x of {Q _ -> True; _ -> False}) xs in
+  case ys of
+    [] -> ListFunQ "least" xs
+    _  -> let zs = filter (\x -> case x of {Q _ -> False; _ -> True}) xs in
+          let z  = Q $ maximum (map (\(Q c) -> c) ys) in
+          case zs of
+              [] -> z
+              -- if z = 0 and all others are 'abs', then we may discard zs
+              _  -> case z of
+                       Q 0 -> let ws = filter (\x -> case x of {FunQ "abs" _ -> True; _ -> False}) zs in
+                              case compare (length zs) (length ws) of
+                                  EQ -> z
+                                  _  -> ListFunQ "least" (z:zs)
+                       _   -> ListFunQ "least" (z:zs)
+
+applyFunQ :: String -> ExprQ -> ExprQ
+applyFunQ f x =
+  case x of
+    Q c -> case f of
+              "exp" -> Q $ exp c
+              "log" -> Q $ log c
+              "abs" -> Q $ abs c
+              _     -> FunQ f x
+    _ -> FunQ f x
+
+applyOpQ :: String -> ExprQ -> ExprQ -> ExprQ
+applyOpQ op (Q cx) (Q cy) =
+    case op of
+        "+" -> Q (cx + cy)
+        "-" -> Q (cx - cy)
+        "*" -> Q (cx * cy)
+        "/" -> Q (cx / cy)
+        "^" -> Q (cx ** cy)
+
+applyOpQ op x@(Q cx) y =
+    case op of
+        "+" -> if cx == 0 then y else (:+) x y
+        "-" -> (:-) x y
+        "*" -> if cx == 0 then Q 0 else (if cx == 1 then y else (:*) x y)
+        "/" -> if cx == 0 then Q 0 else (:/) x y
+        "^" -> if cx == 0 then Q 0 else (if cx == 1 then Q 1 else (:**) x y)
+
+applyOpQ op x y@(Q cy) =
+    case op of
+        "+" -> if cy == 0 then x else (:+) x y
+        "-" -> if cy == 0 then x else (:-) x y
+        "*" -> if cy == 0 then Q 0 else (if cy == 1 then x else (:*) x y)
+        "/" -> if cy == 0 then Q (1/0) else (if cy == 1 then x else (:/) x y)
+        "^" -> if cy == 0 then Q 1 else (if cy == 1 then x else (:**) x y)
+
+applyOpQ op x y =
+    case op of
+        "+" -> (:+) x y
+        "-" -> (:-) x y
+        "*" -> (:*) x y
+        "/" -> (:/) x y
+        "^" -> (:**) x y
+
+constProp :: ExprQ -> ExprQ
+constProp expr =
+  case expr of
+        Q c -> Q c
+        VarQ x -> VarQ x
+        FunQ f x -> applyFunQ f $ constProp x
+        OpQ op x y -> OpQ op (constProp x) (constProp y)
+        ListFunQ f xs -> applyListFunQ f $ map constProp xs
+
+        IfThenElseQ (CmpOpQ op z1 z2) x y -> case z of
+                                                   Just True  -> (constProp x)
+                                                   Just False -> (constProp y)
+                                                   Nothing    -> IfThenElseQ (CmpOpQ op nz1 nz2) (constProp x) (constProp y)
+                                               where
+                                                   nz1 = constProp z1
+                                                   nz2 = constProp z2
+                                                   z = constPropBool op nz1 nz2
+        --IfThenElseQ b x y -> IfThenElseQ b (constProp x) (constProp y)
+        (x :+ y)  -> applyOpQ "+" (constProp x) (constProp y)
+        (x :- y)  -> applyOpQ "-" (constProp x) (constProp y)
+        (x :* y)  -> applyOpQ "*" (constProp x) (constProp y)
+        (x :/ y)  -> applyOpQ "/" (constProp x) (constProp y)
+        (x :** y) -> applyOpQ "^" (constProp x) (constProp y)
+        Select x fr wh -> Select (constProp x) fr wh
+        GroupBy x g h  -> GroupBy (constProp x) g h
+        x `Where` y    -> (constProp x) `Where` y
+        x `As` a       -> (constProp x) `As` a
+        Subquery x y   -> Subquery (constProp x) (constProp y)
+
+constPropBool :: String -> ExprQ -> ExprQ -> Maybe Bool
+constPropBool op (Q cx) (Q cy) =
+    case op of
+        "="  -> if cx == cy then Just True else Just False
+        "!=" -> if cx == cy then Just False else Just True
+        "<=" -> if cx <= cy then Just True else Just False
+        ">=" -> if cx >= cy then Just True else Just False
+        "<"  -> if cx < cy  then Just True else Just False
+        ">"  -> if cx > cy  then Just True else Just False
+
+constPropBool op (Q cx) y =
+    case op of
+        ">=" -> if cx == infinity then Just True else Nothing
+        _    -> Nothing
+
+constPropBool op x (Q cy) =
+    case op of
+        "<=" -> if cy == infinity then Just True else Nothing
+        _    -> Nothing
+
+constPropBool _ _ _ = Nothing
+----------------
+
 instance Show ExprQ where
-  show (Q x) | x >= 0    = show x
+  show (Q x) | x >= 0    = if x == infinity then "99999.99" else show x
              | otherwise = '(' : show x ++ ")"
   show (VarQ x) = x
   show (FunQ f x) = f ++ '(' : show x ++ ")"
@@ -263,6 +396,13 @@ analyzeExpr row expr = res where
     Prec (B.AR fx (B.SUB subg subBeta) (B.SUB sdsg sdsBeta)) -> AR {fx = Q fx, subf = SUB (Q . subg) subBeta, sdsf = SUB (Q . subg) subBeta,
                                                                     gub = if subBeta > 0 then infinity else subg 0,
                                                                     gsens = if sdsBeta > 0 then infinity else sdsg 0}
+    -- we use this construction only for equality checks, so an UB on f itself is 1
+    StringCond s ->
+      aR {fx = VarQ s,
+          subf = SUB (const (VarQ s)) 0,
+          sdsf = SUB (const (Q 0)) 0,
+          gub = 1.0,
+          gsens = 0}
     Power i r ->
       let x = row !! i
       in if r == 1
@@ -632,9 +772,9 @@ performAnalyses args colNames tableExprData = do
     when debug $ printf "beta = %0.6f\n" beta
     let b = epsilon / (gamma + 1) - beta
     when debug $ printf "b = %0.6f\n" b
-    let qr = fx ar
+    let qr = constProp $ fx ar
     when debug $ putStrLn "Query result:"
     when debug $ putStrLn (show qr ++ ";")
-    let sds = subg (sdsf ar) beta
-    when debug $ putStrLn "beta-smooth derivative sensitivity:"
+    let sds = constProp $ subg (sdsf ar) beta
+    when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
     when debug $ putStrLn (show sds ++ ";")

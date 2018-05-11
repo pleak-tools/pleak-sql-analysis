@@ -37,6 +37,7 @@ data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm
           | Text String                   -- this is needed to store strings that remain public and go only into the filters
           | Like VarName VarName          -- stores LIKE expressions for filtering
           | Comp Ordering VarName VarName -- compares two variables, turns to sigmoid/tauoid if necessary
+          | LZero VarName                 -- we use it only inside norm definiitons
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
@@ -86,6 +87,7 @@ extractArg t =
 extractArgs :: Expr -> [VarName]
 extractArgs t =
     case t of
+        LZero x          -> [x]
         Power x _        -> [x]
         PowerLN x _      -> [x]
         Exp _ x          -> [x]
@@ -142,6 +144,7 @@ markExprCols sensitiveVars expr =
     -- do not make alpha too large, since it may cause overflows
     let alpha = 0.1 in
     case expr of
+        B.L0Predicate x f  -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
         B.PowerLN x c      -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
         B.Power x c        -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
         B.ComposePower e c -> let (t1,t2) = markExprCols sensitiveVars e in (t1, B.ComposePower t2 c)
@@ -246,6 +249,7 @@ updatePrefices fullTablePaths prefix var =
 updatePreficesExpr :: (S.Set String) -> VarName -> Expr -> Expr
 updatePreficesExpr fullTablePaths prefix expr =
     case expr of
+        LZero x          -> LZero (updatePrefices fullTablePaths prefix x)
         Power x c        -> Power (updatePrefices fullTablePaths prefix x) c
         PowerLN x c      -> PowerLN (updatePrefices fullTablePaths prefix x) c
         Exp c x          -> Exp c (updatePrefices fullTablePaths prefix x)
@@ -375,6 +379,7 @@ applyPrecAggr :: Double -> Double -> B.Expr -> B.Expr
 applyPrecAggr arMin arMax expr =
 
     case expr of
+        B.L0Predicate x f  -> B.L0Predicate x f
         B.PowerLN x c      -> B.PowerLN x c
         B.Power x c        -> B.Power x c
         B.ComposePower e c -> B.ComposePower (applyPrecAggr arMin arMax e) c
@@ -423,6 +428,7 @@ normExpression t xs es _ =
     let zs = (map (\ x -> Col x) xs) ++ es in
     case t of
         PowerLN _ _      -> NormLN (head zs)
+        LZero _          -> NormLZero (head zs)
         ScaleNorm c _    -> NormScale c (head zs)
         ZeroSens _       -> NormZero
         L c _            -> NormL (Exactly c) zs
@@ -518,6 +524,7 @@ deriveNorm :: (Show a) => [a] -> B.Expr -> Norm a
 deriveNorm colnames expr = 
     case expr of
         B.PowerLN x _      -> NormLN (Col (colnames !! x))
+        B.L0Predicate x _  -> NormLZero (Col (colnames !! x))
         B.Power x _        -> NormL (Exactly 1.0) [Col (colnames !! x)]
         B.ComposePower e c -> deriveNorm colnames e
         B.Exp _ x          -> NormL (Exactly 1.0) [Col (colnames !! x)]
@@ -563,6 +570,7 @@ markNormCols sensitiveVars expr =
     case expr of
           Col x          -> if S.member x sensitiveVars then expr else NormZero
           NormLN e       -> NormLN (markNormCols sensitiveVars e)
+          NormLZero e    -> NormLZero (markNormCols sensitiveVars e)
           NormL p es     -> NormL p $ map (markNormCols sensitiveVars) es
           NormScale c e  -> NormScale c (markNormCols sensitiveVars e)
           NormZero       -> NormZero
@@ -577,39 +585,40 @@ scale :: M.Map B.Var Double -> B.Var -> Double
 scale mapX x = takeIfExists mapX x 1.0
 
 -- takes into account modifications in the norm and applies them to the query expression
-updateExpr :: M.Map B.Var Double -> M.Map B.Var Double -> B.Expr -> B.Expr
-updateExpr mapCol mapLN expr =
+updateExpr :: M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> B.Expr -> B.Expr
+updateExpr mapCol mapLN mapLZ expr =
     case expr of
-        B.PowerLN x c      -> B.ScaleNorm (scale mapLN  x) (B.PowerLN x c)
-        B.Power x c        -> B.ScaleNorm (scale mapCol x) (B.Power x c)
-        B.ComposePower e c -> B.ComposePower (updateExpr mapCol mapLN e) c
+        B.PowerLN x c      -> B.ScaleNorm (scale mapLN  x) expr
+        B.L0Predicate x f  -> B.ScaleNorm (scale mapLZ  x) expr
+        B.Power x c        -> B.ScaleNorm (scale mapCol x) expr
+        B.ComposePower e c -> B.ComposePower (updateExpr mapCol mapLN mapLZ e) c
         B.Exp c x          -> B.ScaleNorm (scale mapCol x) (B.Exp c x)
-        B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN e)
+        B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN mapLZ e)
         B.Sigmoid a c x    -> B.ScaleNorm (scale mapCol x) (B.Sigmoid a c x)
-        B.ComposeSigmoid a c e -> B.ComposeSigmoid a c (updateExpr mapCol mapLN e)
+        B.ComposeSigmoid a c e -> B.ComposeSigmoid a c (updateExpr mapCol mapLN mapLZ e)
         B.Tauoid a c x     -> B.ScaleNorm (scale mapCol x) (B.Tauoid a c x)
-        B.ComposeTauoid a c e -> B.ComposeTauoid a c (updateExpr mapCol mapLN e)
+        B.ComposeTauoid a c e -> B.ComposeTauoid a c (updateExpr mapCol mapLN mapLZ e)
         B.Const a          -> B.Const a
-        B.ScaleNorm a e    -> B.ScaleNorm a $ updateExpr mapCol mapLN e
+        B.ScaleNorm a e    -> B.ScaleNorm a $ updateExpr mapCol mapLN mapLZ e
         B.ZeroSens e       -> B.ZeroSens e
         B.L p xs           -> B.ScaleNorm (foldr min 100000 $ map (scale mapCol) xs) (B.L p xs)
-        B.ComposeL p es    -> B.ComposeL p $ map (updateExpr mapCol mapLN) es
+        B.ComposeL p es    -> B.ComposeL p $ map (updateExpr mapCol mapLN mapLZ) es
         B.LInf xs          -> B.ScaleNorm (foldr min 100000 $ map (scale mapCol) xs) (B.LInf xs)
-        B.Prod es          -> B.Prod  $ map (updateExpr mapCol mapLN) es
-        B.Prod2 es         -> B.Prod2 $ map (updateExpr mapCol mapLN) es -- we assume that equality of subnorms has been already checked
-        B.Min es           -> B.Min $ map (updateExpr mapCol mapLN) es
-        B.Max es           -> B.Max $ map (updateExpr mapCol mapLN) es
-        B.Sump p es        -> B.Sump p $ map (updateExpr mapCol mapLN) es
-        B.SumInf es        -> B.SumInf $ map (updateExpr mapCol mapLN) es
-        B.Sum2 es          -> B.Sum2   $ map (updateExpr mapCol mapLN) es -- we assume that equality of subnorms has been already checked
+        B.Prod es          -> B.Prod  $ map (updateExpr mapCol mapLN mapLZ) es
+        B.Prod2 es         -> B.Prod2 $ map (updateExpr mapCol mapLN mapLZ) es -- we assume that equality of subnorms has been already checked
+        B.Min es           -> B.Min $ map (updateExpr mapCol mapLN mapLZ) es
+        B.Max es           -> B.Max $ map (updateExpr mapCol mapLN mapLZ) es
+        B.Sump p es        -> B.Sump p $ map (updateExpr mapCol mapLN mapLZ) es
+        B.SumInf es        -> B.SumInf $ map (updateExpr mapCol mapLN mapLZ) es
+        B.Sum2 es          -> B.Sum2   $ map (updateExpr mapCol mapLN mapLZ) es -- we assume that equality of subnorms has been already checked
         B.Prec ar          -> B.Prec ar
         B.StringCond s         -> B.StringCond s
 
-updateTableExpr :: Int -> B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> B.TableExpr
-updateTableExpr numOfRows expr mapCol mapLN queryAggrNorm dbAggrNorm =
+updateTableExpr :: Int -> B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> B.TableExpr
+updateTableExpr numOfRows expr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm =
     let n = fromIntegral numOfRows in
     let a = scalingLpNorm queryAggrNorm dbAggrNorm n in
-    let g = updateExpr mapCol mapLN in
+    let g = updateExpr mapCol mapLN mapLZ in
     case expr of
         B.SelectProd es    -> B.SelectProd   $ map (g . B.ScaleNorm a) es
         B.SelectL p  es    -> B.SelectL p    $ map (g . B.ScaleNorm a) es
@@ -626,8 +635,9 @@ exprToBExpr :: S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> Expr 
 exprToBExpr sensitiveCols inputMap asgnMap t = 
     let alpha = 0.1 in
     case t of
-        Text s      -> (S.empty, B.Const 0.0) -- the value B.Const 0.0 will not be used anyway
-                                              -- TODO we would like error message if it is not converted to a string later
+
+        -- TODO we would like error message if s is misused later
+        Text s      -> (S.empty, B.StringCond ("\'" ++ s ++ "\'")) 
         Power x c   -> processRec (\z -> B.ComposePower z c) (\z -> B.Power z c) x
 
         PowerLN x c -> processRec (const (error err)) (\z -> B.PowerLN z c) x
@@ -692,10 +702,18 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
                             if S.size (S.intersection usedVars sensitiveCols) == 0 then
                                 (usedVars, B.StringCond (exprToString True asgnMap t))
                             else
-                                if (pairwiseDisjoint [usedVars1,usedVars2]) then
-                                    (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
-                                else
-                                    (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                -- use l0-norm if we are comparing strings
+                                -- TODO we will probably handle more complicated cases later
+                                case (e1,e2) of
+                                    (B.StringCond z1, B.Power x2 1.0) -> (usedVars, B.L0Predicate x2 (\z -> z ++ " > " ++ z1))
+                                    (B.StringCond z1,              _) -> error $ error_queryExpr_syntax t
+                                    (B.Power x1 1.0, B.StringCond z2) -> (usedVars, B.L0Predicate x1 (\z -> z ++ " > " ++ z2))
+                                    (_,              B.StringCond z2) -> error $ error_queryExpr_syntax t
+                                    _ ->
+                                        if (pairwiseDisjoint [usedVars1,usedVars2]) then
+                                            (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                        else
+                                            (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
 
         Comp EQ x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
                             let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
@@ -703,10 +721,18 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
                             if S.size (S.intersection usedVars sensitiveCols) == 0 then
                                 (usedVars, B.StringCond (exprToString True asgnMap t))
                             else
-                                if (pairwiseDisjoint [usedVars1,usedVars2]) then
-                                    (usedVars, B.ComposeTauoid alpha 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
-                                else
-                                    (usedVars, B.ComposeTauoid alpha 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                -- use l0-norm if we are comparing strings
+                                -- TODO we will probably handle more complicated cases later
+                                case (e1,e2) of
+                                    (B.StringCond z1, B.Power x2 1.0) -> (usedVars, B.L0Predicate x2 (\z -> z ++ " = " ++ z1))
+                                    (B.StringCond z1,              _) -> error $ error_queryExpr_syntax t
+                                    (B.Power x1 1.0, B.StringCond z2) -> (usedVars, B.L0Predicate x1 (\z -> z ++ " = " ++ z2))
+                                    (_,              B.StringCond z2) -> error $ error_queryExpr_syntax t
+                                    _ ->
+                                        if (pairwiseDisjoint [usedVars1,usedVars2]) then
+                                            (usedVars, B.ComposeTauoid alpha 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                        else
+                                            (usedVars, B.ComposeTauoid alpha 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
         _ -> error $ error_queryExpr_syntax t
    where err = error_queryExpr_repeatingVars t
          allInputVars xs  = foldr (\x y -> (not (M.member x asgnMap)) && y) True xs

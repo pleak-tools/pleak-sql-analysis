@@ -39,7 +39,7 @@ defaultOutputTableName = "output"
 -- keywords
 allKeyWordList :: [String]
 allKeyWordList = ["return",
-               "const","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","linf","prod","inv","div","min","max","sigmoid","tauoid",
+               "const","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","l0","linf","prod","inv","div","min","max","sigmoid","tauoid",
                "selectMin","selectMax","selectProd","selectL"]
 
 allKeyWords :: S.Set String -- set of reserved "words"
@@ -56,6 +56,7 @@ normExpr = constExpr
   <|> zeroSensExpr
   <|> lpNormExpr
   <|> linfNormExpr
+  <|> lzeroNormExpr
   <|> lnExpr
 
 -- parsing different expressions, one by one
@@ -97,6 +98,12 @@ linfNormExpr = do
   keyWord "linf"
   bs <- many varName
   return [LInf bs]
+
+lzeroNormExpr :: Parser [Expr]
+lzeroNormExpr = do
+  keyWord "l0"
+  b <- varName
+  return [LZero b]
 
 -- this one is intended only for norms
 lnExpr :: Parser [Expr]
@@ -260,6 +267,7 @@ bOperators =
 
   , [ InfixL (ABinary ALT <$ symbol "<=")
     , InfixL ((\x y -> AUnary ANot (ABinary AEQ x y)) <$ symbol "<>")
+    , InfixL ((\x y -> AUnary ANot (ABinary AEQ x y)) <$ symbol "!=")
     , InfixL (ABinary ALT <$ symbol "<")
     , InfixL (ABinary AEQ <$ symbol "==")
     , InfixL (ABinary AEQ <$ symbol "=")

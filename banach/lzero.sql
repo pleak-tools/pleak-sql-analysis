@@ -1,1 +1,1 @@
-SELECT sum(y) FROM lzero WHERE x != 'EE';
+SELECT sum(lzero.y) FROM lzero WHERE lzero.x != 'EE';

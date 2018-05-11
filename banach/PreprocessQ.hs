@@ -130,8 +130,8 @@ deriveExprNorm debug numOfRows inputMap sensitiveCols dbNormTableAliases dbNormF
     let queryAggrNorm = deriveTableNorm queryAggr in
 
     -- adjust the query to the database norm
-    let (mapCol,mapLN) = normalizeAndVerify queryExprNorm dbExprNorm in
-    let adjustedQuery = updateTableExpr numOfRows queryAggr mapCol mapLN queryAggrNorm dbAggrNorm in
+    let (mapCol,mapLN,mapLZ) = normalizeAndVerify queryExprNorm dbExprNorm in
+    let adjustedQuery = updateTableExpr numOfRows queryAggr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm in
 
     let newQueryNorm = deriveNorm orderedVars $ head (getExprFromTableExpr adjustedQuery) in
     let newAggrNorm  = deriveTableNorm adjustedQuery in
@@ -141,7 +141,7 @@ deriveExprNorm debug numOfRows inputMap sensitiveCols dbNormTableAliases dbNormF
     traceIfDebug debug ("database norm     = Rows: " ++ show dbAggrNorm    ++ " | Cols: "  ++ show (normalizeNorm dbExprNorm)) $
     traceIfDebug debug ("intial query norm = Rows: " ++ show queryAggrNorm ++ " | Cols: "  ++ show (normalizeNorm queryExprNorm)) $
     traceIfDebug debug ("adjust query norm = Rows: " ++ show newAggrNorm   ++ " | Cols: "  ++ show (normalizeNorm newQueryNorm)) $
-    traceIfDebug debug ("scaling: " ++ show mapCol ++ "\n\t " ++ show mapLN ++ "\n\n") $
+    traceIfDebug debug ("scaling: " ++ show mapCol ++ "\n\t " ++ show mapLN ++ "\n\t " ++ show mapLZ ++ "\n\n") $
     traceIfDebug debug ("----------------") $
     adjustedQuery
 
@@ -328,6 +328,7 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug $ "--Num_of_rows--------------"
     traceIOIfDebug debug $ numOfRowsQuery
     numOfRows <- DQ.sendDoubleQueryToDb args numOfRowsQuery
+    --let numOfRows = 1.0
 
     -- compute min/max queries using sel, fr, wh
     let minExprQuery = "SELECT MIN(" ++ queryStr ++ ")" ++ fr ++ wh
@@ -338,6 +339,8 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug $ maxExprQuery
     arMin <- DQ.sendDoubleQueryToDb args minExprQuery
     arMax <- DQ.sendDoubleQueryToDb args maxExprQuery
+    --let arMin = 1.0
+    --let arMax = 1.0
 
     -- replace ARMin and ARMax inside the queries with actual precomputed data
     let finalTableExpr = applyPrecAggrTable arMin arMax queryAggr

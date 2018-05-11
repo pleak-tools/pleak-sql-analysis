@@ -637,7 +637,7 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
     case t of
 
         -- TODO we would like error message if s is misused later
-        Text s      -> (S.empty, B.StringCond ("\'" ++ s ++ "\'")) 
+        Text s      -> (S.empty, B.StringCond ("\'" ++ s ++ "\'"))
         Power x c   -> processRec (\z -> B.ComposePower z c) (\z -> B.Power z c) x
 
         PowerLN x c -> processRec (const (error err)) (\z -> B.PowerLN z c) x

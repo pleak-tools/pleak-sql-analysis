@@ -237,17 +237,20 @@ verifyNorm :: (Show a, Eq a, Ord a) => Int -> Norm a -> Norm a -> Maybe (Norm a)
 verifyNorm _ (Col x) (Col y) =
     if x == y then Just (Col x) else Nothing
 
+verifyNorm _ (NormLN (Col x)) (NormLN (Col y)) =
+    if x == y then Just (NormLN (Col x)) else Nothing
+
 verifyNorm _ (NormLZero (Col x)) (NormLZero (Col y)) =
     if x == y then Just (NormLZero (Col x)) else Nothing
 
+-- we want to leave scaling out of LN and LZero
 verifyNorm k (NormLZero x) (NormScale a y) = 
-    fmap (\z -> NormScale a (NormLZero z)) $ verifyNorm k x y
+    fmap (\z -> NormScale a z) $ verifyNorm k (NormLZero x) y
 
--- we have x >= ln(x), and ax >= a ln(x) for all a
--- we want to leave scaling out of LN, so we do not use ax >= ln(ax)
 verifyNorm k (NormLN x) (NormScale a y) = 
-    fmap (\z -> NormScale a (NormLN z)) $ verifyNorm k x y
+    fmap (\z -> NormScale a z) $ verifyNorm k (NormLN x) y
 
+-- we have x >= ln(x)
 -- scaling values under LN is bad in any case, let us return Nothing so that other matching could be tried
 verifyNorm k (NormLN x) y =
     let v = verifyNorm k x y in
@@ -330,7 +333,7 @@ normalizeAndVerify nx ny =
               let scale = 2**(-proot) in
               let listMapCol = matchScalings         nnx (M.toList mapColx) mapColy in
               let listMapLN  = matchLNScalings scale nnx (M.toList mapLNx)  mapColx mapColy mapLNy in
-              let listMapLZ  = matchLZScalings scale nnx (M.toList mapLZx)  mapColx mapColy mapLZy in
+              let listMapLZ  = matchLZScalings scale nnx (M.toList mapLZx)  mapLZy in
 
               -- additional scaling is needed in the case px < py
               let n = fromIntegral $ length (listMapCol ++ listMapLN ++ listMapLZ) in
@@ -364,13 +367,13 @@ matchLNScalings scale t ((x,a):xs) mapColx mapColy mapLNy =
         (x, scale * (min a b) / a) : matchLNScalings scale t xs mapColx mapColy mapLNy
     else error $ error_badLNNorm t x
 
-matchLZScalings :: (Show a, Ord a) => Double -> Norm a -> [(a,Double)] -> (M.Map a Double) -> (M.Map a Double) -> (M.Map a Double) -> [(a,Double)]
-matchLZScalings _ _ [] _ _ _ = []
-matchLZScalings scale t ((x,a):xs) mapColx mapColy mapLZy =
+matchLZScalings :: (Show a, Ord a) => Double -> Norm a -> [(a,Double)] -> (M.Map a Double) -> [(a,Double)]
+matchLZScalings _ _ [] _ = []
+matchLZScalings scale t ((x,a):xs) mapLZy =
     -- if mapLZy also contains x, everything is fine
     if M.member x mapLZy then
         let b = mapLZy ! x in
-        (x, (min a b) / a) : matchLZScalings scale t xs mapColx mapColy mapLZy
+        (x, (min a b) / a) : matchLZScalings scale t xs mapLZy
     else error $ error_badLZNorm t x
 
 -- assume that the norm has already been normalized

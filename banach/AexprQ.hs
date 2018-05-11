@@ -185,6 +185,16 @@ aexprNormalize (AUnary AAbsEnd (AUnary AAbsBegin x)) = AAbs (aexprNormalize x)
 -- if none of the previous cases matched, go deeper into the term
 aexprNormalize (AUnary f x)    = AUnary  f (aexprNormalize x)
 aexprNormalize (ABinary f x y) = ABinary f (aexprNormalize x) (aexprNormalize y)
+
+aexprNormalize (AAbs x) = AAbs $ aexprNormalize x
+aexprNormalize (ASum  xs) = ASum  $ map aexprNormalize xs
+aexprNormalize (AProd xs) = AProd $ map aexprNormalize xs
+aexprNormalize (AMins xs) = AMins $ map aexprNormalize xs
+aexprNormalize (AMaxs xs) = AMaxs $ map aexprNormalize xs
+aexprNormalize (AAnds xs) = AAnds $ map aexprNormalize xs
+aexprNormalize (AOrs  xs) = AOrs  $ map aexprNormalize xs
+aexprNormalize (AXors xs) = AXors $ map aexprNormalize xs
+
 aexprNormalize x = x
 
 ---------------------------------------------------------------------------------------------------------

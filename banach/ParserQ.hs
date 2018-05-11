@@ -354,7 +354,7 @@ selectAExpr = do
 sqlFilterExpr :: Parser [AExpr VarName]
 sqlFilterExpr = do
     bexpr <- bExpr
-    let aexpr = aexprFixAbs bexpr
+    let aexpr = aexprNormalize bexpr
     -- how many filters we actually have if we split them by "and"?
     let xs = case aexpr of
             AAnds ys -> ys

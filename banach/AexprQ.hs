@@ -203,8 +203,8 @@ aexprNormalize x = x
 aexprToExpr :: VarName -> AExpr VarName -> (M.Map VarName Expr)
 
 -- TODO this is temporary, can be improved
-aexprToExpr y (AVar "min~") = M.fromList [(y,ARMin)]
-aexprToExpr y (AVar "max~") = M.fromList [(y,ARMax)]
+--aexprToExpr y (AVar "min~") = M.fromList [(y,ARMin)]
+--aexprToExpr y (AVar "max~") = M.fromList [(y,ARMax)]
 
 --
 aexprToExpr y (AText s) = M.fromList [(y, Text s)]
@@ -410,7 +410,7 @@ aexprToString aexpr =
     case aexpr of
         AVar x -> x
         AConst c -> show c
-        AText c -> "\'" ++ c ++ "\'"
+        AText s -> s
 
         AAbs x -> "abs(" ++ aexprToString x ++ ")"
         ASum xs -> "(" ++ intercalate " + " (map aexprToString xs) ++ ")"

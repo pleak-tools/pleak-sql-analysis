@@ -247,12 +247,16 @@ aTerm :: Parser (AExpr VarName)
 aTerm = parens aExpr
   <|> AVar <$> varName
   <|> AConst <$> signedFloat
-  <|> AText <$> text
+  <|> aString
   <|> aDummy
+
+aString = do
+  t <- text
+  return $ AText ("\'" ++ t ++ "\'")
 
 aDummy = do
   symbol "*"
-  return (AConst 0.0)
+  return $ AConst 0.0
 
 bExpr :: Parser (AExpr VarName)
 bExpr = makeExprParser bTerm bOperators

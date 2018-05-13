@@ -163,8 +163,8 @@ rewriteQuery faexpr (F qaexpr qaggr) =
     let oneNeg = AConst (-1.0) in
 
     -- inf = max - min
-    let maxRef    = AVar "max~" in
-    let minRef    = AVar "min~" in
+    let maxRef    = AText "minmaxT.max" in
+    let minRef    = AText "minmaxT.min" in
     let inf       = ABinary AAdd maxRef (ABinary AMult minRef oneNeg) in
 
     case qaggr of

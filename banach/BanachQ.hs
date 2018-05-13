@@ -752,7 +752,7 @@ analyzeTableExprQ fr wh srt colNames te =
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
 
-performAnalyses :: ProgramOptions -> [String] -> [(String, TableExpr, String)] -> IO ()
+performAnalyses :: ProgramOptions -> [String] -> [(String, TableExpr, (String,String,String))] -> IO ()
 performAnalyses args colNames tableExprData = do
   let debug = not (alternative args)
   let (tableNames,_,_) = unzip3 tableExprData
@@ -767,9 +767,10 @@ performAnalyses args colNames tableExprData = do
   when debug $ putStrLn "Generating SQL queries for computing the analysis results:"
   --let fromPart = intercalate ", " tableNames
   --let wherePart = ""
-  forM_ tableExprData $ \ (tableName, te, sqlQuery) -> do
-    let [_, fromWhere] = splitOn " FROM " sqlQuery
-    let [fromPart, wherePart] = splitOn " WHERE " fromWhere
+  --forM_ tableExprData $ \ (tableName, te, sqlQuery) -> do
+  --  let [_, fromWhere] = splitOn " FROM " sqlQuery
+  --  let [fromPart, wherePart] = splitOn " WHERE " fromWhere
+  forM_ tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="

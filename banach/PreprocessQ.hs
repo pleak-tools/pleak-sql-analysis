@@ -150,7 +150,7 @@ deriveExprNorm debug numOfRows inputMap sensitiveCols dbNormTableAliases dbNormF
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
 inputWrtEachTable   :: Bool -> (M.Map VarName B.Var) -> (S.Set B.Var) ->
                        [TableAlias] -> B.TableExpr -> (String,String,String) -> Int -> (M.Map TableAlias TableData) ->
-                       [(TableName, B.TableExpr, String)]
+                       [(TableName, B.TableExpr, (String,String,String))]
 inputWrtEachTable _ _ _ [] _ _ _ _ = []
 inputWrtEachTable debug inputMap allSensCols (tableAlias : ts) filtQuery (sel,fr,wh) numOfRows tableMap =
 
@@ -173,12 +173,12 @@ inputWrtEachTable debug inputMap allSensCols (tableAlias : ts) filtQuery (sel,fr
     -- a query that creates the large cross product table
     let fr1  = fr ++ ", " ++ sensRowTable in
     let wh1  = wh ++ " AND " ++ sensRowFilter in
-    let sqlQuery = sel ++ fr1 ++ wh1 in
+    --let sqlQuery = "SELECT " ++ sel ++ " FROM " ++ fr1 ++ " WHERE " ++ wh1 in
 
     -- the query expressions defined over the large cross product table
     let adjTableExpr = deriveExprNorm debug numOfRows inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
 
-    (tableName, adjTableExpr, sqlQuery) : inputWrtEachTable debug inputMap allSensCols ts filtQuery (sel,fr,wh) numOfRows tableMap
+    (tableName, adjTableExpr, (sel, fr1, wh1)) : inputWrtEachTable debug inputMap allSensCols ts filtQuery (sel,fr,wh) numOfRows tableMap
 
 
 processQuery :: TableName -> (M.Map TableName Query) -> TableName -> TableAlias -> TableName -> ([[TableName]], [TableAlias],[TableName], [Function], [AExpr VarName])
@@ -251,7 +251,7 @@ readAllTables queryPath tableNames tableAliases = do
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> IO ([String], [(TableName, B.TableExpr,String)])
+getBanachAnalyserInput :: Bool -> String -> IO ([String], [(TableName, B.TableExpr,(String,String,String))])
 getBanachAnalyserInput debug input = do
 
     putStrLn $ "\\echo ##========== Query " ++ input ++ " ==============="
@@ -317,36 +317,38 @@ getBanachAnalyserInput debug input = do
 
     -- a query that creates the large cross product table
     let usedTables    = map (\(x,y) -> let z = getTableName y in if x == z then z else z ++ " AS " ++ x) (M.toList inputTableMap)
-    let sel = "SELECT " ++ intercalate ", " colNames
-    let fr  = " FROM "  ++ intercalate ", " usedTables
-    let wh  = " WHERE " ++ (if length pubFilter == 0 then "true" else intercalate " AND " pubFilter)
+    let sel = intercalate ", " colNames
+    let fr  = intercalate ", " usedTables
+    let wh  = if length pubFilter == 0 then "true" else intercalate " AND " pubFilter
 
     args <- getProgramOptions
 
     -- compute the number of rows using sel, fr, wh
-    let numOfRowsQuery = "SELECT COUNT(*)" ++ fr ++ wh
+    let numOfRowsQuery = "SELECT COUNT(*) FROM " ++ fr ++ " WHERE " ++ wh
     traceIOIfDebug debug $ "--Num_of_rows--------------"
     traceIOIfDebug debug $ numOfRowsQuery
     numOfRows <- DQ.sendDoubleQueryToDb args numOfRowsQuery
     --let numOfRows = 1.0
 
     -- compute min/max queries using sel, fr, wh
-    let minExprQuery = "SELECT MIN(" ++ queryStr ++ ")" ++ fr ++ wh
-    let maxExprQuery = "SELECT MAX(" ++ queryStr ++ ")" ++ fr ++ wh
-    traceIOIfDebug debug $ "--Min--------------"
-    traceIOIfDebug debug $ minExprQuery
-    traceIOIfDebug debug $ "--Max--------------"
-    traceIOIfDebug debug $ maxExprQuery
-    arMin <- DQ.sendDoubleQueryToDb args minExprQuery
-    arMax <- DQ.sendDoubleQueryToDb args maxExprQuery
+    let minmaxQuery = ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
+    --let minExprQuery = "SELECT MIN(" ++ queryStr ++ ")" ++ fr ++ wh
+    --let maxExprQuery = "SELECT MAX(" ++ queryStr ++ ")" ++ fr ++ wh
+    --traceIOIfDebug debug $ "--Min--------------"
+    --traceIOIfDebug debug $ minExprQuery
+    --traceIOIfDebug debug $ "--Max--------------"
+    --traceIOIfDebug debug $ maxExprQuery
+    --arMin <- DQ.sendDoubleQueryToDb args minExprQuery
+    --arMax <- DQ.sendDoubleQueryToDb args maxExprQuery
     --let arMin = 1.0
     --let arMax = 1.0
 
     -- replace ARMin and ARMax inside the queries with actual precomputed data
-    let finalTableExpr = applyPrecAggrTable arMin arMax queryAggr
+    --let finalTableExpr = applyPrecAggrTable arMin arMax queryAggr
+    let finalTableExpr = queryAggr
 
     --bring the input to the form [(TableName, TableExpr, QueryString)]
-    let dataWrtEachTable = inputWrtEachTable debug inputMap sensitiveColSet (M.keys inputTableMap) finalTableExpr (sel,fr,wh) (round numOfRows) inputTableMap
+    let dataWrtEachTable = inputWrtEachTable debug inputMap sensitiveColSet (M.keys inputTableMap) finalTableExpr (sel,fr ++ minmaxQuery,wh) (round numOfRows) inputTableMap
     let (allTableNames, finalTableExpr, sqlQueries) = unzip3 dataWrtEachTable
 
     -- the first column now always marks sensitive rows

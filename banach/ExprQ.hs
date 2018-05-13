@@ -481,7 +481,7 @@ exprToString isPublic asgnMap expr =
         Id  x            -> processRec x
         ARMin            -> "(ArMin PLACEHOLDER)"
         ARMax            -> "(ArMax PLACEHOLDER)"
-        Text c           -> "\'" ++ c ++ "\'"
+        Text s           -> s
         Like x y         -> "(" ++ processRec x ++ " LIKE " ++ processRec y ++ ")"
         Comp EQ x1 x2    -> if isPublic then
                                 "(case when " ++ z1 ++ " = " ++ z2 ++ " then 1 else 0 end)"
@@ -636,8 +636,8 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
     let alpha = 0.1 in
     case t of
 
-        -- TODO we would like error message if s is misused later
-        Text s      -> (S.empty, B.StringCond ("\'" ++ s ++ "\'"))
+        -- TODO we would like error message if s is misused later (it seems that we cannot do it ...)
+        Text s      -> (S.empty, B.StringCond s)
         Power x c   -> processRec (\z -> B.ComposePower z c) (\z -> B.Power z c) x
 
         PowerLN x c -> processRec (const (error err)) (\z -> B.PowerLN z c) x

@@ -55,6 +55,7 @@ error_arrElem x xs     = "INTERNAL ERROR: Element " ++ show x ++ " is not in " +
 error_badNorm   t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
 error_badLNNorm t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
 error_badLZNorm t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
+error_badAggrNorm t p q  = "ERROR: can compute sensitivity for " ++ show t ++ " only w.r.t row norm l_" ++ p ++ ", not l_" ++ q ++ "."
 
 --the next error is not used anymore
 error_verifyNorm t  = "INTERNAL ERROR: Could not prove that the database norm is at least as large as the query norm for sensitivity w.r.t. table " ++ show t

@@ -113,8 +113,8 @@ processOneTable tableAlias tableName inputVars tableValues normFun dbSensitiveVa
 
     T tableValues inputVars normFun extendedSensitiveRows dbSensitiveVars tableName
 
-deriveExprNorm :: Bool -> Int -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [NormFunction] -> B.Expr -> B.TableExpr -> B.TableExpr
-deriveExprNorm debug numOfRows inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
+deriveExprNorm :: Bool -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [NormFunction] -> B.Expr -> B.TableExpr -> B.TableExpr
+deriveExprNorm debug inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
 
     let namePrefices = map (\tableAlias -> tableAlias ++ ".") dbNormTableAliases in
     let (dbNorms1,dbAggrNorms) = unzip $ zipWith (\x y -> norm2Expr x inputMap y) namePrefices dbNormFuns in
@@ -131,7 +131,7 @@ deriveExprNorm debug numOfRows inputMap sensitiveCols dbNormTableAliases dbNormF
 
     -- adjust the query to the database norm
     let (mapCol,mapLN,mapLZ) = normalizeAndVerify queryExprNorm dbExprNorm in
-    let adjustedQuery = updateTableExpr numOfRows queryAggr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm in
+    let adjustedQuery = updateTableExpr queryAggr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm in
 
     let newQueryNorm = deriveNorm orderedVars $ head (getExprFromTableExpr adjustedQuery) in
     let newAggrNorm  = deriveTableNorm adjustedQuery in
@@ -149,10 +149,10 @@ deriveExprNorm debug numOfRows inputMap sensitiveCols dbNormTableAliases dbNormF
 -- construct input for multitable Banach analyser
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
 inputWrtEachTable   :: Bool -> (M.Map VarName B.Var) -> (S.Set B.Var) ->
-                       [TableAlias] -> B.TableExpr -> (String,String,String) -> Int -> (M.Map TableAlias TableData) ->
+                       [TableAlias] -> B.TableExpr -> (String,String,String) -> (M.Map TableAlias TableData) ->
                        [(TableName, B.TableExpr, (String,String,String))]
-inputWrtEachTable _ _ _ [] _ _ _ _ = []
-inputWrtEachTable debug inputMap allSensCols (tableAlias : ts) filtQuery (sel,fr,wh) numOfRows tableMap =
+inputWrtEachTable _ _ _ [] _ _ _ = []
+inputWrtEachTable debug inputMap allSensCols (tableAlias : ts) filtQuery (sel,fr,wh) tableMap =
 
     let tableData     = tableMap ! tableAlias in
 
@@ -176,9 +176,9 @@ inputWrtEachTable debug inputMap allSensCols (tableAlias : ts) filtQuery (sel,fr
     --let sqlQuery = "SELECT " ++ sel ++ " FROM " ++ fr1 ++ " WHERE " ++ wh1 in
 
     -- the query expressions defined over the large cross product table
-    let adjTableExpr = deriveExprNorm debug numOfRows inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
+    let adjTableExpr = deriveExprNorm debug inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
 
-    (tableName, adjTableExpr, (sel, fr1, wh1)) : inputWrtEachTable debug inputMap allSensCols ts filtQuery (sel,fr,wh) numOfRows tableMap
+    (tableName, adjTableExpr, (sel, fr1, wh1)) : inputWrtEachTable debug inputMap allSensCols ts filtQuery (sel,fr,wh) tableMap
 
 
 processQuery :: TableName -> (M.Map TableName Query) -> TableName -> TableAlias -> TableName -> ([[TableName]], [TableAlias],[TableName], [Function], [AExpr VarName])
@@ -324,10 +324,10 @@ getBanachAnalyserInput debug input = do
     args <- getProgramOptions
 
     -- compute the number of rows using sel, fr, wh
-    let numOfRowsQuery = "SELECT COUNT(*) FROM " ++ fr ++ " WHERE " ++ wh
-    traceIOIfDebug debug $ "--Num_of_rows--------------"
-    traceIOIfDebug debug $ numOfRowsQuery
-    numOfRows <- DQ.sendDoubleQueryToDb args numOfRowsQuery
+    --let numOfRowsQuery = "SELECT COUNT(*) FROM " ++ fr ++ " WHERE " ++ wh
+    --traceIOIfDebug debug $ "--Num_of_rows--------------"
+    --traceIOIfDebug debug $ numOfRowsQuery
+    --numOfRows <- DQ.sendDoubleQueryToDb args numOfRowsQuery
     --let numOfRows = 1.0
 
     -- compute min/max queries using sel, fr, wh
@@ -348,7 +348,7 @@ getBanachAnalyserInput debug input = do
     let finalTableExpr = queryAggr
 
     --bring the input to the form [(TableName, TableExpr, QueryString)]
-    let dataWrtEachTable = inputWrtEachTable debug inputMap sensitiveColSet (M.keys inputTableMap) finalTableExpr (sel,fr ++ minmaxQuery,wh) (round numOfRows) inputTableMap
+    let dataWrtEachTable = inputWrtEachTable debug inputMap sensitiveColSet (M.keys inputTableMap) finalTableExpr (sel,fr ++ minmaxQuery,wh) inputTableMap
     let (allTableNames, finalTableExpr, sqlQueries) = unzip3 dataWrtEachTable
 
     -- the first column now always marks sensitive rows

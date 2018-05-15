@@ -47,6 +47,7 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectMax VarName         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectL Double VarName    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
                | SelectSum VarName         -- E1+...+En with norm that is not specified yet and will be derived later
+               | SelectSumBin VarName      -- sums binary variables
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
                | Select VarName            -- does not apply aggregation, is used only for intermediate representation
                | SelectDistinct VarName           -- TODO not supported yet, used only to generate nice error messages
@@ -77,6 +78,7 @@ extractArg t =
         SelectMax x    -> x
         SelectL _ x    -> x
         SelectSum  x   -> x
+        SelectSumBin x -> x
         SelectCount x  -> x
         SelectDistinct  x  -> x
         Select x       -> x
@@ -125,10 +127,12 @@ queryArg t ys =
         SelectMax _    -> B.SelectMax ys
         SelectL c _    -> B.SelectL c ys
         -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
-        SelectSum  _   -> B.SelectSump 1.0 ys
+        SelectSum  x   -> B.SelectSump 1.0 ys
+        -- TODO p = 0.0 serves as a marker for further optimization, we could do something better
+        SelectSumBin x -> B.SelectL 0.0 ys
         -- if it turns out that, if SelectCount is left as it is,
-        -- then all filters are defined over non-sensitive variables, so they are discarded completely
-        SelectCount _  -> B.SelectSump 1.0 $ map (\_ -> B.ZeroSens (B.Const 1.0)) ys
+        -- then all filters are defined over non-sensitive variables, so they are all public
+        SelectCount x  -> B.SelectL 0.0 $ map (const (B.Const 1.0)) ys
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
         Select _       -> error $ error_queryExpr_syntax t
         Filt _ _ _     -> error $ error_internal_queryExprFilter t
@@ -277,6 +281,7 @@ updatePreficesTableExpr fullTablePaths prefix expr =
         SelectMax x      -> SelectMax      (updatePrefices fullTablePaths prefix x)
         SelectL p x      -> SelectL p      (updatePrefices fullTablePaths prefix x)
         SelectSum  x     -> SelectSum      (updatePrefices fullTablePaths prefix x)
+        SelectSumBin x   -> SelectSumBin   (updatePrefices fullTablePaths prefix x)
         SelectCount x    -> SelectCount    (updatePrefices fullTablePaths prefix x)
         SelectDistinct x -> SelectDistinct (updatePrefices fullTablePaths prefix x)
         Select x         -> Select         (updatePrefices fullTablePaths prefix x)
@@ -355,10 +360,12 @@ queryExpression asgnMap t xs es vss =
         Prod _           -> if (pairwiseDisjoint vss) then B.Prod (onlyAsgnVars  t xs es)
                             else                           B.Prod2 (onlyAsgnVars  t xs es)
 
-        Min _            -> if (pairwiseDisjoint vss) then B.Min (onlyAsgnVars  t xs es)
-                            else error err
-        Max _            -> if (pairwiseDisjoint vss) then B.Max (onlyAsgnVars  t xs es)
-                            else error err
+        Min _            -> B.Min (onlyAsgnVars  t xs es)
+                            --if (pairwiseDisjoint vss) then B.Min (onlyAsgnVars  t xs es)
+                            --else error err
+        Max _            -> B.Max (onlyAsgnVars  t xs es)
+                            --if (pairwiseDisjoint vss) then B.Max (onlyAsgnVars  t xs es)
+                            --else error err
 
         -- checks if the variables of different args are pairwise disjoint
         -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
@@ -510,6 +517,7 @@ tableExprToString isPublic asgnMap b =
         SelectMax x    -> "SELECT MAX(" ++ processRec x ++ ")"
         SelectL _ x    -> "UNSUPPORTED SELECT(" ++ processRec x ++ ")"
         SelectSum  x   -> "SELECT SUM(" ++ processRec x ++ ")"
+        SelectSumBin x -> "SELECT SUM(" ++ processRec x ++ ")"
         SelectCount x  -> "SELECT COUNT(" ++ processRec x ++ ")"
         SelectDistinct  x  -> "SELECT DISTINCT(" ++ processRec x ++ ")"
         Select x       -> "SELECT " ++ processRec x
@@ -614,20 +622,28 @@ updateExpr mapCol mapLN mapLZ expr =
         B.Prec ar          -> B.Prec ar
         B.StringCond s         -> B.StringCond s
 
-updateTableExpr :: Int -> B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> B.TableExpr
-updateTableExpr numOfRows expr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm =
-    let n = fromIntegral numOfRows in
-    let a = scalingLpNorm queryAggrNorm dbAggrNorm n in
+updateTableExpr :: B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> B.TableExpr
+updateTableExpr expr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm =
+    
     let g = updateExpr mapCol mapLN mapLZ in
     case expr of
-        B.SelectProd es    -> B.SelectProd   $ map (g . B.ScaleNorm a) es
-        B.SelectL p  es    -> B.SelectL p    $ map (g . B.ScaleNorm a) es
+        B.SelectProd es    -> if (queryAggrNorm < dbAggrNorm) then error $ error_badAggrNorm expr (f queryAggrNorm) (f dbAggrNorm)
+                              else B.SelectProd $ map g es
+        -- TODO change p = 0.0 if we decide to use some other marker
+        B.SelectL 0.0  es  -> case dbAggrNorm of
+                                      Any         -> B.SelectSumInf $ map g es
+                                      Exactly 1.0 -> B.SelectL 1.0 $ map g es
+                                      Exactly p   -> B.SelectSump p $ map g es
+
+        B.SelectL p  es    -> if (queryAggrNorm < dbAggrNorm) then error $ error_badAggrNorm expr (f queryAggrNorm) (f dbAggrNorm)
+                              else B.SelectL p $ map g es
         B.SelectMin  es    -> B.SelectMin    $ map g es
         B.SelectMax  es    -> B.SelectMax    $ map g es
         B.SelectSump _ es  -> case dbAggrNorm of
                                   Any       -> B.SelectSumInf $ map g es
                                   Exactly p -> B.SelectSump p $ map g es
         B.SelectSumInf es  -> B.SelectSumInf $ map g es
+    where f x = case x of {Exactly c -> show (round c); Any -> "inf"}
 
 -- Expr to B.Expr
 -- the constructor may depend on whether the arguments are input variables or expressions
@@ -676,12 +692,14 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
 
         Min xs           -> let (vss,es)  = unzip $ map (processRec id (\z -> B.Power z 1.0)) xs in
                             let usedVars = foldr S.union S.empty vss in
-                            if (pairwiseDisjoint vss) then (usedVars,B.Min es)
-                            else error err
+                            (usedVars,B.Min es)
+                            --if (pairwiseDisjoint vss) then (usedVars,B.Min es)
+                            --else error err
         Max xs           -> let (vss,es)  = unzip $ map (processRec id (\z -> B.Power z 1.0)) xs in
                             let usedVars = foldr S.union S.empty vss in
-                            if (pairwiseDisjoint vss) then (usedVars,B.Max es)
-                            else error err
+                            (usedVars,B.Max es)
+                            --if (pairwiseDisjoint vss) then (usedVars,B.Max es)
+                            --else error err
 
         -- checks if the variables of different args are pairwise disjoint
         -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
@@ -713,7 +731,7 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
                                         if (pairwiseDisjoint [usedVars1,usedVars2]) then
                                             (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
                                         else
-                                            (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                            (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sum2     [e1, B.Prod[B.Const (-1.0), e2]]))
 
         Comp EQ x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
                             let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
@@ -752,9 +770,12 @@ tableExprToBTableExpr sensitiveCols inputMap asgnMap t =
         SelectL c x    -> B.SelectL c $ processRec x
         -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
         SelectSum  x   -> B.SelectSump 1.0 $ processRec x
+        -- we get better bounds if we know that the inputs are non-negative
+        -- TODO p = 0.0 serves as a marker for further optimization, we could do something better
+        SelectSumBin x -> B.SelectL 0.0 $ processRec x
         -- if it turns out that, if SelectCount is left as it is,
-        -- then all filters are defined over non-sensitive variables, so they are discarded completely
-        SelectCount x  -> B.SelectSump 1.0 $ map (\_ -> B.ZeroSens (B.Const 1.0)) (processRec x)
+        -- then all filters are defined over non-sensitive variables, so they are all public
+        SelectCount x  -> B.SelectL 0.0 $ map (const (B.Const 1.0)) (processRec x)
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
         Select _       -> error $ error_queryExpr_syntax t
         Filt _ _ _     -> error $ error_internal_queryExprFilter t

@@ -245,7 +245,7 @@ aexprToExpr y (ABinary ALT x1 x2) =
     let z1      = y ++ "~1" in
     let z2      = y ++ "~2" in
     let w       = y ++ "~3" in
-    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp GT z1 z2)]
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp GT z2 z1)]
 
 aexprToExpr y (ABinary AEQ x (AConst c)) = 
     let z      = y ++ "~0" in
@@ -267,7 +267,7 @@ aexprToExpr y (ABinary AGT x1 x2) =
     let z1     = y ++ "~1" in
     let z2     = y ++ "~2" in
     let w      = y ++ "~3" in
-    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp GT z2 z1)]
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp GT z1 z2)]
 
 -- lp-norm
 aexprToExpr y aexpr@(AUnary (APower pinv) (ASum xs)) =
@@ -398,7 +398,7 @@ aexprToExpr y (AProd xs) =
     M.union (foldr M.union M.empty ws) $ M.fromList [(y, Prod zs)]
 
 aexprToExpr y (AAnds xs) = aexprToExpr y $ AProd xs
-aexprToExpr y (AOrs  xs) = aexprToExpr y $ AUnary ANot (AProd (map (AUnary ANot) xs))
+aexprToExpr y (AOrs  xs) = aexprToExpr y $ AMaxs xs --AUnary ANot (AProd (map (AUnary ANot) xs))
 aexprToExpr y (AXors xs) = aexprToExpr y $ ASum xs
 
 

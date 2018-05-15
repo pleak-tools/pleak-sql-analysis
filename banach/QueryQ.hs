@@ -62,6 +62,13 @@ getQueryFilters    (P _ _ _ x) = x
 concatMaps :: (Ord k) => [M.Map k a] -> M.Map k a
 concatMaps xs = foldr M.union M.empty xs
 
+
+------------------------------------------------
+-- some important constants
+one    = AConst   1.0
+oneNeg = AConst (-1.0)
+inf    = ABinary ASub (AText "minmaxT.max") (AText "minmaxT.min")
+
 ------------------------------------------------
 ---- Executing public parts of an SQL query ----
 ------------------------------------------------
@@ -145,34 +152,26 @@ insertZeroSens tableSensitiveCols tableExpr =
 -- if all variables that are used in the filter are non-sensitive, add the filter directly to the initial SQL query
 -- if at least one variable is sensitive, use a sigmoid or something similar, it depends on the filter and the aggregating function
 addFiltersToQueries :: [Function] -> [AExpr VarName] -> [S.Set B.Var] -> ([Function], [AExpr VarName])
-addFiltersToQueries queries filts fvars = addFiltersToQueriesRec [] queries filts fvars
-
-addFiltersToQueriesRec :: [AExpr VarName] -> [Function] -> [AExpr VarName] -> [S.Set B.Var] -> ([Function], [AExpr VarName])
-addFiltersToQueriesRec pubFilters queries [] [] = (queries, pubFilters)
-addFiltersToQueriesRec pubFilters queries (filt:filts) (fvar:fvars) =
-
-    let newQueries = if (S.size fvar == 0) then queries else map (rewriteQuery filt) queries in
-    let newFilters = if (S.size fvar == 0) then [filt]  else [] in
-    addFiltersToQueriesRec (pubFilters ++ newFilters) newQueries filts fvars
+addFiltersToQueries queries filts fvars = 
+    let (pubPart, privPart) = partition (\ (_,fvar) -> S.size fvar == 0) (zip filts fvars) in
+    let pubFilters  = map fst pubPart in
+    let privFilters = map fst privPart in
+    let newQueries = if length privFilters > 0 then
+                         let privFilter = if length privFilters > 1 then AAnds privFilters else head privFilters in
+                         map (rewriteQuery privFilter) queries
+                     else
+                         queries
+    in (newQueries, pubFilters)
 
 rewriteQuery :: AExpr VarName -> Function -> Function
 rewriteQuery faexpr (F qaexpr qaggr) =
 
-    -- some important constants
-    let one    = AConst   1.0  in
-    let oneNeg = AConst (-1.0) in
-
-    -- inf = max - min
-    let maxRef    = AText "minmaxT.max" in
-    let minRef    = AText "minmaxT.min" in
-    let inf       = ABinary AAdd maxRef (ABinary AMult minRef oneNeg) in
-
     case qaggr of
 
-        -- for counting, take the filter output and compute l1-norm of the results
+        -- for counting, take the filter output and compute sum of the results
         SelectCount qx ->
                  let aRw = faexpr in
-                 let bRw = SelectL 1.0 qx in
+                 let bRw = SelectSumBin qx in
                  F aRw bRw
 
         -- for sum and L-norms, we just multiply the value by the filter output

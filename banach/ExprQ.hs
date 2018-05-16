@@ -142,11 +142,8 @@ queryArg t ys =
 --------------------------
 -- puts zeroSens in front of all insensitive variables, remove zeroSens from sensitive variables
 -- collect and return also all used sens.variables
--- if a sigmoid/tauoid is applied to an insensitive quantity, we make it more accurate by taking large alpha
 markExprCols :: S.Set B.Var -> B.Expr -> ([B.Var],B.Expr)
 markExprCols sensitiveVars expr =
-    -- do not make alpha too large, since it may cause overflows
-    let alpha = 0.1 in
     case expr of
         B.L0Predicate x f  -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
         B.PowerLN x c      -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
@@ -154,18 +151,10 @@ markExprCols sensitiveVars expr =
         B.ComposePower e c -> let (t1,t2) = markExprCols sensitiveVars e in (t1, B.ComposePower t2 c)
         B.Exp c x          -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens expr)
         B.ComposeExp c e   -> let (t1,t2) = markExprCols sensitiveVars e in (t1, B.ComposeExp c t2)
-        B.Sigmoid a c x    -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens (B.Sigmoid alpha c x))
-        B.ComposeSigmoid a c e -> let (t1,t2) = markExprCols sensitiveVars e in 
-                                      if length t1 == 0 then
-                                          (t1, B.ComposeSigmoid alpha c t2)
-                                      else
-                                          (t1, B.ComposeSigmoid a c t2)
-        B.Tauoid a c x     -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens (B.Tauoid alpha c x))
-        B.ComposeTauoid a c e  -> let (t1,t2) = markExprCols sensitiveVars e in 
-                                      if length t1 == 0 then
-                                          (t1,B.ComposeTauoid alpha c t2)
-                                      else
-                                          (t1,B.ComposeTauoid a c t2)
+        B.Sigmoid a c x    -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens (B.Sigmoid a c x))
+        B.ComposeSigmoid a c e -> let (t1,t2) = markExprCols sensitiveVars e in (t1, B.ComposeSigmoid a c t2)
+        B.Tauoid a c x     -> if S.member x sensitiveVars then ([x], expr) else ([],B.ZeroSens (B.Tauoid a c x))
+        B.ComposeTauoid a c e  -> let (t1,t2) = markExprCols sensitiveVars e in (t1,B.ComposeTauoid a c t2)
         B.Const c          -> ([],B.Const c)
         B.ScaleNorm a e    -> let (t1,t2) = markExprCols sensitiveVars e in (t1,B.ScaleNorm a t2)
         B.ZeroSens e       -> let (t1,t2) = markExprCols sensitiveVars e in
@@ -539,6 +528,8 @@ deriveNorm colnames expr =
         B.ComposeExp c e   -> deriveNorm colnames e
         B.Sigmoid _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
         B.ComposeSigmoid _ _ e -> deriveNorm colnames e
+        B.SigmoidPrecise _ _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposeSigmoidPrecise _ _ _ e -> deriveNorm colnames e
         B.Tauoid  _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
         B.ComposeTauoid  _ _ e -> deriveNorm colnames e
         B.Const a          -> NormZero
@@ -595,6 +586,7 @@ scale mapX x = takeIfExists mapX x 1.0
 -- takes into account modifications in the norm and applies them to the query expression
 updateExpr :: M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> B.Expr -> B.Expr
 updateExpr mapCol mapLN mapLZ expr =
+    let precision_alpha = 5.0 in
     case expr of
         B.PowerLN x c      -> B.ScaleNorm (scale mapLN  x) expr
         B.L0Predicate x f  -> B.ScaleNorm (scale mapLZ  x) expr
@@ -602,8 +594,8 @@ updateExpr mapCol mapLN mapLZ expr =
         B.ComposePower e c -> B.ComposePower (updateExpr mapCol mapLN mapLZ e) c
         B.Exp c x          -> B.ScaleNorm (scale mapCol x) (B.Exp c x)
         B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN mapLZ e)
-        B.Sigmoid a c x    -> B.ScaleNorm (scale mapCol x) (B.Sigmoid a c x)
-        B.ComposeSigmoid a c e -> B.ComposeSigmoid a c (updateExpr mapCol mapLN mapLZ e)
+        B.Sigmoid a c x    -> B.ScaleNorm (scale mapCol x) (B.SigmoidPrecise precision_alpha a c x)
+        B.ComposeSigmoid a c e -> B.ComposeSigmoidPrecise precision_alpha a c (updateExpr mapCol mapLN mapLZ e)
         B.Tauoid a c x     -> B.ScaleNorm (scale mapCol x) (B.Tauoid a c x)
         B.ComposeTauoid a c e -> B.ComposeTauoid a c (updateExpr mapCol mapLN mapLZ e)
         B.Const a          -> B.Const a
@@ -649,10 +641,9 @@ updateTableExpr expr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm =
 -- the constructor may depend on whether the arguments are input variables or expressions
 exprToBExpr :: S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> Expr -> (S.Set B.Var, B.Expr)
 exprToBExpr sensitiveCols inputMap asgnMap t = 
-    let alpha = 0.1 in
+    let beta = 0.1 in
     case t of
 
-        -- TODO we would like error message if s is misused later (it seems that we cannot do it ...)
         Text s      -> (S.empty, B.StringCond s)
         Power x c   -> processRec (\z -> B.ComposePower z c) (\z -> B.Power z c) x
 
@@ -729,9 +720,9 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
                                     (_,              B.StringCond z2) -> error $ error_queryExpr_syntax t
                                     _ ->
                                         if (pairwiseDisjoint [usedVars1,usedVars2]) then
-                                            (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                            (usedVars, B.ComposeSigmoid beta 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
                                         else
-                                            (usedVars, B.ComposeSigmoid alpha 0.0 (B.Sum2     [e1, B.Prod[B.Const (-1.0), e2]]))
+                                            (usedVars, B.ComposeSigmoid beta 0.0 (B.Sum2     [e1, B.Prod[B.Const (-1.0), e2]]))
 
         Comp EQ x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
                             let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
@@ -748,9 +739,9 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
                                     (_,              B.StringCond z2) -> error $ error_queryExpr_syntax t
                                     _ ->
                                         if (pairwiseDisjoint [usedVars1,usedVars2]) then
-                                            (usedVars, B.ComposeTauoid alpha 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                            (usedVars, B.ComposeTauoid beta 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
                                         else
-                                            (usedVars, B.ComposeTauoid alpha 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                            (usedVars, B.ComposeTauoid beta 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
         _ -> error $ error_queryExpr_syntax t
    where err = error_queryExpr_repeatingVars t
          allInputVars xs  = foldr (\x y -> (not (M.member x asgnMap)) && y) True xs

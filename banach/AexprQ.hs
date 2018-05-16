@@ -397,7 +397,7 @@ aexprToExpr y (AProd xs) =
     let ws = map (\(x,z) -> aexprToExpr z x) (zip xs zs) in
     M.union (foldr M.union M.empty ws) $ M.fromList [(y, Prod zs)]
 
-aexprToExpr y (AAnds xs) = aexprToExpr y $ AProd xs
+aexprToExpr y (AAnds xs) = aexprToExpr y $ AMins xs
 aexprToExpr y (AOrs  xs) = aexprToExpr y $ AMaxs xs --AUnary ANot (AProd (map (AUnary ANot) xs))
 aexprToExpr y (AXors xs) = aexprToExpr y $ ASum xs
 

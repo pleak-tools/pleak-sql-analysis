@@ -47,6 +47,8 @@ data Expr = Power Var Double         -- x^r with norm | |
           | Sum2 [Expr]              -- E1+...+En with norm N, where N is the common norm of all Ei
           | Prec AnalysisResult      -- use precomputed AR for this node
           | StringCond String        -- we may want to leave some non-sensitive conditionals in string form
+          | SigmoidPrecise Double Double Double Var         -- same as Sigmoid and ComposeSigmoid, but tries to delegate all noise to sensitivity
+          | ComposeSigmoidPrecise Double Double Double Expr
   deriving Show
 
 instance Show (String -> String) where
@@ -215,6 +217,29 @@ analyzeExpr row expr = {-trace ("analyzeExpr " ++ show row ++ ": " ++ show expr 
       in AR {fx = z,
              subf = SUB (const z) (a' * b),
              sdsf = SUB (\ beta -> a' * y / (y+1)^2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+
+    -- 'aa' is the actual sigmoid precision, 'ab' is the smoothness that we want
+    SigmoidPrecise aa ab c i ->
+      let x = row !! i
+          y = exp (ab * (x - c))
+          y' = exp (aa * (x - c))
+          z  = y' / (y'+1)
+          a' = abs ab
+      in AR {fx = z,
+             subf = SUB (const 1.0) 0,
+             sdsf = SUB (const $ aa * y / (y+1)**2) a'}
+
+    ComposeSigmoidPrecise aa ab c e1 ->
+      let AR gx _ (SUB sdsf1g beta2) = analyzeExpr row e1
+          b = sdsf1g 0
+          y = exp (ab * (gx - c))
+          y' = exp (aa * (gx - c))
+          z = y' / (y' + 1)
+          a' = abs ab
+      in AR {fx = z,
+             subf = SUB (const 1.0) 0,
+             sdsf = SUB (\ beta -> aa * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+
     Tauoid a c i ->
       let x = row !! i
           y1 = exp (-a * (x - c))

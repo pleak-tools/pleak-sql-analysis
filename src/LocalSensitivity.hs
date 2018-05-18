@@ -109,7 +109,7 @@ noise_GenCauchy noise_Cauchy_gamma =
     noise_Cauchy_C1 = 1 + noise_Cauchy_gamma
     noise_Cauchy_C2 = 1 + noise_Cauchy_gamma
 
-noise_distributions = [noise_GenCauchy 10.0, noise_GenCauchy 5.0, noise_GenCauchy 3.0, noise_Cauchy, noise_Laplace 1.0e-5, noise_Laplace 1.0e-10]
+noise_distributions = [noise_GenCauchy 10.0, noise_GenCauchy 4.0, noise_GenCauchy 3.0, noise_Cauchy, noise_Laplace 1.0e-5, noise_Laplace 1.0e-10]
 
 --noise_epsilon = 1.0
 --noise_b2 = 0.5 -- must be in the interval (0,1)
@@ -932,6 +932,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
     let smnls = zipWith (*) maxsmss distr_smnlms
     when canComputeNoiseLevel $ printf "-> noise level %s\n" (showNoiseLevelList nls)
     when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
+    when canComputeSmoothNoiseLevel $ printf "smooth sensitivity (with gamma = 4) w.r.t. table %s: %0.3f\n" (fst (head dtncs)) (maxsmss !! 1)
     --when canComputeNoiseLevel $ printf "-> noise level %0.3f | %0.3f\n" nlC nlL
     return $ nls ++ if null smnls then replicate (length nls) 0 else smnls
   let noiseLevels = map maximum nlss

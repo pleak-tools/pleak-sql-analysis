@@ -88,7 +88,7 @@ epsilon :: Double
 epsilon = 1.0
 
 gamma :: Double
-gamma = 5.0
+gamma = 4.0
 
 defaultBeta :: Double
 defaultBeta = epsilon / (2 * (gamma + 1))

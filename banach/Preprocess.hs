@@ -260,7 +260,7 @@ filteredExpr table inputMap sensRowMatrix sensitiveCols filterFuns queryFuns =
 -- construct input for multitable Banach analyser
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
 inputWrtEachTable   :: Bool -> Bool -> [TableAlias] -> B.Expr -> B.Expr -> B.TableExpr -> [[Int]] ->
-                      (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> [(TableName, [Int], B.TableExpr, B.TableExpr,B.TableExpr)]
+                      (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> [(TableName, TableAlias, [Int], B.TableExpr, B.TableExpr,B.TableExpr)]
 inputWrtEachTable _ _ _ _ _ _ [] _ _ = error $ error_emptyTable
 inputWrtEachTable debug usePrefices tableAliases minmaxQueryExpr queryExpr queryAggr sensitiveRowMatrix inputMap tableMap =
     let sensitiveRowMatrixColumns = transpose sensitiveRowMatrix in
@@ -270,7 +270,7 @@ inputWrtEachTable debug usePrefices tableAliases minmaxQueryExpr queryExpr query
     inputWrtEachTableRec debug usePrefices tableAliases minmaxQueryExpr queryExpr queryAggr sensitiveRowMatrixColumns inputMap tableMap
 
 inputWrtEachTableRec :: Bool -> Bool -> [TableAlias] -> B.Expr -> B.Expr -> B.TableExpr -> [[Int]] ->
-                       (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> [(TableName, [Int], B.TableExpr, B.TableExpr, B.TableExpr)]
+                       (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> [(TableName, TableAlias, [Int], B.TableExpr, B.TableExpr, B.TableExpr)]
 inputWrtEachTableRec _ _ [] _ _ _ _ _ _ = []
 inputWrtEachTableRec debug usePrefices (tableAlias : ts) minmaxQueryExpr queryExpr queryAggr (col:cols) inputMap tableMap =
 
@@ -299,7 +299,7 @@ inputWrtEachTableRec debug usePrefices (tableAlias : ts) minmaxQueryExpr queryEx
     let adjustedMaxQuery = deriveExprNorm debug usePrefices numOfSensRows inputMap tableSensCols [tableAlias] [tableNorm] minmaxNewQueryExpr maxQueryAggr in
 
     let adjustedQuery    = deriveExprNorm debug usePrefices numOfSensRows inputMap tableSensCols [tableAlias] [tableNorm] newQueryExpr newQueryAggr in
-    (tableName, col, adjustedQuery, adjustedMinQuery, adjustedMaxQuery) : inputWrtEachTableRec debug usePrefices ts minmaxQueryExpr queryExpr queryAggr cols inputMap tableMap
+    (tableName, tableAlias, col, adjustedQuery, adjustedMinQuery, adjustedMaxQuery) : inputWrtEachTableRec debug usePrefices ts minmaxQueryExpr queryExpr queryAggr cols inputMap tableMap
 
 -- as in the old solution, this declares a join row sensitive iff at least one of participating rows is sensitive 
 -- we use the structure that marks all insensitive entries with '-1'

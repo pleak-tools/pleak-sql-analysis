@@ -184,7 +184,7 @@ inAExpr = do
   caseInsensKeyWord "in"
   (a:as) <- parens $ sepBy1 aExpr (symbol ",")
   -- we assume that "in" conditions are mutually exclusive
-  return (\e -> foldr (\ae aes -> ABinary AXor (ABinary AEQ e ae) aes) (ABinary AEQ e a) as)
+  return (\e -> foldr (\ae aes -> ABinary AOr (ABinary AEQ e ae) aes) (ABinary AEQ e a) as)
 
 likeAExpr :: Parser (AExpr VarName -> AExpr VarName)
 likeAExpr = do

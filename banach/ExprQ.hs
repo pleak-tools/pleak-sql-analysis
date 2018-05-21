@@ -532,6 +532,8 @@ deriveNorm colnames expr =
         B.ComposeSigmoidPrecise _ _ _ e -> deriveNorm colnames e
         B.Tauoid  _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
         B.ComposeTauoid  _ _ e -> deriveNorm colnames e
+        B.TauoidPrecise _ _ _ x    -> NormL (Exactly 1.0) [Col (colnames !! x)]
+        B.ComposeTauoidPrecise _ _ _ e -> deriveNorm colnames e
         B.Const a          -> NormZero
         B.ScaleNorm a e    -> NormScale a (deriveNorm colnames e)
         B.ZeroSens e       -> NormZero
@@ -596,8 +598,8 @@ updateExpr mapCol mapLN mapLZ expr =
         B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN mapLZ e)
         B.Sigmoid a c x    -> B.ScaleNorm (scale mapCol x) (B.SigmoidPrecise precision_alpha a c x)
         B.ComposeSigmoid a c e -> B.ComposeSigmoidPrecise precision_alpha a c (updateExpr mapCol mapLN mapLZ e)
-        B.Tauoid a c x     -> B.ScaleNorm (scale mapCol x) (B.Tauoid a c x)
-        B.ComposeTauoid a c e -> B.ComposeTauoid a c (updateExpr mapCol mapLN mapLZ e)
+        B.Tauoid a c x     -> B.ScaleNorm (scale mapCol x) (B.TauoidPrecise precision_alpha a c x)
+        B.ComposeTauoid a c e -> B.ComposeTauoidPrecise precision_alpha a c (updateExpr mapCol mapLN mapLZ e)
         B.Const a          -> B.Const a
         B.ScaleNorm a e    -> B.ScaleNorm a $ updateExpr mapCol mapLN mapLZ e
         B.ZeroSens e       -> B.ZeroSens e

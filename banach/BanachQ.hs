@@ -502,6 +502,31 @@ analyzeExpr row expr = res where
       in aR {fx = z,
              subf = SUB (const z) (a' * b),
              sdsf = SUB (\ beta -> a' * z * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+
+    TauoidPrecise aa ab c i ->
+      let x = row !! i
+          y1 = exp ((-ab) * (x - c))
+          y2 = exp (ab * (x - c))
+          y1' = exp ((-aa) * (x - c))
+          y2' = exp (aa * (x - c))
+          z = 2 / (y1' + y2')
+          a' = abs ab
+      in AR {fx = z,
+             subf = SUB (const (Q 1)) 0,
+             sdsf = SUB (const $ aa * 2 / (y1 + y2)) a'}
+    ComposeTauoidPrecise aa ab c e1 ->
+      let AR gx _ (SUB sdsf1g beta2) _ gsens = analyzeExpr row e1
+          b = gsens
+          y1 = exp ((-ab) * (gx - c))
+          y2 = exp (ab * (gx - c))
+          y1' = exp ((-aa) * (gx - c))
+          y2' = exp (aa * (gx - c))
+          z = 2 / (y1' + y2')
+          a' = abs ab
+      in AR {fx = z,
+             subf = SUB (const (Q 1)) 0,
+             sdsf = SUB (\ beta -> aa * 2 / (y1 + y2) * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+
     L0Predicate i p ->
       let VarQ x = row !! i
       in aR {fx = if BoolExprQ (p x) then Q 1 else Q 0,

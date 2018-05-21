@@ -351,6 +351,13 @@ getBanachAnalyserInput debug input = do
     let dataWrtEachTable = inputWrtEachTable debug inputMap sensitiveColSet (M.keys inputTableMap) finalTableExpr (sel,fr ++ minmaxQuery,wh) inputTableMap
     let (allTableNames, finalTableExpr, sqlQueries) = unzip3 dataWrtEachTable
 
+    -- this is only for testing
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ show allTableNames
+    traceIOIfDebug debug $ show inputTableNames
+    traceIOIfDebug debug $ show inputTableAliases
+    traceIOIfDebug debug $ "----------------"
+
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
     let tableExprData = (extColNames, zip3 allTableNames finalTableExpr sqlQueries)

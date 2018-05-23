@@ -1,3 +1,5 @@
+-- Old version of LocalSensitivity.hs, which also supported non-smooth sensitivity and subqueries
+-- Use this instead of LocalSensitivity.hs if this support is required
 module LocalSensitivity (performLocalSensitivityAnalysis) where
 
 import Control.Monad
@@ -21,9 +23,6 @@ import SelectQuery
 
 type Table = [[Int]]
 type Database = [Table]
-
--- type of derivatives
-type DerT = Double
 
 table1 = [
   [100, 1],
@@ -164,7 +163,7 @@ permuts xs = f (length xs) xs where
 -- and   p2 is the intersection of all patterns p2 mapped by cpm2 such that p <= p2
 --       (i.e. the smallest pattern p2 mapped by cpm2 such that p <= p2)
 -- The arguments to mergeCpms are given as sorted association lists
-mergeCpms :: [([Int],[DerT])] -> [([Int],[DerT])] -> [([Int],[DerT])]
+mergeCpms :: [([Int],[Int])] -> [([Int],[Int])] -> [([Int],[Int])]
 mergeCpms [] cpm = cpm
 mergeCpms cpm [] = cpm
 mergeCpms [([],n1)] [([],n2)] = [([], zipWith (+) n1 n2)]
@@ -206,7 +205,7 @@ mergeCpms cpm1 cpm2 = -- trace (printf "mergeCpms %s %s" (show cpm1) (show cpm2)
   in
     cpm0 ++ f m1 m2
 
-mergeManyCpms :: [[([Int],[DerT])]] -> [([Int],[DerT])]
+mergeManyCpms :: [[([Int],[Int])]] -> [([Int],[Int])]
 mergeManyCpms [] = []
 mergeManyCpms [cpm] = cpm
 mergeManyCpms cpms =
@@ -232,7 +231,7 @@ isPatternSubset [] [] = True
 isPatternSubset (x : xs) (0 : ys) = isPatternSubset xs ys
 isPatternSubset (x : xs) (y : ys) = x == y && isPatternSubset xs ys
 
-derMapCrossProd :: [[([Int], [Int], [DerT])]] -> [([Int], [Int], [DerT])]
+derMapCrossProd :: [[([Int], [Int], [Int])]] -> [([Int], [Int], [Int])]
 derMapCrossProd [dm] = dm
 derMapCrossProd (dm : dms) = [(e1 ++ e2, v1 ++ v2, [d1 * d2]) | let dmcp = derMapCrossProd dms, (e1,v1,[d1]) <- dm, (e2,v2,[d2]) <- dmcp]
 
@@ -514,7 +513,7 @@ performLocalSensitivityAnalysis debug schema query = do
   _ <- performLocalSensitivityAnalysis' debug np origTableCols query
   return ()
 
-performLocalSensitivityAnalysis' :: Bool -> NoiseParameters -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [DerT])])])
+performLocalSensitivityAnalysis' :: Bool -> NoiseParameters -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [Int])])])
 performLocalSensitivityAnalysis' debug np origTableCols query = do
   putStrLn "performLocalSensitivityAnalysis'"
 
@@ -608,12 +607,11 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
             then
               if selDistinct query == All
                 then ([IntExpr (IntLit 1)], id, id, numGroupExprs)
-                else ([], \ ([],vs,[]) -> ([],vs,[1::DerT]), \ (els,vs,[]) -> (els,vs,[1::DerT]), numGroupExprs)
+                else ([], \ ([],vs,[]) -> ([],vs,[1]), \ (els,vs,[]) -> (els,vs,[1]), numGroupExprs)
             else
               if null groupExprs
-                -- TODO: add proper support for float instead of using round
-                then (sumExprs0, \ ([],vs,d) -> ([],assembleResult0 (map round d) vs,[1]), id, numGroupExprs)
-                else (sumExprs0, \ ([],vs,d) -> ([],assembleResult0 (map round d) vs,[1]), \ (els,vs,d) -> (els,assembleResult0 (map (const 0) d) vs,[2]), numExprs)
+                then (sumExprs0, \ ([],vs,d) -> ([],assembleResult0 d vs,[1]), id, numGroupExprs)
+                else (sumExprs0, \ ([],vs,d) -> ([],assembleResult0 d vs,[1]), \ (els,vs,d) -> (els,assembleResult0 (map (const 0) d) vs,[2]), numExprs)
           where
             numExprs = length sumExprs0 + numGroupExprs
             -- assemble a query result row from the values of sumExprs and groupExprs
@@ -668,10 +666,10 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
     return $ if null eqs then Nothing else Just (maximum eqs)
 
   let
-    findSmoothSensitivityDerMap :: IO (Map (Int,Int) [([Int],DerT)])
+    findSmoothSensitivityDerMap :: IO (Map (Int,Int) [([Int],Int)])
     findSmoothSensitivityDerMap = do
       -- (i,j) -> r -> the derivative of the count of table j (filtered by the where conditions) w.r.t. row r of table i
-      derivatives <- newIORef Map.empty :: IO (IORef (Map (Int,Int) (Map [Int] DerT)))
+      derivatives <- newIORef Map.empty :: IO (IORef (Map (Int,Int) (Map [Int] Int)))
       forM_ (zip [0..] db) $ \ (ti,currTable) -> do
         --printf "findSmoothSensitivity: %d\n" ti
         let ta = tblAddr ! ti
@@ -700,20 +698,20 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
       fmap Map.fromList $ forM (Map.assocs derMaps) $ \ ((i,j),derMap) -> do
         let ders = Map.assocs derMap
         forM_ ders $ \ (r,d) ->
-          when debug $ printf "  (%d,%d) -> %s -> %0.0f\n" i j (show r) d
+          when debug $ printf "  (%d,%d) -> %s -> %d\n" i j (show r) d
         return ((i,j),ders)
 
   smoothDerMap <- findSmoothSensitivityDerMap
   printf "distrSmNlm = %s\n" (showNoiseLevelList $ map (`distrSmNlm` np) noise_distributions)
 
   let
-    printDerivatives :: [([Int], [Int], [DerT])] -> IO ()
+    printDerivatives :: [([Int], [Int], [Int])] -> IO ()
     printDerivatives ders = when debug $ do
       forM_ ders $ \ (els',vs,d) ->
         printf "    %s -> %s -> %s\n" (show els') (show vs) (show d) :: IO ()
 
     -- dtables must be in ascending order
-    findDerivatives :: [Int] -> IO [([[Int]], [Int], [DerT])]
+    findDerivatives :: [Int] -> IO [([[Int]], [Int], [Int])]
     findDerivatives dtables = do
       when debug $ putStr "Finding derivatives w.r.t. tables "
       when debug $ print (map tableName dtables)
@@ -725,7 +723,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
       isdtable <- freeze isdtableArr :: IO (UArray Int Bool)
       let daddrs = concatMap (\ ti -> [tblAddr ! ti .. (tblAddr ! (ti+1))-1]) dtables
       JoinedRow row areAllPrevEqsDaddrs evalScalExpr checkScalExpr writeRowElements inferRowElement <- createJoinedRow totalNumCols prevEq wheresForAddr daddrs
-      derivatives <- newIORef Map.empty :: IO (IORef (Map ([Int],[Int]) [DerT]))
+      derivatives <- newIORef Map.empty :: IO (IORef (Map ([Int],[Int]) [Int]))
       let
         recurse _ [] = do
           svs0 <- mapM evalScalExpr sumExprs
@@ -742,8 +740,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
                 Just (Right v1) -> v1
           els <- mapM (readArray row) daddrs
           -- printf "  %s -> %s -> %s\n" (show els) (show vs) (show svs)
-          let svs1 = map (fromIntegral :: Int -> DerT) svs
-          modifyIORef derivatives $ Map.alter (\ x -> case x of Nothing -> Just svs1; Just ns -> Just (zipWith (+) ns svs1)) (els,vs)
+          modifyIORef derivatives $ Map.alter (\ x -> case x of Nothing -> Just svs; Just ns -> Just (zipWith (+) ns svs)) (els,vs)
         recurse ti (currTable : ts) = do
           let ta = tblAddr ! ti
           if isdtable ! ti then do
@@ -777,7 +774,6 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
           then do
             let d1 = head d
             let currti = head dtables
-            -- TODO: allow xs to be floating-point numbers
             let
               satds k xs =
                 if null ys || k < limit
@@ -795,12 +791,12 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
               fmap sum $ forM (smoothDerMap Map.! (currti,i)) $ \ (r,sd) ->
                 if isPatternSubset els r
                   then do
-                    when debug $ printf "    %s -> %0.2f\n" (show r) sd
+                    when debug $ printf "    %s -> %d\n" (show r) sd
                     return sd
                   else return 0
-            let xs = map round $ sort sds
+            let xs = sort sds
             let satd0 k xs = product (map (fromIntegral :: Int -> Double) (satds k xs)) * aggrExprBound
-            let numMissingRows = satd0 0 xs - d1
+            let numMissingRows = satd0 0 xs - fromIntegral d1
             let satd k xs = satd0 k xs - numMissingRows
             let smsens0 beta k xs = satd k xs * exp (-beta * fromIntegral k)
             let
@@ -819,9 +815,8 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
             --forM_ [0..100] $ \ i ->
             --  printf "  %2d: %20s %10.3f %10.3f\n" i (show (satds i xs)) (satd i xs) (smsens0 beta i xs)
             let smss = map (`smsens` xs) betas
-            when debug $ printf "%s -> %0.2f # %s # %s\n" (show els) d1 (show sds) (showNoiseLevelList smss)
-            --return (gels,vs,d++map ceiling smss)
-            return (gels,vs,d++smss)
+            when debug $ printf "%s -> %d # %s # %s # %s\n" (show els) d1 (show sds) (show (map ceiling smss)) (showNoiseLevelList smss)
+            return (gels,vs,d++map ceiling smss)
           else
             return (gels,vs,d)
 
@@ -834,7 +829,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
     unsplitElsVs (els,vs,d) = (els ++ vs, d)
 
     -- dtncs contains a list of pairs of a table and the number of times to differentiate w.r.t. that table
-    findDerivativesWrtOrigTables :: [(String,Int)] -> IO [([Int], [Int], [DerT])]
+    findDerivativesWrtOrigTables :: [(String,Int)] -> IO [([Int], [Int], [Int])]
     findDerivativesWrtOrigTables dtncs = do
       when debug $ putStr "Finding derivatives w.r.t. original tables "
       when debug $ print dtncs
@@ -857,7 +852,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
       --printDerivatives ders5
       return ders5
 
-    findAllDerivativesWrtOrigTables :: IO [([(String,Int)], [([Int], [Int], [DerT])])]
+    findAllDerivativesWrtOrigTables :: IO [([(String,Int)], [([Int], [Int], [Int])])]
     findAllDerivativesWrtOrigTables =
       let
         f dtncs [] = (\ x -> [(dtncs,x)]) <$> findDerivativesWrtOrigTables dtncs
@@ -871,12 +866,10 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
   (_,queryResult0) : derivatives <- findAllDerivativesWrtOrigTables
   let
     queryResult = concatMap getResult queryResult0
-      -- TODO: add proper support for float instead of using round
-      where getResult ([],vs,[d]) = replicate (round d) vs
+      where getResult ([],vs,[d]) = replicate d vs
   let canComputeNoiseLevel = numGroupExprs == 0 && numSumExprs == 1
-  {-
   let
-    combineSubQueryDers :: IO [([(String,Int)], [([Int], [Int], [DerT])])]
+    combineSubQueryDers :: IO [([(String,Int)], [([Int], [Int], [Int])])]
     combineSubQueryDers =
       fmap concat $ forM derivatives $ \ (dtncs,ders) -> do
       when debug $ putStr "Derivatives w.r.t. original tables "
@@ -911,9 +904,6 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
                 f rs tncs
       findAllDers dtncs
   ders3 <- if hasSubQueries then combineSubQueryDers else return derivatives
-  -}
-  -- TODO: support subqueries for smooth sensitivity
-  ders3 <- if hasSubQueries then error "Support of subqueries is currently broken" else return derivatives
   nlss <- fmap transpose $ forM ders3 $ \ (dtncs,ders) -> do
     putStr "Combined derivatives w.r.t. original tables "
     print dtncs
@@ -938,8 +928,8 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
       printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
       --return nl
       if canComputeNoiseLevel && length d >= 1
-        then return d
-        else return [d1]
+        then return (map fromIntegral d)
+        else return [fromIntegral d1]
     let nls = map (* maxd) distr_nlms
     let smnls = zipWith (*) maxsmss distr_smnlms
     when canComputeNoiseLevel $ printf "-> noise level %s\n" (showNoiseLevelList nls)

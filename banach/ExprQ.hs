@@ -37,6 +37,8 @@ data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm
           | Text String                   -- this is needed to store strings that remain public and go only into the filters
           | Like VarName VarName          -- stores LIKE expressions for filtering
           | Comp Ordering VarName VarName -- compares two variables, turns to sigmoid/tauoid if necessary
+          | CompStr VarName VarName -- compares two strings, uses l0-norm
+          | CompInt Ordering VarName VarName -- compares two variables, turns to mixmax-based filter if necessary
           | LZero VarName                 -- we use it only inside norm definiitons
   deriving Show
 
@@ -49,7 +51,7 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectSum VarName         -- E1+...+En with norm that is not specified yet and will be derived later
                | SelectSumBin VarName      -- sums binary variables
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
-               | Select VarName            -- does not apply aggregation, is used only for intermediate representation
+               | SelectPlain VarName            -- does not apply aggregation, is used only for intermediate representation
                | SelectDistinct VarName           -- TODO not supported yet, used only to generate nice error messages
                | Filt Ordering VarName Double     -- used for filters, actually is not a 'Table' expression, we just use the same data structure
                | FiltNeg Ordering VarName Double
@@ -81,7 +83,7 @@ extractArg t =
         SelectSumBin x -> x
         SelectCount x  -> x
         SelectDistinct  x  -> x
-        Select x       -> x
+        SelectPlain x       -> x
         Filt _ x _     -> x
         FiltNeg _ x _  -> x
         Filter x       -> x
@@ -110,6 +112,8 @@ extractArgs t =
         Text _           -> []
         Like x y         -> [x,y]
         Comp _ x y       -> [x,y]
+        CompInt _ x y    -> [x,y]
+        CompStr x y      -> [x,y]
 
 normArg :: TableExpr -> ADouble
 normArg t =
@@ -134,7 +138,7 @@ queryArg t ys =
         -- then all filters are defined over non-sensitive variables, so they are all public
         SelectCount x  -> B.SelectL 0.0 $ map (const (B.Const 1.0)) ys
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
-        Select _       -> error $ error_queryExpr_syntax t
+        SelectPlain _       -> error $ error_queryExpr_syntax t
         Filt _ _ _     -> error $ error_internal_queryExprFilter t
         FiltNeg _ _ _  -> error $ error_internal_queryExprFilter t
         Filter _       -> error $ error_internal_queryExprFilter t
@@ -224,6 +228,8 @@ getAllExprVars asgnMap expr =
         Text c           -> S.empty
         Like x y         -> S.union (processRec x) (processRec y)
         Comp c x y       -> S.union (processRec x) (processRec y)
+        CompInt c x y    -> S.union (processRec x) (processRec y)
+        CompStr x y      -> S.union (processRec x) (processRec y)
     where processRec x = takeAlteredIfExists x asgnMap (getAllExprVars asgnMap) S.singleton
 
 getAllTableExprVars :: M.Map VarName Expr -> TableExpr -> S.Set VarName
@@ -261,6 +267,8 @@ updatePreficesExpr fullTablePaths prefix expr =
         Text c           -> Text c
         Like x y         -> Like (updatePrefices fullTablePaths prefix x) (updatePrefices fullTablePaths prefix y)
         Comp c x y       -> Comp c (updatePrefices fullTablePaths prefix x) (updatePrefices fullTablePaths prefix y)
+        CompInt c x y    -> CompInt c (updatePrefices fullTablePaths prefix x) (updatePrefices fullTablePaths prefix y)
+        CompStr x y      -> CompStr (updatePrefices fullTablePaths prefix x) (updatePrefices fullTablePaths prefix y)
 
 updatePreficesTableExpr :: (S.Set String) -> VarName -> TableExpr -> TableExpr
 updatePreficesTableExpr fullTablePaths prefix expr =
@@ -273,7 +281,7 @@ updatePreficesTableExpr fullTablePaths prefix expr =
         SelectSumBin x   -> SelectSumBin   (updatePrefices fullTablePaths prefix x)
         SelectCount x    -> SelectCount    (updatePrefices fullTablePaths prefix x)
         SelectDistinct x -> SelectDistinct (updatePrefices fullTablePaths prefix x)
-        Select x         -> Select         (updatePrefices fullTablePaths prefix x)
+        SelectPlain x         -> SelectPlain         (updatePrefices fullTablePaths prefix x)
         Filt a x c       -> Filt a         (updatePrefices fullTablePaths prefix x) c
         FiltNeg a x c    -> FiltNeg a      (updatePrefices fullTablePaths prefix x) c
         Filter x         -> Filter         (updatePrefices fullTablePaths prefix x)
@@ -441,6 +449,10 @@ pairwiseDisjoint (vs:vss) =
     let n = length $ filter (\vs' -> not (S.null (S.intersection vs vs'))) vss in
     if (n == 0) then pairwiseDisjoint vss else False
 
+-- TODO this is for testing, use 1.0 by default
+scInt :: Double
+scInt = 1.0
+
 -- converts expressions to Strings that can be read as a part of SQL query
 exprToString :: Bool -> M.Map VarName Expr -> Expr -> String
 exprToString isPublic asgnMap expr =
@@ -496,6 +508,26 @@ exprToString isPublic asgnMap expr =
                                 z2 = processRec x2
                                 w = show alpha ++ " * (" ++ z1 ++ " - " ++ z2 ++ ")"
 
+        CompStr x1 x2    -> "(case when " ++ z1 ++ " = " ++ z2 ++ " then 1 else 0 end)"
+                            where
+                                z1 = processRec x1
+                                z2 = processRec x2
+
+        CompInt EQ x1 x2 -> if isPublic then
+                                "(case when " ++ z1 ++ " = " ++ z2 ++ " then 1 else 0 end)"
+                            else
+                                "1 - min(max(abs(x1 - x2),0) * " ++ show scInt ++ ",1)"
+                            where
+                                z1 = processRec x1
+                                z2 = processRec x2
+        CompInt GT x1 x2   -> if isPublic then
+                                "(case when " ++ z1 ++ " > " ++ z2 ++ " then 1 else 0 end)"
+                            else
+                                "min(max(x1 - x2,0) * " ++ show scInt ++ ",1)"
+                            where
+                                z1 = processRec x1
+                                z2 = processRec x2
+
     where processRec x = takeAlteredIfExists x asgnMap (exprToString isPublic asgnMap) id
 
 tableExprToString :: Bool -> M.Map VarName Expr -> TableExpr -> String
@@ -509,7 +541,7 @@ tableExprToString isPublic asgnMap b =
         SelectSumBin x -> "SELECT SUM(" ++ processRec x ++ ")"
         SelectCount x  -> "SELECT COUNT(" ++ processRec x ++ ")"
         SelectDistinct  x  -> "SELECT DISTINCT(" ++ processRec x ++ ")"
-        Select x       -> "SELECT " ++ processRec x
+        SelectPlain x       -> "SELECT " ++ processRec x
         Filter x       -> processRec x 
     where processRec x = takeAlteredIfExists x asgnMap (exprToString isPublic asgnMap) id
 
@@ -707,24 +739,17 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
         -- in the following, 1.0 and -1.0 are used only to show whether it was min or max, and will be modified later
         ARMax            -> (S.empty, B.Prec (B.AR {B.fx =  1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}}))
         ARMin            -> (S.empty, B.Prec (B.AR {B.fx = -1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}}))
+
         Comp GT x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
                             let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
                             let usedVars = S.union usedVars1 usedVars2 in
                             if S.size (S.intersection usedVars sensitiveCols) == 0 then
                                 (usedVars, B.StringCond (exprToString True asgnMap t))
                             else
-                                -- use l0-norm if we are comparing strings
-                                -- TODO we will probably handle more complicated cases later
-                                case (e1,e2) of
-                                    (B.StringCond z1, B.Power x2 1.0) -> (usedVars, B.L0Predicate x2 (\z -> z ++ " > " ++ z1))
-                                    (B.StringCond z1,              _) -> error $ error_queryExpr_syntax t
-                                    (B.Power x1 1.0, B.StringCond z2) -> (usedVars, B.L0Predicate x1 (\z -> z ++ " > " ++ z2))
-                                    (_,              B.StringCond z2) -> error $ error_queryExpr_syntax t
-                                    _ ->
-                                        if (pairwiseDisjoint [usedVars1,usedVars2]) then
-                                            (usedVars, B.ComposeSigmoid beta 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
-                                        else
-                                            (usedVars, B.ComposeSigmoid beta 0.0 (B.Sum2     [e1, B.Prod[B.Const (-1.0), e2]]))
+                                if (pairwiseDisjoint [usedVars1,usedVars2]) then
+                                    (usedVars, B.ComposeSigmoid beta 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                else
+                                    (usedVars, B.ComposeSigmoid beta 0.0 (B.Sum2     [e1, B.Prod[B.Const (-1.0), e2]]))
 
         Comp EQ x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
                             let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
@@ -732,18 +757,48 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
                             if S.size (S.intersection usedVars sensitiveCols) == 0 then
                                 (usedVars, B.StringCond (exprToString True asgnMap t))
                             else
+                                if (pairwiseDisjoint [usedVars1,usedVars2]) then
+                                    (usedVars, B.ComposeTauoid beta 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                else
+                                    (usedVars, B.ComposeTauoid beta 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
+
+        CompInt GT x1 x2 -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
+                            let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
+                            let usedVars = S.union usedVars1 usedVars2 in
+                            if S.size (S.intersection usedVars sensitiveCols) == 0 then
+                                (usedVars, B.StringCond (exprToString True asgnMap t))
+                            else
+                                if (pairwiseDisjoint [usedVars1,usedVars2]) then
+                                    (usedVars, B.Min[B.Const 1.0, B.Max[B.Const 0.0, B.Prod[B.Const scInt, B.Sump 1.0 [e1, B.Prod [B.Const (-1.0), e2]]]]])
+                                else
+                                    (usedVars, B.Min[B.Const 1.0, B.Max[B.Const 0.0, B.Prod[B.Const scInt, B.Sum2 [e1, B.Prod [B.Const (-1.0), e2]]]]])
+
+        CompInt EQ x1 x2 -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
+                            let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
+                            let usedVars = S.union usedVars1 usedVars2 in
+                            if S.size (S.intersection usedVars sensitiveCols) == 0 then
+                                (usedVars, B.StringCond (exprToString True asgnMap t))
+                            else
+                                let c1  = B.Const 1.0 in
+                                let c0  = B.Const 0.0 in
+                                let cN1 = B.Const (-1.0) in
+                                if (pairwiseDisjoint [usedVars1,usedVars2]) then
+                                    (usedVars, B.Sump 1.0 [c1, B.Prod [cN1, B.Min[c1, B.Max[c0, B.Prod [B.Const scInt, B.ComposeL 1.0 [B.Sump 1.0 [e1, B.Prod [cN1, e2]]]]]]]])
+                                else
+                                    (usedVars, B.Sump 1.0 [c1, B.Prod [cN1, B.Min[c1, B.Max[c0, B.Prod [B.Const scInt, B.ComposeL 1.0 [B.Sum2 [e1, B.Prod [cN1, e2]]]]]]]])
+
+        CompStr x1 x2       -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
+                            let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
+                            let usedVars = S.union usedVars1 usedVars2 in
+                            if S.size (S.intersection usedVars sensitiveCols) == 0 then
+                                (usedVars, B.StringCond (exprToString True asgnMap t))
+                            else
                                 -- use l0-norm if we are comparing strings
-                                -- TODO we will probably handle more complicated cases later
                                 case (e1,e2) of
                                     (B.StringCond z1, B.Power x2 1.0) -> (usedVars, B.L0Predicate x2 (\z -> z ++ " = " ++ z1))
-                                    (B.StringCond z1,              _) -> error $ error_queryExpr_syntax t
                                     (B.Power x1 1.0, B.StringCond z2) -> (usedVars, B.L0Predicate x1 (\z -> z ++ " = " ++ z2))
-                                    (_,              B.StringCond z2) -> error $ error_queryExpr_syntax t
-                                    _ ->
-                                        if (pairwiseDisjoint [usedVars1,usedVars2]) then
-                                            (usedVars, B.ComposeTauoid beta 0.0 (B.Sump 1.0 [e1, B.Prod[B.Const (-1.0), e2]]))
-                                        else
-                                            (usedVars, B.ComposeTauoid beta 0.0 (B.Sum2 [e1, B.Prod[B.Const (-1.0), e2]]))
+                                    _ -> error $ error_queryExpr_syntax t
+
         _ -> error $ error_queryExpr_syntax t
    where err = error_queryExpr_repeatingVars t
          allInputVars xs  = foldr (\x y -> (not (M.member x asgnMap)) && y) True xs
@@ -770,7 +825,7 @@ tableExprToBTableExpr sensitiveCols inputMap asgnMap t =
         -- then all filters are defined over non-sensitive variables, so they are all public
         SelectCount x  -> B.SelectL 0.0 $ map (const (B.Const 1.0)) (processRec x)
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
-        Select _       -> error $ error_queryExpr_syntax t
+        SelectPlain _       -> error $ error_queryExpr_syntax t
         Filt _ _ _     -> error $ error_internal_queryExprFilter t
         FiltNeg _ _ _  -> error $ error_internal_queryExprFilter t
         Filter _       -> error $ error_internal_queryExprFilter t

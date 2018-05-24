@@ -805,7 +805,7 @@ performAnalyses args colNames tableExprData = do
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
   ctss <- forM uniqueTableNames $ \ t -> do cts <- createTableSql t
-                                            putStr (concatMap (++ ";\n") cts)
+                                            when debug $ putStr (concatMap (++ ";\n") cts)
                                             return cts
   when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
   when debug $ putStrLn "================================="
@@ -818,10 +818,10 @@ performAnalyses args colNames tableExprData = do
   forM_ tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
-    when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " ==="
+    putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
     let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames te
-    putStrLn "Analysis result:"
-    print ar
+    when debug $putStrLn "Analysis result:"
+    when debug $print ar
     let epsilon = getEpsilon args
     when debug $ printf "epsilon = %0.6f\n" epsilon
     when debug $ printf "gamma = %0.6f\n" gamma
@@ -833,8 +833,8 @@ performAnalyses args colNames tableExprData = do
     when debug $ printf "b = %0.6f\n" b
     let qr = constProp $ fx ar
     when debug $ putStrLn "Query result:"
-    when debug $ putStrLn (show qr ++ ";")
+    putStrLn (show qr ++ ";")
     let sds = constProp $ subg (sdsf ar) beta
-    when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
-    when debug $ putStrLn (show sds ++ ";")
+    putStrLn "-- beta-smooth derivative sensitivity:"
+    putStrLn (show sds ++ ";")
     when (dbSensitivity args) $ sendDoubleQueryToDb args (show sds) >>= printf "database returns %0.6f\n"

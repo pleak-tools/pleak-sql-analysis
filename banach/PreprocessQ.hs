@@ -3,6 +3,7 @@ module PreprocessQ where
 import Debug.Trace
 
 import Control.Monad (when)
+import Data.Char
 import Data.Either
 import Data.List
 import qualified Data.Map as M
@@ -21,6 +22,8 @@ import NormsQ
 import ParserQ
 import QueryQ
 import ReaderQ
+import SchemaQ
+import SelectQueryQ
 
 
 -- this outputs a trace message only if the flag debug=True is set
@@ -84,7 +87,7 @@ badQFuns :: [Function] -> (Bool, String)
 badQFuns [] = (False,"")
 badQFuns (F _ b : qs) =
     case b of
-        Select _ -> badQFuns qs
+        SelectPlain _ -> badQFuns qs
         _        -> (True, error_queryExpr_aggrInterm b)
 
 fillMissingWith :: Int -> Int -> [Int] -> [Int]
@@ -98,20 +101,20 @@ fillMissingWithRec (x:xs) y n i =
     else error $ error_internal_fillMissing x i xs
 
 
-processAllTables :: [TableAlias] -> [TableName] -> [[VarName]] -> [B.Table] -> [NormFunction] -> [[VarName]] -> [[Int]] -> [(TableAlias, TableData)]
-processAllTables [] [] [] [] [] [] [] = []
-processAllTables (tableAlias:xs0) (x1:xs1) (x2:xs2) (x3:xs3) (x4:xs4) (x5:xs5) (x6:xs6) =
-    let tableData = processOneTable tableAlias x1 x2 x3 x4 x5 x6 in
-    (tableAlias,tableData) : (processAllTables xs0 xs1 xs2 xs3 xs4 xs5 xs6)
+processAllTables :: [TableAlias] -> [TableName] -> [[VarName]] -> [[VarName]] -> [B.Table] -> [NormFunction] -> [[VarName]] -> [[Int]] -> [(TableAlias, TableData)]
+processAllTables [] [] [] [] [] [] [] [] = []
+processAllTables (tableAlias:xs0) (x1:xs1) (x2:xs2) (x3:xs3) (x4:xs4) (x5:xs5) (x6:xs6) (x7:xs7) =
+    let tableData = processOneTable tableAlias x1 x2 x3 x4 x5 x6 x7 in
+    (tableAlias,tableData) : (processAllTables xs0 xs1 xs2 xs3 xs4 xs5 xs6 xs7)
 
-processOneTable :: TableAlias -> TableName -> [VarName] -> B.Table -> NormFunction -> [VarName] -> [Int] -> TableData
-processOneTable tableAlias tableName inputVars tableValues normFun dbSensitiveVars dbSensitiveRows =
+processOneTable :: TableAlias -> TableName -> [VarName] -> [VarName] -> B.Table -> NormFunction -> [VarName] -> [Int] -> TableData
+processOneTable tableAlias tableName colNames taggedColNames tableValues normFun dbSensitiveVars dbSensitiveRows =
 
     -- let non-sensitive rows be indexed by -1
     let numOfRows             = length tableValues in
     let extendedSensitiveRows = map (\x -> [x]) $ fillMissingWith (-1) numOfRows dbSensitiveRows in
 
-    T tableValues inputVars normFun extendedSensitiveRows dbSensitiveVars tableName
+    T tableValues colNames taggedColNames normFun extendedSensitiveRows dbSensitiveVars tableName
 
 deriveExprNorm :: Bool -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [NormFunction] -> B.Expr -> B.TableExpr -> B.TableExpr
 deriveExprNorm debug inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
@@ -213,10 +216,10 @@ processQuery outputTableName queryMap taskName tableAlias tableName =
         let prefix = if tableAlias == outputTableName then "" else tableAlias ++ "_" in
         let fullTablePaths = S.fromList tableAliases in
         let newQueryFuns    = map (updateQueryVariableNames fullTablePaths prefix) queryFuns in
-        let newFilterFuns   = map (updateFilterVariableNames fullTablePaths prefix) filterFuns in
+        let newFilterFuns   = map (updateAExprVariableNames fullTablePaths prefix) filterFuns in
 
         let newSubQueryFuns = map (updateQueryVariableNames fullTablePaths prefix) subQueryFuns in
-        let newSubFiltFuns  = map (updateFilterVariableNames fullTablePaths prefix) subFiltFuns in
+        let newSubFiltFuns  = map (updateAExprVariableNames fullTablePaths prefix) subFiltFuns in
 
         -- put all subquery funs and all filters together with the current query's funs and filters
         let outputQueryFuns = map (\ (F qaexpr b) -> F (mergeQueryFuns newSubQueryFuns qaexpr) b) newQueryFuns in
@@ -245,24 +248,30 @@ readAllTables queryPath tableNames tableAliases = do
     let taggedSensitiveVars = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableSensitiveVars
 
     -- put all table data together
-    let tableMap = processAllTables tableAliases tableNames taggedTableColNames tableValues tableNormFuns taggedSensitiveVars tableSensitiveRows
+    let tableMap = processAllTables tableAliases tableNames tableColNames taggedTableColNames tableValues tableNormFuns taggedSensitiveVars tableSensitiveRows
     return (M.fromList tableMap)
 
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> IO ([String], [(TableName, B.TableExpr,(String,String,String))])
-getBanachAnalyserInput debug input = do
+getBanachAnalyserInput :: Bool -> String -> String -> IO ([String], [(TableName, B.TableExpr,(String,String,String))])
+getBanachAnalyserInput debug inputSchema inputQuery = do
 
-    putStrLn $ "\\echo ##========== Query " ++ input ++ " ==============="
-    let queryPath = reverse $ dropWhile (/= '/') (reverse input)
+    putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
+    let queryPath = reverse $ dropWhile (/= '/') (reverse inputQuery)
 
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
-    (outputTableName,queryMap) <- parseSqlQueryFromFile input
+    --(outputTableName,queryMap) <- parseSqlQueryFromFile inputQuery
+    queryFileContents <- readInput inputQuery
+    (outputTableName,queryMap) <- parseQueryMap defaultOutputTableName queryFileContents
+
+    queryFileContents <- readInput inputSchema
+    schemas <- parseSchemas queryFileContents
+    let typeMap = M.fromList $ map (\(x,y) -> (reverse $ takeWhile (/= '.') (reverse x), y)) (concat (map extractTypes schemas))
 
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
-    let (taskNames, inputTableAliases, inputTableNames, outputQueryFuns, filterAexprs) = processQuery outputTableName queryMap "" outputTableName outputTableName
+    let (taskNames, inputTableAliases, inputTableNames, outputQueryFuns, filterAexprs') = processQuery outputTableName queryMap "" outputTableName outputTableName
 
     let indexedTaskNames = zip taskNames [0..(length taskNames) - 1]
     let taskMaps = concat $ map (\(ts,i) -> (map (\t -> (t,[i])) ) ts) indexedTaskNames
@@ -282,7 +291,14 @@ getBanachAnalyserInput debug input = do
     inputTableMap <- readAllTables queryPath inputTableNames inputTableAliases
 
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
-    let (colNames, sensitiveVarList) = getAllColumns inputTableMap
+    let (initColNames, colNames, sensitiveVarList) = getAllColumns inputTableMap
+    -- we drop the numerical part from all data types
+    -- assume that only "int", "float", "bool", "text" are left
+    let taggedTypeMap = M.fromList $ zipWith (\x y -> (x, takeWhile (\z -> ord(z) >= 65) (map toLower (typeMap ! y)))) colNames initColNames
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Types1: " ++ show typeMap
+    traceIOIfDebug debug $ "Types2: " ++ show taggedTypeMap
+    let filterAexprs = map (snd . applyAexprTypes taggedTypeMap) filterAexprs'
 
     -- assign a unique integer to each column name, which is the order of this column in the cross product table
     let inputMap        = M.fromList $ zip colNames [0..length colNames - 1]
@@ -307,7 +323,8 @@ getBanachAnalyserInput debug input = do
     let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap x)) filterAexprs
     let (filtQueryFuns, pubFilterAexprs) = addFiltersToQueries [outputQueryFun] filterAexprs filterSensVars
     let filtQueryFun = head filtQueryFuns
-    let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet filtQueryFun
+    --let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet filtQueryFun
+    let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet (applyQueryTypes taggedTypeMap filtQueryFun)
     let pubFilter  = map aexprToString pubFilterAexprs
 
     traceIOIfDebug debug $ "----------------"
@@ -331,7 +348,10 @@ getBanachAnalyserInput debug input = do
     --let numOfRows = 1.0
 
     -- compute min/max queries using sel, fr, wh
+    -- TODO this is temporary removed, use it if the aggr query is min or max
     let minmaxQuery = ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
+    --let minmaxQuery = ""
+
     --let minExprQuery = "SELECT MIN(" ++ queryStr ++ ")" ++ fr ++ wh
     --let maxExprQuery = "SELECT MAX(" ++ queryStr ++ ")" ++ fr ++ wh
     --traceIOIfDebug debug $ "--Min--------------"
@@ -370,6 +390,20 @@ getBanachAnalyserInput debug input = do
     traceIOIfDebug debug $ "column names: " ++ show extColNames
     traceIOIfDebug debug $ "----------------"
 
+    --INSERT INTO ship_arrival_to_port SELECT ship.max_speed AS output1, ship.length AS output2 FROM ship;")
+    --"create or replace function reachable_ports() returns TABLE (    port_id INT8,    arrival FLOAT8) as $$ SELECT    port.port_id AS port_id,    ((ship.latitude - port.latitude) ^ 2 + (ship.longitude - port.longitude) ^ 2) ^ 0.5 / ship.max_speed AS arrival FROM port, ship, parameters WHERE     ship.name = parameters.shipname $$ language SQL;");
+    --"INSERT INTO ship_arrival_to_port SELECT min(ship.max_speed) FROM ship;") -- AS rport,    feasible_ports AS fport,    port, slot, berth, ship, parameters WHERE    port.port_id = fport.port_id    AND port.port_id = rport.port_id    AND port.port_id = berth.port_id    AND slot.port_id = berth.port_id    AND slot.berth_id = berth.berth_id    AND ship.name = parameters.shipname    AND berth.berthlength >= ship.length    AND slot.slotstart <= parameters.deadline    AND slot.slotstart + port.offloadtime <= slot.slotend;")
+    --let qname = fst (head statement)
+    --let h = snd (head statement)
+    --traceIOIfDebug debug $ "----------------"
+    --traceIOIfDebug debug $ show qname
+    --traceIOIfDebug debug $ "----------------"
+    --traceIOIfDebug debug $ show (extractSelect h)
+    --traceIOIfDebug debug $ "----------------"
+    --traceIOIfDebug debug $ show (extractTrefs h)
+    --traceIOIfDebug debug $ "----------------"
+    --traceIOIfDebug debug $ show (extractWhere h)
+    --traceIOIfDebug debug $ "----------------"
     -- return data to the banach space analyser
     return tableExprData
 

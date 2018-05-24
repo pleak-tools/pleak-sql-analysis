@@ -2,6 +2,7 @@
 
 module SelectQueryQ (
   parseQuery,
+  parseQueryMap,
   parseNamedQuery,
   parseSelectQuery,
   typeCheckSelectQuery,
@@ -29,6 +30,7 @@ import Data.Maybe
 import System.Exit
 import Text.Printf
 
+import qualified Data.Map as M
 import qualified Data.Text.Lazy as T
 
 import SchemaQ -- TODO: workaround
@@ -39,19 +41,25 @@ import AexprQ
 import QueryQ
 import ErrorMsg
 
---parseSelectQuery :: Dialect -> FilePath -> T.Text -> IO QueryExpr
---parseSelectQuery dialect fp src =
---  case parseQueryExpr parseFlags fp Nothing src of
---    Left err -> fatal (show err)
---    Right query@Select{} -> return query
---    Right _ -> fatal "Unsupported query type. Expecting basic SELECT query."
---  where
---    parseFlags = defaultParseFlags { pfDialect = dialect }
+data Query
+  = P [String] [Function] (M.Map TableAlias TableName) [AExpr VarName]
+  deriving (Show)
 
-parseNamedQuery :: String -> IO [(String, QueryExpr)]
-parseNamedQuery s = do
+parseQueryMap :: String -> String -> IO (TableName, M.Map TableName QueryQ.Query)
+parseQueryMap defaultOutputName s = do
+    queries <- parseNamedQuery defaultOutputName s
+    let outputTableName = fst $ last queries
+    let queryMap = M.fromList $ map (\(n,q) -> (n, QueryQ.P [] (extractSelect q) (M.fromList (extractTrefs q))  (extractWhere q))) queries
+    return (outputTableName, queryMap)
+
+parseNamedQuery :: String -> String -> IO [(String, QueryExpr)]
+parseNamedQuery defaultOutputName s = do
     xs <- parseSchemas s
-    return $ map (\(Insert _ (Name _ [Nmc name]) _ query _) -> (name, query)) xs
+    return $ map (extractNameAndQuery defaultOutputName) xs
+
+extractNameAndQuery :: String -> Statement -> (String, QueryExpr)
+extractNameAndQuery _ (Insert _ (Name _ [Nmc name]) _ query _) = (name, query)
+extractNameAndQuery defaultOutputName (QueryStatement _ query) = (defaultOutputName, query)
 
 parseQuery :: String -> IO (QueryExpr, [QueryExpr])
 parseQuery s =
@@ -157,21 +165,32 @@ nameToStr :: Name -> String
 nameToStr (Name _ ns) = intercalate "." (map ncStr ns)
 nameToStr AntiName{} = ice "Unexpected AntiName."
 
-extractSelect :: QueryExpr -> String -> [Function]
-extractSelect query y =
+extractSelect :: QueryExpr -> [Function]
+extractSelect query =
+    let y = "y~" in
     let (SelectList _ xs) = selSelectList query in 
-    let ys = if length xs == 1 then [y] else map (\i -> y ++ "~" ++ show i) [0..length xs - 1] in
+    let ys = map (\i -> "y~" ++ show i) [0..length xs - 1] in
     zipWith extractTableExpr xs ys
 
 extractTableExpr :: SelectItem -> String -> Function
 extractTableExpr (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) y =
     let arg = extractScalarExpr expr in
-    case aggrOp of
+    let aggrOp2 = map toLower aggrOp in
+    case aggrOp2 of
         "count" -> F arg (SelectCount y)
         "sum"   -> F arg (SelectSum y)
         "min"   -> F arg (SelectMin y)
         "max"   -> F arg (SelectMax y)
         _       -> error $ error_queryExpr_aggrFinal aggrOp
+
+extractTableExpr (SelectItem x1 (App x2 (Name x3 [Nmc x4]) [x5]) (Nmc asColName)) defaultColName =
+    extractTableExpr (SelExp x1 (App x2 (Name x3 [Nmc x4]) [x5])) asColName
+
+extractTableExpr (SelectItem _ expr (Nmc colName)) _ =
+    let arg = extractScalarExpr expr in
+    F arg (SelectPlain colName)
+
+
 
 extractTableExpr q _ = error $ error_queryExpr q
 
@@ -181,28 +200,38 @@ extractTrefs query = extractTrefsRec (selTref query)
 extractTrefsRec :: [TableRef] -> [(String, String)]
 extractTrefsRec [] = []
 extractTrefsRec ((TableAlias _ (Nmc tableAlias) (Tref _ (Name _ [Nmc tableName]))):ts) =
-    (tableName,tableAlias) : extractTrefsRec ts
+    (tableAlias,tableName) : extractTrefsRec ts
 extractTrefsRec (Tref _ (Name _ [Nmc tableName]):ts) =
     (tableName,tableName) : extractTrefsRec ts
 
 extractWhere :: QueryExpr -> [AExpr String]
 extractWhere query =
     let scalarExprs = extractWhereExpr query in
-    map extractScalarExpr scalarExprs
+    let aexprs = map extractScalarExpr scalarExprs in
+    concat $ map applyAexprNormalize aexprs
+
+applyAexprNormalize :: AExpr String -> [AExpr String]
+applyAexprNormalize bexpr =
+    let aexpr = aexprNormalize bexpr in
+    -- how many filters we actually have if we split them by "and"?
+    let xs = case aexpr of
+            AAnds ys -> ys
+            _        -> []
+    in if length xs == 0 then [aexpr] else xs
 
 extractScalarExpr :: ScalarExpr -> AExpr String
 extractScalarExpr expr =
     case expr of
         Identifier _ (Name _ nmcs) -> AVar $ intercalate "." (map (\(Nmc x) -> x) nmcs)
         NumberLit _ s -> AConst (read s)
-        StringLit _ s -> AText s
-        BinaryOp _ (Name _ [Nmc "<="]) x1 x2 -> ABinary ALT (extractScalarExpr x1) (extractScalarExpr x2)
+        StringLit _ s -> AText ("\'" ++ s ++ "\'")
+        BinaryOp _ (Name _ [Nmc "<="]) x1 x2 -> ABinary ALE (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "<"]) x1 x2 -> ABinary ALT (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "="]) x1 x2 -> ABinary AEQ (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "<>"]) x1 x2 -> AUnary ANot $ ABinary AEQ (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "!="]) x1 x2 -> AUnary ANot $ ABinary AEQ (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc ">"]) x1 x2 -> ABinary AGT (extractScalarExpr x1) (extractScalarExpr x2)
-        BinaryOp _ (Name _ [Nmc ">="]) x1 x2 -> ABinary AGT (extractScalarExpr x1) (extractScalarExpr x2)
+        BinaryOp _ (Name _ [Nmc ">="]) x1 x2 -> ABinary AGE (extractScalarExpr x1) (extractScalarExpr x2)
 
         BinaryOp _ (Name _ [Nmc "like"]) x1 x2 -> ABinary ALike (extractScalarExpr x1) (extractScalarExpr x2)
 

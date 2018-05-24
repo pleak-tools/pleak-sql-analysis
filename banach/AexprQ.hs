@@ -40,8 +40,32 @@ data ABinOp
   = ADiv | AMult | AAdd | ASub
   | AMin | AMax 
   | AAnd | AOr | AXor
-  | ALT | AEQ | AGT | ALike
+  | ALTint | ALEint | AEQint | AGTint | AGEint
+  | ALT | ALE | AEQ | AGE | AGT | ALike
+  | AEQstr
   deriving (Show)
+
+data AType = AInt | AFloat | ABool | AString | AUnit deriving (Eq, Show)
+
+instance Ord AType where
+    compare ABool AInt = LT
+    compare AInt AFloat = LT
+    compare ABool AFloat = LT
+    compare _ AString = LT
+    compare AUnit _ = LT
+    compare AInt ABool = GT
+    compare AFloat AInt = GT
+    compare AFloat ABool = GT
+    compare AString _ = GT
+    compare _ AUnit = GT
+    compare x y = if x == y then EQ else error $ show x ++ " " ++ show y
+
+stringToAType :: String -> AType
+stringToAType "int"   = AInt
+stringToAType "float" = AFloat
+stringToAType "bool"  = ABool
+stringToAType "text"  = AString
+stringToAType t     = error $ error_typeDoesNotExist t
 
 -- this has been stolen from Data.Logic.Propositional.NormalForms and adjusted to our data types
 neg :: AExpr a -> AExpr a
@@ -118,7 +142,7 @@ aexprNormalize (ABinary AMult x y) =
                 (_       , _       ) -> AProd [x',f y']
 
 aexprNormalize (ABinary ADiv x y) =
-            let f = (\v -> AUnary (APower (-1.0)) (AUnary ALn v)) in
+            let f = (\v -> AUnary (APower (-1.0)) v) in
             let x' = aexprNormalize x in
             let y' = aexprNormalize y in
             case (x',y') of
@@ -224,7 +248,6 @@ aexprToExpr y (AUnary ANot x) =
     let w      = y ++ "~1" in
     M.union (aexprToExpr z x) $ M.fromList [(y, Sum["1",w]), (w, Prod ["-1", z]), ("1", Const (1.0)), ("-1", Const (-1.0))]
 
-aexprToExpr y (AUnary ALn  (AConst c)) = M.fromList [(y, Const (log c))]
 aexprToExpr y (AConst c)   = M.fromList [(y, Const c)]
 aexprToExpr y (AVar x)     = M.fromList [(y, Id x)]
 --aexprToExpr y (ASubExpr e) = M.fromList [(y, e)]
@@ -234,22 +257,35 @@ aexprToExpr y (ABinary ALike x1 x2) =
     let z2     = y ++ "~2" in
     M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Like z1 z2)]
 
-aexprToExpr y (ABinary ALT x (AConst c)) = 
-    let z      = y ++ "~0" in
-    let w1     = y ++ "~1" in
-    let w2     = y ++ "~2" in
-    M.union (aexprToExpr z x) $ M.fromList [(y, Sum ["1",w2]), (w2, Prod ["-1",w1]), (w1, Sigmoid a c z), ("1", Const (1.0)), ("-1", Const (-1.0))]
+aexprToExpr y (ABinary ALEint x2 x1) = 
+    aexprToExpr y (ABinary AGEint x1 x2)
 
-aexprToExpr y (ABinary ALT x1 x2) = 
-    let z       = y ++ "~0" in 
-    let z1      = y ++ "~1" in
-    let z2      = y ++ "~2" in
-    let w       = y ++ "~3" in
-    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp GT z2 z1)]
+aexprToExpr y (ABinary ALTint x2 x1) = 
+    aexprToExpr y (ABinary AGTint x1 x2)
 
-aexprToExpr y (ABinary AEQ x (AConst c)) = 
-    let z      = y ++ "~0" in
-    M.union (aexprToExpr z x) $ M.fromList [(y, Tauoid  a c z)]
+aexprToExpr y (ABinary ALE x2 x1) = 
+    aexprToExpr y (ABinary AGE x1 x2)
+
+aexprToExpr y (ABinary ALT x2 x1) = 
+    aexprToExpr y (ABinary AGT x1 x2)
+
+--aexprToExpr y (ABinary ALT x (AConst c)) = 
+--    let z      = y ++ "~0" in
+--    let w1     = y ++ "~1" in
+--    let w2     = y ++ "~2" in
+--    M.union (aexprToExpr z x) $ M.fromList [(y, Sum ["1",w2]), (w2, Prod ["-1",w1]), (w1, Sigmoid a c z), ("1", Const (1.0)), ("-1", Const (-1.0))]
+
+aexprToExpr y (ABinary AEQstr x1 x2) = 
+    let z      = y ++ "~0" in 
+    let z1     = y ++ "~1" in
+    let z2     = y ++ "~2" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, CompStr z1 z2)]
+
+aexprToExpr y (ABinary AEQint x2 x1) = 
+    let z      = y ++ "~0" in 
+    let z1     = y ++ "~1" in
+    let z2     = y ++ "~2" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, CompInt EQ z1 z2)]
 
 aexprToExpr y (ABinary AEQ x1 x2) = 
     let z      = y ++ "~0" in 
@@ -257,17 +293,36 @@ aexprToExpr y (ABinary AEQ x1 x2) =
     let z2     = y ++ "~2" in
     M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp EQ z1 z2)]
 
-aexprToExpr y (ABinary AGT x (AConst c)) = 
-    let z      = y ++ "~0" in
-    let z1     = y ++ "~1" in
-    M.union (aexprToExpr z x) $ M.fromList [(y, Sigmoid a c z)]
+--aexprToExpr y (ABinary AEQ x (AConst c)) = 
+--    let z      = y ++ "~0" in
+--    M.union (aexprToExpr z x) $ M.fromList [(y, Tauoid  a c z)]
 
-aexprToExpr y (ABinary AGT x1 x2) = 
+aexprToExpr y (ABinary AGEint x1 x2) = 
     let z      = y ++ "~0" in 
     let z1     = y ++ "~1" in
     let z2     = y ++ "~2" in
-    let w      = y ++ "~3" in
+    let w1     = y ++ "~3" in
+    let w2     = y ++ "~4" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Max [w1, w2]), (w1, CompInt GT z1 z2), (w2, CompInt EQ z1 z2)]
+
+aexprToExpr y (ABinary AGTint x1 x2) = 
+    let z      = y ++ "~0" in 
+    let z1     = y ++ "~1" in
+    let z2     = y ++ "~2" in
+    M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, CompInt GT z1 z2)]
+
+aexprToExpr y (ABinary AGE x1 x2) = aexprToExpr y (ABinary AGT x1 x2)
+
+aexprToExpr y (ABinary AGT x1 x2) = 
+    let z      = y ++ "~0" in
+    let z1     = y ++ "~1" in
+    let z2     = y ++ "~2" in
     M.union (aexprToExpr z1 x1) $ M.union (aexprToExpr z2 x2) $ M.fromList [(y, Comp GT z1 z2)]
+
+--aexprToExpr y (ABinary AGT x (AConst c)) = 
+--    let z      = y ++ "~0" in
+--    let z1     = y ++ "~1" in
+--    M.union (aexprToExpr z x) $ M.fromList [(y, Sigmoid a c z)]
 
 -- lp-norm
 aexprToExpr y aexpr@(AUnary (APower pinv) (ASum xs)) =
@@ -333,8 +388,15 @@ aexprToExpr y aexpr@(AUnary (APower pinv) (AUnary (APower q) x)) =
         M.union (aexprToExpr z x) $ M.fromList [(y, L p [z])]
     else error $ error_queryExpr aexpr
 
-aexprToExpr y (AUnary (APower c) (AVar x))              = M.fromList [(y, Power x c)]
-aexprToExpr y (AUnary (APower c) (AUnary ALn (AVar x))) = M.fromList [(y, PowerLN x c)]
+aexprToExpr y (AUnary (APower c) (AVar x)) = 
+    if c >= 1 then
+        M.fromList [(y, Power x c)]
+    else
+        M.fromList [(y, PowerLN x c)]
+
+aexprToExpr y (AUnary (APower c) (AConst x)) = 
+    M.fromList [(y, Const (x**c))]
+
 aexprToExpr y (AUnary (APower c) x) = 
     let z = y ++ "~0" in
     M.union (aexprToExpr z x) $ M.fromList [(y, Power z c)]
@@ -437,8 +499,16 @@ aexprToString aexpr =
         ABinary AOr  x1 x2 -> "(" ++ aexprToString x1 ++ " OR " ++ aexprToString x2 ++ ")"
         ABinary AXor  x1 x2 -> "(" ++ aexprToString x1 ++ " OR " ++ aexprToString x2 ++ ")"
         ABinary ALT x1 x2  -> "(" ++ aexprToString x1 ++ " < " ++ aexprToString x2 ++ ")"
-        ABinary AEQ  x1 x2 -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
+        ABinary ALE x1 x2  -> "(" ++ aexprToString x1 ++ " <= " ++ aexprToString x2 ++ ")"
+        ABinary AEQ x1 x2  -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
+        ABinary AGE x1 x2  -> "(" ++ aexprToString x1 ++ " >= " ++ aexprToString x2 ++ ")"
         ABinary AGT x1 x2  -> "(" ++ aexprToString x1 ++ " > " ++ aexprToString x2 ++ ")"
+        ABinary ALTint x1 x2 -> "(" ++ aexprToString x1 ++ " < " ++ aexprToString x2 ++ ")"
+        ABinary ALEint x1 x2 -> "(" ++ aexprToString x1 ++ " <= " ++ aexprToString x2 ++ ")"
+        ABinary AEQint x1 x2 -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
+        ABinary AGEint x1 x2 -> "(" ++ aexprToString x1 ++ " => " ++ aexprToString x2 ++ ")"
+        ABinary AGTint x1 x2 -> "(" ++ aexprToString x1 ++ " > " ++ aexprToString x2 ++ ")"
+        ABinary AEQstr x1 x2 -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
         ABinary ALike x1 x2 -> "(" ++ aexprToString x1 ++ " LIKE " ++ aexprToString x2 ++ ")"
 
 ------------------------------------------------------------------------------------
@@ -474,8 +544,16 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
         ABinary AOr  x1 x2 -> ABinary AOr (processRec x1) (processRec x2)
         ABinary AXor x1 x2 -> ABinary AXor (processRec x1) (processRec x2)
         ABinary ALT x1 x2  -> ABinary ALT (processRec x1) (processRec x2)
+        ABinary ALE x1 x2  -> ABinary ALE (processRec x1) (processRec x2)
         ABinary AEQ  x1 x2 -> ABinary AEQ (processRec x1) (processRec x2)
         ABinary AGT x1 x2  -> ABinary AGT (processRec x1) (processRec x2)
+        ABinary AGE x1 x2  -> ABinary AGE (processRec x1) (processRec x2)
+        ABinary AEQstr x1 x2 -> ABinary AEQstr (processRec x1) (processRec x2)
+        ABinary ALTint x1 x2 -> ABinary ALTint (processRec x1) (processRec x2)
+        ABinary ALEint x1 x2 -> ABinary ALEint (processRec x1) (processRec x2)
+        ABinary AEQint x1 x2 -> ABinary AEQint (processRec x1) (processRec x2)
+        ABinary AGEint x1 x2 -> ABinary AGEint (processRec x1) (processRec x2)
+        ABinary AGTint x1 x2 -> ABinary AGTint (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> ABinary ALike (processRec x1) (processRec x2)
 
    where processRec  x = updatePreficesAexpr fullTablePaths prefix x
@@ -515,8 +593,16 @@ getAllAExprVars aexpr =
         ABinary AOr  x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary AXor x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ALT x1 x2  -> S.union (processRec x1) (processRec x2)
+        ABinary ALE x1 x2  -> S.union (processRec x1) (processRec x2)
         ABinary AEQ  x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AGE x1 x2  -> S.union (processRec x1) (processRec x2)
         ABinary AGT x1 x2  -> S.union (processRec x1) (processRec x2)
+        ABinary AEQstr x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ALTint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ALEint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AEQint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AGEint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AGTint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
     where processRec x = getAllAExprVars x
           processBase x = S.singleton x
@@ -558,9 +644,84 @@ aexprSubstitute aexprMap aexpr =
         ABinary AOr  x1 x2 -> ABinary AOr (processRec x1) (processRec x2)
         ABinary AXor x1 x2 -> ABinary AXor (processRec x1) (processRec x2)
         ABinary ALT x1 x2  -> ABinary ALT (processRec x1) (processRec x2)
+        ABinary ALE x1 x2  -> ABinary ALT (processRec x1) (processRec x2)
         ABinary AEQ  x1 x2 -> ABinary AEQ (processRec x1) (processRec x2)
+        ABinary AGE x1 x2  -> ABinary AGT (processRec x1) (processRec x2)
         ABinary AGT x1 x2  -> ABinary AGT (processRec x1) (processRec x2)
+        ABinary AEQstr x1 x2 -> ABinary AEQint (processRec x1) (processRec x2)
+        ABinary ALTint x1 x2 -> ABinary ALTint (processRec x1) (processRec x2)
+        ABinary ALEint x1 x2 -> ABinary ALEint (processRec x1) (processRec x2)
+        ABinary AEQint x1 x2 -> ABinary AEQint (processRec x1) (processRec x2)
+        ABinary AGEint x1 x2 -> ABinary AGEint (processRec x1) (processRec x2)
+        ABinary AGTint x1 x2 -> ABinary AGTint (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> ABinary ALike (processRec x1) (processRec x2)
     where processRec x = aexprSubstitute aexprMap x
           processBase x = if M.member x aexprMap then aexprMap ! x else AVar x
+
+-- TODO introduce type errors here
+applyAexprTypes :: (Ord a, Show a) => (M.Map a String) -> (AExpr a) -> (AType, AExpr a)
+applyAexprTypes typeMap aexpr =
+    case aexpr of
+        AVar x   -> (stringToAType (typeMap ! x), AVar x)
+        AConst c -> if (ceiling c == floor c) then (AInt, AConst c) else (AFloat, AConst c)
+        AText c  -> (AString, AText c)
+
+        AAbs x   -> let (t,[y]) = processRec [x] in (t, AAbs y)
+        ASum xs  -> let (t,ys)  = processRec xs  in (t, ASum ys)
+        AProd xs -> let (t,ys)  = processRec xs  in (t, AProd ys)
+        AMins xs -> let (t,ys)  = processRec xs  in (t, AMins ys)
+        AMaxs xs -> let (t,ys)  = processRec xs  in (t, AMaxs ys)
+        AAnds xs -> let (t,ys)  = processRec xs  in (t, AAnds ys)
+        AOrs  xs -> let (t,ys)  = processRec xs  in (t, AOrs ys)
+        AXors xs -> let (t,ys)  = processRec xs  in (t, AXors ys)
+
+        AUnary ALn x        -> let (_,[y]) = processRec [x] in (AFloat, AUnary ALn y)
+        AUnary ANeg x       -> let (t,[y]) = processRec [x] in (t, AUnary ANeg y)
+        AUnary ANot x       -> let (t,[y]) = processRec [x] in (t, AUnary ANot y)
+        AUnary (AExp c) x   -> let (t,[y]) = processRec [x] in (t, AUnary (AExp c) y)
+        AUnary (APower c) x -> let (t,[y]) = processRec [x] in (t, AUnary (APower c) y)
+
+        ABinary ADiv x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AFloat, ABinary ADiv y1 y2)
+        ABinary AMult x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary AMult y1 y2)
+        ABinary AAdd x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary AAdd y1 y2)
+        ABinary ASub x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary ASub y1 y2)
+        ABinary AMin x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary AMin y1 y2)
+        ABinary AMax x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary AMax y1 y2)
+        ABinary AAnd x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary AAnd y1 y2)
+        ABinary AOr  x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary AOr y1 y2)
+        ABinary AXor x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary AXor y1 y2)
+        ABinary ALT x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in
+                                  case t of
+                                      AInt -> (ABool, ABinary ALTint y1 y2)
+                                      _    -> (ABool, ABinary ALT y1 y2)
+        ABinary ALE x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in
+                                  case t of
+                                      AInt -> (ABool, ABinary ALEint y1 y2)
+                                      _    -> (ABool, ABinary ALE y1 y2)
+        ABinary AEQ  x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in
+                                  case t of
+                                      AInt    -> (ABool, ABinary AEQint y1 y2)
+                                      AString -> (ABool, ABinary AEQstr y1 y2)
+                                      _       -> (ABool, ABinary AEQ y1 y2)
+        ABinary AGE x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in
+                                  case t of
+                                      AInt -> (ABool, ABinary AGEint y1 y2)
+                                      _    -> (ABool, ABinary AGE y1 y2)
+        ABinary AGT x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in
+                                  case t of
+                                      AInt -> (ABool, ABinary AGTint y1 y2)
+                                      _    -> (ABool, ABinary AGT y1 y2)
+
+        -- forced type conversions
+        ABinary ALTint x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AInt, ABinary ALTint y1 y2)
+        ABinary ALEint x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AInt, ABinary ALEint y1 y2)
+        ABinary AEQint x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AInt, ABinary AEQint y1 y2)
+        ABinary AGEint x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AInt, ABinary AGEint y1 y2)
+        ABinary AGTint x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AInt, ABinary AGTint y1 y2)
+
+        ABinary AEQstr x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary AEQstr y1 y2)
+        ABinary ALike x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary ALike y1 y2)
+   where processRec xs =
+             let (types,aexprs) = unzip (map (applyAexprTypes typeMap) xs) in
+             (foldr max AUnit types, aexprs)
 

@@ -43,16 +43,17 @@ data Query
   deriving (Show)
 
 data TableData =
-    -- content columnNames exprs norms aggrNorms sensRows sensCols originalTablename 
-    T B.Table [VarName] NormFunction [[Int]] [VarName] TableName
+    -- content initColNames taggedColNames norms aggrNorms sensRows sensCols originalTablename 
+    T B.Table [VarName] [VarName] NormFunction [[Int]] [VarName] TableName
   deriving Show
 
-getTableValues   (T x _ _ _ _ _) = x
-getColNames      (T _ x _ _ _ _) = x
-getNorm          (T _ _ x _ _ _) = x
-getSensitiveRows (T _ _ _ x _ _) = x
-getSensitiveCols (T _ _ _ _ x _) = x
-getTableName     (T _ _ _ _ _ x) = x
+getTableValues   (T x _ _ _ _ _ _) = x
+getColNames      (T _ x _ _ _ _ _) = x
+getTagColNames   (T _ _ x _ _ _ _) = x
+getNorm          (T _ _ _ x _ _ _) = x
+getSensitiveRows (T _ _ _ _ x _ _) = x
+getSensitiveCols (T _ _ _ _ _ x _) = x
+getTableName     (T _ _ _ _ _ _ x) = x
 
 getQueryGroupNames (P x _ _ _) = x
 getQueryFunctions  (P _ x _ _) = x
@@ -74,19 +75,21 @@ inf    = ABinary ASub (AText "minmaxT.max") (AText "minmaxT.min")
 ------------------------------------------------
 
 -- put the columns of all input tables together
-getAllColumns :: M.Map TableAlias TableData -> ([VarName], [VarName])
+getAllColumns :: M.Map TableAlias TableData -> ([VarName], [VarName], [VarName])
 getAllColumns tableMap =
 
     let tableAliases = M.keys tableMap in
 
     let allInputVars     = map (getColNames .      (tableMap ! ) ) tableAliases in
+    let allTaggedVars    = map (getTagColNames .   (tableMap ! ) ) tableAliases in
     let allSensitiveVars = map (getSensitiveCols . (tableMap ! ) ) tableAliases in
 
     -- the input variables are concatenated in the order of tables, since each of them describes a column
     let inputVarList     = concat allInputVars in
+    let tagInputVarList  = concat allTaggedVars in
     let sensitiveVarList = concat allSensitiveVars in
 
-    (inputVarList, sensitiveVarList)
+    (inputVarList, tagInputVarList, sensitiveVarList)
 
 ---------------------------------------------
 -- TODO we will not need the next cross product functions in the new version
@@ -123,8 +126,13 @@ updateQueryVariableNames fullTablePaths prefix (F aexpr b) =
     let b'     = updatePreficesTableExpr fullTablePaths prefix b in
     F aexpr' b'
 
-updateFilterVariableNames :: (S.Set String) -> TableAlias -> AExpr VarName -> AExpr VarName
-updateFilterVariableNames fullTablePaths prefix aexpr = updatePreficesAexpr fullTablePaths prefix aexpr
+applyQueryTypes :: (M.Map VarName String) -> Function -> Function
+applyQueryTypes typeMap (F aexpr b) =
+    let aexpr' = snd $ applyAexprTypes typeMap aexpr in
+    F aexpr' b
+
+updateAExprVariableNames :: (S.Set String) -> TableAlias -> AExpr VarName -> AExpr VarName
+updateAExprVariableNames fullTablePaths prefix aexpr = updatePreficesAexpr fullTablePaths prefix aexpr
 
 queryToExpr :: (M.Map VarName B.Var) -> (S.Set B.Var) -> Function -> (B.Expr, B.TableExpr, String)
 queryToExpr inputMap allSensitiveCols (F aexpr y) =

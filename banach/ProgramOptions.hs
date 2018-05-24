@@ -7,7 +7,8 @@ import Data.Semigroup ((<>))
 
 data ProgramOptions
   = ProgramOptions {
-    inputFp          :: FilePath,
+    inputFp1         :: FilePath,
+    inputFp2         :: FilePath,
     alternative      :: Bool,
     generateQueries  :: Bool,
     dbSensitivity    :: Bool,
@@ -19,7 +20,8 @@ data ProgramOptions
 
 programArgs :: Parser ProgramOptions
 programArgs = ProgramOptions
-  <$> strArgument (metavar "INPUT" <> help "Input file")
+  <$> strArgument (metavar "SCHEMA INPUT" <> help "schema input file")
+  <*> strArgument (metavar "QUERY INPUT" <> help "query input file")
   <*> switch (short 'a' <> long "alternative" <> hidden <> help "Use alternative input and output format")
   <*> switch (short 'Q' <> long "queries" <> hidden <> help "Generate SQL queries for computing sensitivity instead of actually computing it")
   <*> switch (short 'D' <> long "db-sensitivity" <> hidden <> help "Send the generated query for computing sensitivity automatically to the database")

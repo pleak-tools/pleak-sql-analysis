@@ -43,6 +43,9 @@ error_queryExpr_notAllInputVars t  = error_queryExpr t ++ ",\n all the inputs ha
 error_queryExpr_notAllAsgnVars t   = error_queryExpr t ++ ",\n all the inputs have to be expressions."
 error_queryExpr_repeatingVars t    = error_queryExpr t ++ ",\n variables are repeating in different args of the term."
 
+error_noColNames = "ERROR: all columns of intermediate tables need to be named, use SELECT ... AS ..."
+error_typeDoesNotExist s = "ERROR: data type \'" ++ s ++ "\' is not supported."
+
 -- internall errors that may come due to bugs in the analyser itself
 error_internal      = "INTERNAL ERROR: Some internal analyser problem: "
 error_internal_queryExprFilter t       = error_internal ++ "\n query expression " ++ show t ++ " identified as a filter."

@@ -179,6 +179,13 @@ betweenAExpr = do
   aexprUB <- aExpr
   return (\e -> ABinary AAnd (ABinary AGT e aexprLB) (ABinary ALT e aexprUB))
 
+inIntAExpr :: Parser (AExpr VarName -> AExpr VarName)
+inIntAExpr = do
+  caseInsensKeyWord "in~"
+  (a:as) <- parens $ sepBy1 aExpr (symbol ",")
+  -- we assume that "in" conditions are mutually exclusive
+  return (\e -> foldr (\ae aes -> ABinary AOr (ABinary AEQint e ae) aes) (ABinary AEQint e a) as)
+
 inAExpr :: Parser (AExpr VarName -> AExpr VarName)
 inAExpr = do
   caseInsensKeyWord "in"
@@ -266,16 +273,23 @@ bOperators =
   [
     [ Prefix notAExpr
     , Postfix betweenAExpr
+    , Postfix inIntAExpr
     , Postfix inAExpr
     , Postfix likeAExpr]
 
-  , [ InfixL (ABinary ALT <$ symbol "<=")
+  , [ InfixL (ABinary ALEint <$ symbol "<=~")
+    , InfixL (ABinary ALT <$ symbol "<=")
+    , InfixL ((\x y -> AUnary ANot (ABinary AEQint x y)) <$ symbol "<>~")
     , InfixL ((\x y -> AUnary ANot (ABinary AEQ x y)) <$ symbol "<>")
     , InfixL ((\x y -> AUnary ANot (ABinary AEQ x y)) <$ symbol "!=")
+    , InfixL (ABinary ALTint <$ symbol "<~")
     , InfixL (ABinary ALT <$ symbol "<")
+    , InfixL (ABinary AEQint <$ symbol "=~")
     , InfixL (ABinary AEQ <$ symbol "==")
     , InfixL (ABinary AEQ <$ symbol "=")
+    , InfixL (ABinary AGEint <$ symbol ">=~")
     , InfixL (ABinary AGT <$ symbol ">=")
+    , InfixL (ABinary AGTint <$ symbol ">~")
     , InfixL (ABinary AGT <$ symbol ">") ]
 
   , [ InfixL (ABinary AAnd <$ caseInsensKeyWord "and")
@@ -290,24 +304,6 @@ bTerm = try aExpr <|> parens bExpr
 ------------------------------------------------------------
 ---- Parsing SQL query (simlpified, could be delegated) ----
 ------------------------------------------------------------
-order :: Parser Ordering
-order = ordLE <|> ordLT <|> ordEQ <|> ordGE <|> ordGT
-ordLT = do
-  symbol "<"
-  return LT
-ordLE = do
-  symbol "<="
-  return LT
-ordEQ = do
-  symbol "==" <|> symbol "="
-  return EQ
-ordGT = do
-  symbol ">"
-  return GT
-ordGE = do
-  symbol ">="
-  return GT
-
 sqlAggregator :: Parser (VarName -> TableExpr)
 sqlAggregator = selectProdAExpr
   <|> selectMinAExpr
@@ -349,7 +345,7 @@ selectDistinctAExpr = do
 
 selectAExpr :: Parser (VarName -> TableExpr)
 selectAExpr = do
-  return Select
+  return SelectPlain
 
 -- ======================================================================= --
 -----------------------------------------------------------------------------

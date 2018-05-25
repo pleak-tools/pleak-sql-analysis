@@ -3,6 +3,7 @@ module LocalSensitivity (performLocalSensitivityAnalysis) where
 import Control.Monad
 import qualified Data.Map as Map
 import qualified Data.Text as T
+import qualified Data.Text.Lazy as TL
 import Data.Map (Map)
 import Data.Array.IArray
 import Data.Array.Unboxed
@@ -17,6 +18,8 @@ import Debug.Trace
 import Text.Printf
 import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Syntax
+import Database.HsSqlPpp.Pretty
+import Database.HsSqlPpp.Dialect
 import SelectQuery
 
 type Table = [[Int]]
@@ -47,6 +50,9 @@ dbTables = Map.fromList [
   ("t3", table3),
   ("t3copy", table3),
   ("t4", table4)]
+
+sqlDialect = postgresDialect
+prettyFlags = PrettyFlags {ppDialect = sqlDialect}
 
 sumExprBound = 1000
 
@@ -287,6 +293,20 @@ scalExprMaxAddr = f where
       ArOp1 _ e1 -> f (IntExpr e1)
       ArOp2 _ e1 e2 -> f (IntExpr e1) `max` f (IntExpr e2)
 
+scalExprAddrs = nub . f where
+  f (BoolExpr e) =
+    case e of
+      BoolLit _ -> []
+      RelOp2 _ e1 e2 -> f (IntExpr e1) ++ f (IntExpr e2)
+      BoolOp1 _ e1 -> f (BoolExpr e1)
+      BoolOp2 _ e1 e2 -> f (BoolExpr e1) ++ f (BoolExpr e2)
+  f (IntExpr e) =
+    case e of
+      Ident i -> [i]
+      IntLit _ -> []
+      ArOp1 _ e1 -> f (IntExpr e1)
+      ArOp2 _ e1 e2 -> f (IntExpr e1) ++ f (IntExpr e2)
+
 compileScalarExpr :: (Name -> Int) -> ScalarExpr -> ScalExpr
 compileScalarExpr nta = f where
   f (BooleanLit _ b) = BoolExpr (BoolLit b)
@@ -493,11 +513,10 @@ showNoiseLevelList [] = "[]"
 showNoiseLevelList nls = take (length s - 3) s
   where s = concatMap (printf "%0.3f | " :: Double -> String) nls
 
-showDoubleNoiseLevelList :: [Double] -> [Double] -> String
-showDoubleNoiseLevelList [] [] = "[]"
-showDoubleNoiseLevelList nls1 nls2 = take (length s - 3) s
-  where s = concat $ zipWith (printf "%9.3f # %9.3f | " :: Double -> Double -> String) nls1 nls2
-
+showNoiseLevelList2 :: [Double] -> String
+showNoiseLevelList2 [] = "[]"
+showNoiseLevelList2 nls = take (length s - 3) s
+  where s = concatMap (printf "%9.3f | " :: Double -> String) nls
 
 performLocalSensitivityAnalysis :: Bool -> Map CatName [(CatName, CatName)] -> QueryExpr -> IO ()
 performLocalSensitivityAnalysis debug schema query = do
@@ -505,7 +524,9 @@ performLocalSensitivityAnalysis debug schema query = do
   putStrLn "Processing the schema"
   origTableCols <- fmap Map.fromList $ forM (Map.toList schema) $ \ (n1,ns) -> do
     let tblName = T.unpack n1
+    printf "table %s\n" tblName
     let cols = map (T.unpack . fst) ns
+    forM_ ns $ \ (c,t) -> printf "  %s: %s\n" (T.unpack c) (T.unpack t)
     return (tblName, cols)
   let np = NoiseParameters { noise_epsilon = 1, noise_b2 = 0.5 }
   --forM_ [0.1,0.2..0.9] $ \ b2 -> do
@@ -519,7 +540,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
   putStrLn "performLocalSensitivityAnalysis'"
 
   putStrLn "Processing FROM clause"
-  (db,hasSubQueries,allSubQueryDers,tableName,newTableIds,origTables,newTableCount,numCols,tblAddr,nmcsToAddr,totalNumCols,colEq,numTables) <- do
+  (db,hasSubQueries,allSubQueryDers,tableName,tableNames,origTableNames,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,nmcsToAddr,totalNumCols,colEq,numTables) <- do
     let tmpTableName = ('$' :)
     (tableNames, origTableNames, colNamess, db, derss) <- fmap unzip5 $ forM (selTref query) $ \ tr -> do
       case tr of
@@ -572,8 +593,12 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
     let tblAddr = listArray (0,numTables) (prefixSum (map numCols [0..numTables-1])) :: UArray Int Int
     let nmcsToAddr ns = let (ti,ci) = nmcsToColId ns in (tblAddr ! ti) + ci
     let totalNumCols = tblAddr ! numTables
+    let addrToTbl = listArray (0,totalNumCols-1) (concatMap (\ i -> replicate (numCols i) i) [0..numTables-1]) :: UArray Int Int
+    let addrToTblCol = listArray (0,totalNumCols-1) [(t,c) | (t,cs) <- zip tableNames colNamess, c <- cs] :: Array Int (String,String)
+    putStr "addrToTblCol: "
+    print addrToTblCol
     colEq <- newArray ((0,0), (totalNumCols-1,totalNumCols-1)) False :: IO (IOUArray (Int,Int) Bool)
-    return (db,hasSubQueries,allSubQueryDers,tableName,newTableIds,origTables,newTableCount,numCols,tblAddr,nmcsToAddr,totalNumCols,colEq,numTables)
+    return (db,hasSubQueries,allSubQueryDers,tableName,tableNames,origTableNames,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,nmcsToAddr,totalNumCols,colEq,numTables)
 
   putStrLn "Processing SELECT clause"
   let
@@ -628,7 +653,8 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
   printf "Selected column names: %s\n" (show selectedColNames)
 
   putStrLn "Processing WHERE clause"
-  wheresForAddr <- do
+
+  (wheresAndTables,wheresForAddr) <- do
     wheresForAddrArr <- newArray (0, totalNumCols-1) [] :: IO (IOArray Int [ScalExpr])
     let
       processWhere w =
@@ -637,17 +663,26 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
             let na1 = nmcsToAddr $ nmcs n1
             let na2 = nmcsToAddr $ nmcs n2
             writeArray colEq (na1,na2) True :: IO ()
+            return []
           BinaryOp _ n w1 w2 | nmcs n == ["and"] -> do
-            processWhere w1
-            processWhere w2
+            r1 <- processWhere w1
+            r2 <- processWhere w2
+            return (r1 ++ r2)
           _ -> do
+            putStrLn $ TL.unpack $ prettyScalarExpr prettyFlags w
             let se = compileScalarExpr (nmcsToAddr . nmcs) w
+            let as = scalExprAddrs se
+            let tables = nub $ map (addrToTbl !) as
+            print as
+            print tables
             let a = scalExprMaxAddr se
             wheres <- readArray wheresForAddrArr a
             writeArray wheresForAddrArr a (se : wheres)
+            return [(w,tables)]
     let wheres = extractWhereExpr query
-    forM_ wheres processWhere
-    freeze wheresForAddrArr :: IO (Array Int [ScalExpr])
+    wheresAndTables <- fmap concat $ forM wheres processWhere
+    wheresForAddr <- freeze wheresForAddrArr :: IO (Array Int [ScalExpr])
+    return (wheresAndTables,wheresForAddr)
 
   forM_ [0..totalNumCols-1] $ \ i -> do
     writeArray colEq (i,i) True
@@ -660,6 +695,64 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
         b1 <- readArray colEq (i,k)
         b2 <- readArray colEq (k,j)
         when (b1 && b2) $ writeArray colEq (i,j) True
+
+  colEqComponents <- fmap concat $ forM [0..totalNumCols-1] $ \ i -> do
+    eqs <- fmap concat $ forM [0..totalNumCols-1] $ \ j -> do
+      b <- readArray colEq (i,j)
+      return $ if b then [j] else []
+    return $ if head eqs == i then [eqs] else []
+  putStr "colEqComponents: "
+  print colEqComponents
+
+  let
+    findQueryForDerivatives dtable = do
+      let dtableName = tableName dtable
+      printf "Query for derivatives w.r.t. table %s:\n" dtableName
+      let showTblCol (t,c) = t ++ '.' : c
+      let showAddrCol = showTblCol . (addrToTblCol !)
+      let
+        wheres = concat $ flip map wheresAndTables $ \ (w,tables) ->
+          if dtable `elem` tables
+            then []
+            else [w]
+      let dwheres1 = flip map wheres (TL.unpack . prettyScalarExpr prettyFlags)
+      --forM_ colEqComponents $ \ as -> do
+        --when (length otherAs >= 2) $
+        --  forM_ (zip otherAs (tail otherAs)) $ \ (a1,a2) ->
+        --    printf "%s = %s\n" (showAddrCol a1) (showAddrCol a2)
+        --unless (null otherAs) $
+        --  forM_ currAs $ \ a ->
+        --    let (t,c) = addrToTblCol ! a
+        --    in printf "%s as _%s\n" (showAddrCol (head otherAs)) c
+      let
+        (dwheress,dselectss) =
+          unzip $ flip map colEqComponents $ \ as ->
+            let (currAs,otherAs) = partition ((== dtable) . (addrToTbl !)) as
+                dwheres = if null otherAs then [] else zip otherAs (tail otherAs)
+                dselects = flip map currAs $ \ a ->
+                  case otherAs of
+                    [] -> (Nothing, a)
+                    a2:_ -> (Just a2, a)
+            in (dwheres,dselects)
+      let dwheres2raw = concat dwheress
+      let dwheres2 = map (\ (a1,a2) -> printf "%s = %s" (showAddrCol a1) (showAddrCol a2)) dwheres2raw
+      let dselects = concat dselectss
+      putStrLn $
+        "SELECT " ++
+        (intercalate ", " $ (flip map dselects $ \ (b, a) ->
+          (case b of Nothing -> "null"; Just a2 -> showAddrCol a2) ++ " AS " ++ (let (t,c) = addrToTblCol ! a in '_' : c)) ++ ["COUNT(*) AS _derivative"])
+      putStrLn $
+        "FROM " ++
+        intercalate ", " (filter (not . null) $ zipWith (\ ot t -> if t == dtableName then "" else ot ++ " AS " ++ t) origTableNames tableNames)
+      putStrLn $
+        "WHERE " ++
+        intercalate " AND " (dwheres1 ++ dwheres2)
+      let groupByList = intercalate ", " $ flip map dselects $ \ (b, a) -> let (t,c) = addrToTblCol ! a in '_' : c
+      putStrLn $ "GROUP BY " ++ groupByList;
+      putStrLn $ "ORDER BY " ++ groupByList ++ ";"
+
+  putStrLn "Queries for derivatives:"
+  forM_ [0..numTables-1] findQueryForDerivatives
 
   prevEq <- fmap (listArray (0,totalNumCols-1) :: [Maybe Int] -> Array Int (Maybe Int)) $ forM [0..totalNumCols-1] $ \ i -> do
     eqs <- fmap concat $ forM [0..i-1] $ \ j -> do
@@ -715,8 +808,8 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
     -- dtables must be in ascending order
     findDerivatives :: [Int] -> IO [([[Int]], [Int], [DerT])]
     findDerivatives dtables = do
-      when debug $ putStr "Finding derivatives w.r.t. tables "
-      when debug $ print (map tableName dtables)
+      putStr "Finding derivatives w.r.t. tables "
+      print (map tableName dtables)
       let numdtables = length dtables
       row <- newArray (0, totalNumCols-1) 0 :: IO (IOUArray Int Int)
       isdtableArr <- newArray (0, totalNumCols-1) False :: IO (IOUArray Int Bool)
@@ -772,7 +865,7 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
               els0 : f els1 ncs1
       forM (Map.assocs ders) $ \ ((els,vs),d) -> do
         let gels = groupEls els
-        --printf "%s -> %s -> %s\n" (show gels) (show vs) (show d)
+        printf "%s -> %s -> %s\n" (show gels) (show vs) (show d)
         if numdtables == 1 && null vs && length d == 1
           then do
             let d1 = head d
@@ -925,42 +1018,32 @@ performLocalSensitivityAnalysis' debug np origTableCols query = do
 
       distr_nlm :: NoiseDistribution -> Double
       distr_nlm d = nlm (distrC1 d) (distrC2 d)
-    let distr_nlms = map distr_nlm noise_distributions
     let distr_smnlms = map (`distrSmNlm` np) noise_distributions
     let canComputeSmoothNoiseLevel = canComputeNoiseLevel && numdtables == 1
-    when canComputeNoiseLevel $ printf "Noise level multiplier = %s\n" (showNoiseLevelList distr_nlms)
     when canComputeSmoothNoiseLevel $ printf "Smooth noise level multiplier = %s\n" (showNoiseLevelList distr_smnlms)
     maxd:maxsmss <- fmap (map maximum . transpose) $ forM ders4 $ \ (els',vs,d) -> do
       let d1 = if null d then 1 else head d
-      --if canComputeNoiseLevel
-      --  then printf "%s -> %s -> %s -> noise level %0.3f | %0.3f\n" (show els') (show vs) (show d) nlC nlL
-      --  else printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
       printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
-      --return nl
       if canComputeNoiseLevel && length d >= 1
         then return d
         else return [d1]
-    let nls = map (* maxd) distr_nlms
     let smnls = zipWith (*) maxsmss distr_smnlms
-    when canComputeNoiseLevel $ printf "-> noise level %s\n" (showNoiseLevelList nls)
     when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
     when canComputeSmoothNoiseLevel $ printf "smooth sensitivity (with gamma = 4) w.r.t. table %s: %0.3f\n" (fst (head dtncs)) (maxsmss !! 1)
-    --when canComputeNoiseLevel $ printf "-> noise level %0.3f | %0.3f\n" nlC nlL
-    return $ nls ++ if null smnls then replicate (length nls) 0 else smnls
+    return $ if null smnls then replicate (length noise_distributions) 0 else smnls
   let noiseLevels = map maximum nlss
-  let (nls1,nls2) = splitAt (length noise_distributions) noiseLevels
+  let nls2 = noiseLevels
   if canComputeNoiseLevel
     then do
       printf "query result = %0.3f\n" (fromIntegral (head (head queryResult)) :: Double)
-      printf "noise level to add = %s\n" (showDoubleNoiseLevelList nls1 nls2)
+      printf "noise level to add = %s\n" (showNoiseLevelList2 nls2)
       -- quantiles of the absolute value of added noise
       let ps = 0 : 0.001 : 0.01 : 0.1 : 0.2 : 0.3 : 0.4 : map (\ i -> 1 - (2 :: Double)**(- 1.0 * i)) [1..20]
       let nqss = transpose $ map (flip distrQuantiles ps) noise_distributions
       forM_ (zip ps nqss) $ \ (p, nqs) -> do
-        let qs1 = zipWith (*) nls1 nqs
         let qs2 = zipWith (*) nls2 nqs
         --printf "%9.5f%% quantile: %0.3f %0.3f | %0.3f | ratio = %0.3f\n" (100 * p) (noiseLevelC * nqGC) qC qL (qC / qL)
-        printf "%9.5f%% quantile: %s\n" (100 * p) (showDoubleNoiseLevelList qs1 qs2)
+        printf "%9.5f%% quantile: %s\n" (100 * p) (showNoiseLevelList2 qs2)
     else do
       putStrLn "query result:"
       mapM_ print queryResult

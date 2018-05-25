@@ -42,3 +42,13 @@ readDB dbFileName = do
     let varNames = words firstLine
     let table    = readDoubles (foldr (\x y -> x ++ "\n" ++ y) "" ls)
     return (varNames, table)
+
+-- read the database from the file as a matrix of strings
+-- read is as a single table row
+readDBString :: String -> IO ([String], [[String]])
+readDBString dbFileName = do
+    (firstLine:ls) <- fmap lines (readInput dbFileName)
+    let varNames = words firstLine
+    let table    = map words ls
+    return (varNames, table)
+

@@ -254,7 +254,7 @@ readAllTables queryPath tableNames tableAliases = do
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> String -> IO ([String], [(TableName, B.TableExpr,(String,String,String))])
+getBanachAnalyserInput :: Bool -> String -> String -> IO ([String], [(String,String)], [(TableName, B.TableExpr,(String,String,String))])
 getBanachAnalyserInput debug inputSchema inputQuery = do
 
     putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
@@ -294,7 +294,8 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     let (initColNames, colNames, sensitiveVarList) = getAllColumns inputTableMap
     -- we drop the numerical part from all data types
     -- assume that only "int", "float", "bool", "text" are left
-    let taggedTypeMap = M.fromList $ zipWith (\x y -> (x, takeWhile (\z -> ord(z) >= 65) (map toLower (typeMap ! y)))) colNames initColNames
+    let taggedTypes   = zipWith (\x y -> (x, takeWhile (\z -> ord(z) >= 65) (map toLower (typeMap ! y)))) colNames initColNames
+    let taggedTypeMap = M.fromList $ taggedTypes
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Types1: " ++ show typeMap
     traceIOIfDebug debug $ "Types2: " ++ show taggedTypeMap
@@ -380,7 +381,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
 
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let tableExprData = (extColNames, zip3 allTableNames finalTableExpr sqlQueries)
+    let tableExprData = (extColNames, taggedTypes, zip3 allTableNames finalTableExpr sqlQueries)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

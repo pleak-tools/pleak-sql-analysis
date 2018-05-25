@@ -663,7 +663,7 @@ applyAexprTypes :: (Ord a, Show a) => (M.Map a String) -> (AExpr a) -> (AType, A
 applyAexprTypes typeMap aexpr =
     case aexpr of
         AVar x   -> (stringToAType (typeMap ! x), AVar x)
-        AConst c -> if (ceiling c == floor c) then (AInt, AConst c) else (AFloat, AConst c)
+        AConst c -> if isInteger c then (AInt, AConst c) else (AFloat, AConst c)
         AText c  -> (AString, AText c)
 
         AAbs x   -> let (t,[y]) = processRec [x] in (t, AAbs y)
@@ -678,8 +678,12 @@ applyAexprTypes typeMap aexpr =
         AUnary ALn x        -> let (_,[y]) = processRec [x] in (AFloat, AUnary ALn y)
         AUnary ANeg x       -> let (t,[y]) = processRec [x] in (t, AUnary ANeg y)
         AUnary ANot x       -> let (t,[y]) = processRec [x] in (t, AUnary ANot y)
-        AUnary (AExp c) x   -> let (t,[y]) = processRec [x] in (t, AUnary (AExp c) y)
-        AUnary (APower c) x -> let (t,[y]) = processRec [x] in (t, AUnary (APower c) y)
+        AUnary (AExp c) x   -> let (t,[y]) = processRec [x] in (AFloat, AUnary (AExp c) y)
+        AUnary (APower c) x -> let (t,[y]) = processRec [x] in
+                                   if isInteger c && c >= 0 then
+                                       (t, AUnary (APower c) y)
+                                   else
+                                       (AFloat, AUnary (APower c) y)
 
         ABinary ADiv x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AFloat, ABinary ADiv y1 y2)
         ABinary AMult x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (t, ABinary AMult y1 y2)
@@ -724,4 +728,5 @@ applyAexprTypes typeMap aexpr =
    where processRec xs =
              let (types,aexprs) = unzip (map (applyAexprTypes typeMap) xs) in
              (foldr max AUnit types, aexprs)
+         isInteger c = (ceiling c == floor c)
 

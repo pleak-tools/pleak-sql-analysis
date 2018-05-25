@@ -154,9 +154,12 @@ isSupportedWhereExpr = \case
   PrefixOp _ n _   -> nameToStr n `elem` ops
   BinaryOp _ n _ _ -> nameToStr n `elem` ops
   SpecialOp _ n _  -> nameToStr n == "between"
+  App _ n _        -> nameToStr n `elem` apps
+  InPredicate _ _ True (InList _ _) -> True
   _                -> False
   where
-    ops = ["=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/", "%", "not"]
+    ops = ["=", "<", ">", "<=", ">=", "<>", "and", "or", "xor", "+", "-", "*", "/", "%", "^", "not"]
+    apps = ["log", "exp", "abs", "least", "greatest"]
 
 isSupportedAggregOp :: Name -> Bool
 isSupportedAggregOp op = nameToStr op `elem` ["count", "sum", "avg", "min", "max"]

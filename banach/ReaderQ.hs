@@ -61,7 +61,7 @@ readDB dbFileName = do
     return (varNames, table)
 
 -- read the database from the file as several matrices of different data types
-readDBDifferentTypes :: String -> String -> M.Map String String -> IO ([String], [[Bool]], [[Int]], [[Double]], [[String]])
+readDBDifferentTypes :: String -> String -> M.Map String String -> IO ([String], [[Bool]], [[Int]], [[Double]], [[String]], [Int], [Int], [Int], [Int])
 readDBDifferentTypes dbFileName tableName typeMap = do
     (varNames, table) <- readDBString dbFileName
     let varTypes = map (\x -> (typeMap ! (tableName ++ "." ++ x))) varNames
@@ -69,7 +69,14 @@ readDBDifferentTypes dbFileName tableName typeMap = do
     let intCols  = fmap (map (readErr "int") .  (filterWith (== "int") varTypes)) table :: [[Int]]
     let dblCols  = fmap (map (readErr "float") . (filterWith (== "float") varTypes)) table :: [[Double]]
     let strCols  = fmap (filterWith (== "text") varTypes) table :: [[String]]
-    return (varNames, boolCols, intCols, dblCols, strCols)
+
+    let indices = [0..length varNames - 1]
+    let boolIndices = filterWith (== "bool") varTypes indices
+    let intIndices = filterWith (== "int") varTypes indices
+    let dblIndices = filterWith (== "float") varTypes indices
+    let stringIndices = filterWith (== "text") varTypes indices
+
+    return (varNames, boolCols, intCols, dblCols, strCols, boolIndices, intIndices, dblIndices, stringIndices)
 
 --readDifferentTypes :: [String] -> String -> [[Either Bool (Either Int (Either Double String))]]
 --readDifferentTypes varTypes s =

@@ -65,31 +65,40 @@ concatMaps xs = foldr M.union M.empty xs
 
 
 ------------------------------------------------
--- some important constants
+-- some important constants that are (or have been) used multiple times
 one    = AConst   1.0
+half   = AConst   0.5
 oneNeg = AConst (-1.0)
+two    = AConst   2.0
+
 inf    = ABinary ASub (AText "minmaxT.max") (AText "minmaxT.min")
+infNeg = ABinary ASub (AText "minmaxT.min") (AText "minmaxT.max")
+
+infMax = AText "minmaxT.max"
+infMin = AText "minmaxT.min"
 
 ------------------------------------------------
 ---- Executing public parts of an SQL query ----
 ------------------------------------------------
 
 -- put the columns of all input tables together
-getAllColumns :: M.Map TableAlias TableData -> ([VarName], [VarName], [VarName])
+getAllColumns :: M.Map TableAlias TableData -> ([VarName], [VarName], [VarName], [VarName])
 getAllColumns tableMap =
 
     let tableAliases = M.keys tableMap in
 
+    let allTableVars     = map ( (\t -> let prefix = (getTableName t) ++ "." in map (prefix ++ ) (getColNames t)) . (tableMap ! ) ) tableAliases in
     let allInputVars     = map (getColNames .      (tableMap ! ) ) tableAliases in
     let allTaggedVars    = map (getTagColNames .   (tableMap ! ) ) tableAliases in
     let allSensitiveVars = map (getSensitiveCols . (tableMap ! ) ) tableAliases in
 
     -- the input variables are concatenated in the order of tables, since each of them describes a column
+    let tableVarList     = concat allTableVars in
     let inputVarList     = concat allInputVars in
     let tagInputVarList  = concat allTaggedVars in
     let sensitiveVarList = concat allSensitiveVars in
 
-    (inputVarList, tagInputVarList, sensitiveVarList)
+    (inputVarList, tableVarList, tagInputVarList, sensitiveVarList)
 
 ---------------------------------------------
 -- TODO we will not need the next cross product functions in the new version
@@ -202,12 +211,14 @@ rewriteQuery faexpr (F qaexpr qaggr) =
 
         -- for min/max, add/subtract a large quantity from the values that are filtered out, so that they would be ignored
         SelectMax qx ->
-                 let aRw = ABinary AAdd qaexpr (ABinary AMult (ABinary ASub faexpr one) inf) in
+                 --let aRw = ABinary AAdd qaexpr (ABinary AMult (ABinary ASub faexpr one) inf) in
+                 let aRw = ABinary AMin qaexpr (ABinary AAdd infMin (ABinary AMult inf faexpr)) in
                  let bRw = SelectMax qx in
                  F aRw bRw
 
         SelectMin qx ->
-                 let aRw = ABinary AAdd qaexpr (ABinary AMult (ABinary ASub one faexpr) inf) in
+                 --let aRw = ABinary AAdd qaexpr (ABinary AMult (ABinary ASub one faexpr) inf) in
+                 let aRw = ABinary AMax qaexpr (ABinary AAdd infMax (ABinary AMult infNeg faexpr)) in
                  let bRw = SelectMin qx in
                  F aRw bRw
 

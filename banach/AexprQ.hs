@@ -18,6 +18,7 @@ data AExpr a
 --  | ASubExpr Expr
   | AUnary  AUnOp (AExpr a)
   | ABinary ABinOp (AExpr a) (AExpr a)
+  | AZeroSens (AExpr a) -- in some cases, we need to deliberately force ZeroSens (also around sensitive expressions), be careful with this construction!
   | AAbs  (AExpr a)
   | ASum  [AExpr a]
   | AProd [AExpr a]
@@ -210,6 +211,7 @@ aexprNormalize (AUnary AAbsEnd (AUnary AAbsBegin x)) = AAbs (aexprNormalize x)
 aexprNormalize (AUnary f x)    = AUnary  f (aexprNormalize x)
 aexprNormalize (ABinary f x y) = ABinary f (aexprNormalize x) (aexprNormalize y)
 
+aexprNormalize (AZeroSens x) = AZeroSens $ aexprNormalize x
 aexprNormalize (AAbs x) = AAbs $ aexprNormalize x
 aexprNormalize (ASum  xs) = ASum  $ map aexprNormalize xs
 aexprNormalize (AProd xs) = AProd $ map aexprNormalize xs
@@ -434,6 +436,10 @@ aexprToExpr y (AAbs x) =
     let z = y ++ "~0" in
     M.union (aexprToExpr z x) $ M.fromList [(y, L 1.0 [z])]
 
+aexprToExpr y (AZeroSens x) = 
+    let z = y ++ "~0" in
+    M.union (aexprToExpr z x) $ M.fromList [(y, ZeroSens z)]
+
 -- linf-norm
 aexprToExpr y (AMaxs xs) =
 
@@ -473,6 +479,8 @@ aexprToString aexpr =
         AVar x -> x
         AConst c -> show c
         AText s -> s
+
+        AZeroSens x -> aexprToString x
 
         AAbs x -> "abs(" ++ aexprToString x ++ ")"
         ASum xs -> "(" ++ intercalate " + " (map aexprToString xs) ++ ")"
@@ -519,6 +527,8 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
         AConst c -> AConst c
         AText c -> AText c
 
+        AZeroSens x -> AZeroSens $ processRec x
+
         AAbs x -> AAbs $ processRec x
         ASum xs -> ASum (map processRec xs)
         AProd xs -> AProd (map processRec xs)
@@ -561,12 +571,14 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
 
 --------------------------
 -- get all variables
-getAllAExprVars :: (Ord a, Show a) => AExpr a -> S.Set a
-getAllAExprVars aexpr =
+getAllAExprVars :: (Ord a, Show a) => Bool -> AExpr a -> S.Set a
+getAllAExprVars sensOnly aexpr =
     case aexpr of
         AVar x -> processBase x
         AConst c -> S.empty
         AText c -> S.empty
+
+        AZeroSens x  -> if sensOnly then S.empty else processRec x
 
         AAbs x  -> processRec x
         ASum  xs -> foldr S.union S.empty $ map processRec xs
@@ -604,11 +616,11 @@ getAllAExprVars aexpr =
         ABinary AGEint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary AGTint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
-    where processRec x = getAllAExprVars x
+    where processRec x = getAllAExprVars sensOnly x
           processBase x = S.singleton x
 
-aexprToColSet :: (Show a, Ord a, Show b, Ord b) => M.Map a b -> AExpr a -> S.Set b
-aexprToColSet inputMap aexpr = S.map (inputMap ! ) $ getAllAExprVars aexpr
+aexprToColSet :: (Show a, Ord a, Show b, Ord b) => M.Map a b -> Bool -> AExpr a -> S.Set b
+aexprToColSet inputMap sensOnly aexpr = S.map (inputMap ! ) $ getAllAExprVars sensOnly aexpr
 
 --------------------------
 -- substitute variable subexpressions
@@ -618,6 +630,8 @@ aexprSubstitute aexprMap aexpr =
         AVar x -> processBase x
         AConst c -> AConst c
         AText c -> AText c
+
+        AZeroSens x -> AZeroSens $ processRec x
 
         AAbs x -> AAbs $ processRec x
         ASum xs -> ASum (map processRec xs)
@@ -665,6 +679,8 @@ applyAexprTypes typeMap aexpr =
         AVar x   -> (stringToAType (typeMap ! x), AVar x)
         AConst c -> if isInteger c then (AInt, AConst c) else (AFloat, AConst c)
         AText c  -> (AString, AText c)
+
+        AZeroSens x -> let (t,[y]) = processRec [x] in (t, AZeroSens y)
 
         AAbs x   -> let (t,[y]) = processRec [x] in (t, AAbs y)
         ASum xs  -> let (t,ys)  = processRec xs  in (t, ASum ys)

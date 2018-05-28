@@ -49,8 +49,17 @@ parseQueryMap :: String -> String -> IO (TableName, M.Map TableName QueryQ.Query
 parseQueryMap defaultOutputName s = do
     queries <- parseNamedQuery defaultOutputName s
     let outputTableName = fst $ last queries
-    let queryMap = M.fromList $ map (\(n,q) -> (n, QueryQ.P [] (extractSelect q) (M.fromList (extractTrefs q))  (extractWhere q))) queries
+    let subQueryMaps = map (\(name,query) -> constructSubQueries name query) queries
+    let queryMap = foldr M.union M.empty subQueryMaps
     return (outputTableName, queryMap)
+
+constructSubQueries :: TableName -> QueryExpr -> (M.Map TableName QueryQ.Query)
+constructSubQueries tableName queryExpr =
+    let (tableAliasMap, subQueries) = extractTrefs queryExpr in
+    let funs = extractSelect queryExpr in
+    let filters = extractWhere queryExpr in
+    let subQuery = QueryQ.P [] funs tableAliasMap filters in
+    M.insert tableName subQuery subQueries
 
 parseNamedQuery :: String -> String -> IO [(String, QueryExpr)]
 parseNamedQuery defaultOutputName s = do
@@ -193,19 +202,27 @@ extractTableExpr (SelectItem _ expr (Nmc colName)) _ =
     let arg = extractScalarExpr expr in
     F arg (SelectPlain colName)
 
-
-
 extractTableExpr q _ = error $ error_queryExpr q
 
-extractTrefs :: QueryExpr -> [(String, String)]
-extractTrefs query = extractTrefsRec (selTref query)
+extractTrefs :: QueryExpr -> (M.Map TableName TableAlias, M.Map TableName QueryQ.Query)
+extractTrefs query = extractTrefsRec (selTref query) M.empty M.empty
 
-extractTrefsRec :: [TableRef] -> [(String, String)]
-extractTrefsRec [] = []
-extractTrefsRec ((TableAlias _ (Nmc tableAlias) (Tref _ (Name _ [Nmc tableName]))):ts) =
-    (tableAlias,tableName) : extractTrefsRec ts
-extractTrefsRec (Tref _ (Name _ [Nmc tableName]):ts) =
-    (tableName,tableName) : extractTrefsRec ts
+extractTrefsRec :: [TableRef] -> M.Map TableName TableAlias -> M.Map TableName QueryQ.Query -> (M.Map TableName TableAlias, M.Map TableName QueryQ.Query)
+extractTrefsRec [] ts qs = (ts, qs)
+extractTrefsRec (TableAlias _ (Nmc tableAlias) (Tref _ (Name _ [Nmc tableName])):xs) ts qs  =
+    let (ts', qs') = extractTrefsRec xs ts qs in
+    (M.insert tableAlias tableName ts', qs')
+
+extractTrefsRec (Tref _ (Name _ [Nmc tableName]):xs) ts qs  =
+    let (ts', qs') = extractTrefsRec xs ts qs in
+    (M.insert tableName tableName ts', qs')
+
+extractTrefsRec (TableAlias _ (Nmc tableName) (SubTref _ queryExpr):xs) ts qs  =
+    let (ts', qs1) = extractTrefsRec xs ts qs in
+    let qs2 = constructSubQueries tableName queryExpr in
+    (M.insert tableName tableName ts', M.union qs1 qs2)
+
+--extractTrefsRec t = error $ error_queryExpr t
 
 extractWhere :: QueryExpr -> [AExpr String]
 extractWhere query =

@@ -1,1 +1,1 @@
-SELECT MIN sqrt(|ships.latitude| ^ 2.0 + |ships.longitude| ^ 2.0) / ships.maxspeed FROM ships
+SELECT MIN ((ship.latitude ^ 2.0 + ship.longitude ^ 2.0) ^ 0.5 / ship.max_speed) FROM ship;

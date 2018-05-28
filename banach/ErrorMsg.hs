@@ -45,6 +45,7 @@ error_queryExpr_repeatingVars t    = error_queryExpr t ++ ",\n variables are rep
 
 error_noColNames = "ERROR: all columns of intermediate tables need to be named, use SELECT ... AS ..."
 error_typeDoesNotExist s = "ERROR: data type \'" ++ s ++ "\' is not supported."
+error_tableTypeError x varType = "ERROR: table value " ++ show x ++ " is not of type " ++ varType ++ "."
 
 -- internall errors that may come due to bugs in the analyser itself
 error_internal      = "INTERNAL ERROR: Some internal analyser problem: "
@@ -59,6 +60,7 @@ error_badNorm   t sens = "ERROR: the database norm " ++ show t ++ " does not con
 error_badLNNorm t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
 error_badLZNorm t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
 error_badAggrNorm t p q  = "ERROR: can compute sensitivity for " ++ show t ++ " only w.r.t row norm l_" ++ p ++ ", not l_" ++ q ++ "."
+
 
 --the next error is not used anymore
 error_verifyNorm t  = "INTERNAL ERROR: Could not prove that the database norm is at least as large as the query norm for sensitivity w.r.t. table " ++ show t

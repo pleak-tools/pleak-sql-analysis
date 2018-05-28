@@ -1,10 +1,11 @@
 module CreateTablesQ where
 
 import qualified Banach as B
-import ReaderQ (readDB, readDBString)
+import ReaderQ (readDB, readDBString, readDBDifferentTypes)
 import ParserQ (parseNormFromFile)
 import ErrorMsg
 
+import Debug.Trace
 import Data.List
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -34,6 +35,19 @@ createTableSqlTyped tableName types = do
   let typeMap = M.fromList types
   let dbFileName = tableName ++ ".db"
   (colNames, tbl) <- readDBString dbFileName
+
+  -- TODO this piece is used only for testing, can be removed if does not work
+  (_, boolCols, intCols, dblCols, strCols) <- readDBDifferentTypes dbFileName tableName typeMap
+  traceIO $ ("==== " ++ tableName ++ "====")
+  traceIO $ ("--- boolCols ---")
+  traceIO $ show boolCols
+  traceIO $ ("--- intCols ---")
+  traceIO $ show intCols
+  traceIO $ ("--- dblCols ---")
+  traceIO $ show dblCols
+  traceIO $ ("--- strCols ---")
+  traceIO $ show strCols
+
   let numRows = length tbl
   let sensTableName = sensRows tableName
   let normFileName = tableName ++ ".nrm"

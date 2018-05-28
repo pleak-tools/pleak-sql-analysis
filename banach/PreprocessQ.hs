@@ -261,9 +261,11 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     let queryPath = reverse $ dropWhile (/= '/') (reverse inputQuery)
 
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
-    --(outputTableName,queryMap) <- parseSqlQueryFromFile inputQuery
+    -- (outputTableName,queryMap1) <- parseSqlQueryFromFile inputQuery
     queryFileContents <- readInput inputQuery
     (outputTableName,queryMap) <- parseQueryMap defaultOutputTableName queryFileContents
+    traceIOIfDebug debug $ "queryMap:   " ++ show queryMap
+    --traceIOIfDebug debug $ "queryMap:   " ++ show queryMap1
 
     queryFileContents <- readInput inputSchema
     schemas <- parseSchemas queryFileContents
@@ -291,14 +293,17 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     inputTableMap <- readAllTables queryPath inputTableNames inputTableAliases
 
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
-    let (initColNames, colNames, sensitiveVarList) = getAllColumns inputTableMap
+    let (initColNames, tableColNames, colNames, sensitiveVarList) = getAllColumns inputTableMap
     -- we drop the numerical part from all data types
     -- assume that only "int", "float", "bool", "text" are left
+    let tableColTypes   = zipWith (\x y -> (x, takeWhile (\z -> ord(z) >= 65) (map toLower (typeMap ! y)))) tableColNames initColNames
     let taggedTypes   = zipWith (\x y -> (x, takeWhile (\z -> ord(z) >= 65) (map toLower (typeMap ! y)))) colNames initColNames
     let taggedTypeMap = M.fromList $ taggedTypes
+    let tableColTypeMap = M.fromList $ tableColTypes
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Types1: " ++ show typeMap
     traceIOIfDebug debug $ "Types2: " ++ show taggedTypeMap
+    traceIOIfDebug debug $ "Types3: " ++ show tableColTypeMap
     let filterAexprs = map (snd . applyAexprTypes taggedTypeMap) filterAexprs'
 
     -- assign a unique integer to each column name, which is the order of this column in the cross product table
@@ -321,7 +326,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     traceIOIfDebug debug $ "----------------"
     
     -- we filter out rows using globally public filters, since different filterings would be bad for combined sensitivity over all tables
-    let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap x)) filterAexprs
+    let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap True x)) filterAexprs
     let (filtQueryFuns, pubFilterAexprs) = addFiltersToQueries [outputQueryFun] filterAexprs filterSensVars
     let filtQueryFun = head filtQueryFuns
     --let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet filtQueryFun
@@ -341,30 +346,14 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
 
     args <- getProgramOptions
 
-    -- compute the number of rows using sel, fr, wh
-    --let numOfRowsQuery = "SELECT COUNT(*) FROM " ++ fr ++ " WHERE " ++ wh
-    --traceIOIfDebug debug $ "--Num_of_rows--------------"
-    --traceIOIfDebug debug $ numOfRowsQuery
-    --numOfRows <- DQ.sendDoubleQueryToDb args numOfRowsQuery
-    --let numOfRows = 1.0
-
     -- compute min/max queries using sel, fr, wh
-    -- TODO this is temporary removed, use it if the aggr query is min or max
-    let minmaxQuery = ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
-    --let minmaxQuery = ""
+    let minmaxQuery = case queryAggr of
+                          B.SelectMin _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
+                          B.SelectMax _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
+                          _             -> ""
 
-    --let minExprQuery = "SELECT MIN(" ++ queryStr ++ ")" ++ fr ++ wh
-    --let maxExprQuery = "SELECT MAX(" ++ queryStr ++ ")" ++ fr ++ wh
-    --traceIOIfDebug debug $ "--Min--------------"
-    --traceIOIfDebug debug $ minExprQuery
-    --traceIOIfDebug debug $ "--Max--------------"
-    --traceIOIfDebug debug $ maxExprQuery
-    --arMin <- DQ.sendDoubleQueryToDb args minExprQuery
-    --arMax <- DQ.sendDoubleQueryToDb args maxExprQuery
-    --let arMin = 1.0
-    --let arMax = 1.0
-
-    -- replace ARMin and ARMax inside the queries with actual precomputed data
+    -- TODO we may take into account sensitivity of (max - min) as it was in the old version
+    -- the sensitivity would depend on the currently analyzed table, so this should be moved into "inputWrtEachTable"
     --let finalTableExpr = applyPrecAggrTable arMin arMax queryAggr
     let finalTableExpr = queryAggr
 
@@ -381,7 +370,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
 
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let tableExprData = (extColNames, taggedTypes, zip3 allTableNames finalTableExpr sqlQueries)
+    let tableExprData = (extColNames, tableColTypes, zip3 allTableNames finalTableExpr sqlQueries)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData
@@ -391,20 +380,6 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     traceIOIfDebug debug $ "column names: " ++ show extColNames
     traceIOIfDebug debug $ "----------------"
 
-    --INSERT INTO ship_arrival_to_port SELECT ship.max_speed AS output1, ship.length AS output2 FROM ship;")
-    --"create or replace function reachable_ports() returns TABLE (    port_id INT8,    arrival FLOAT8) as $$ SELECT    port.port_id AS port_id,    ((ship.latitude - port.latitude) ^ 2 + (ship.longitude - port.longitude) ^ 2) ^ 0.5 / ship.max_speed AS arrival FROM port, ship, parameters WHERE     ship.name = parameters.shipname $$ language SQL;");
-    --"INSERT INTO ship_arrival_to_port SELECT min(ship.max_speed) FROM ship;") -- AS rport,    feasible_ports AS fport,    port, slot, berth, ship, parameters WHERE    port.port_id = fport.port_id    AND port.port_id = rport.port_id    AND port.port_id = berth.port_id    AND slot.port_id = berth.port_id    AND slot.berth_id = berth.berth_id    AND ship.name = parameters.shipname    AND berth.berthlength >= ship.length    AND slot.slotstart <= parameters.deadline    AND slot.slotstart + port.offloadtime <= slot.slotend;")
-    --let qname = fst (head statement)
-    --let h = snd (head statement)
-    --traceIOIfDebug debug $ "----------------"
-    --traceIOIfDebug debug $ show qname
-    --traceIOIfDebug debug $ "----------------"
-    --traceIOIfDebug debug $ show (extractSelect h)
-    --traceIOIfDebug debug $ "----------------"
-    --traceIOIfDebug debug $ show (extractTrefs h)
-    --traceIOIfDebug debug $ "----------------"
-    --traceIOIfDebug debug $ show (extractWhere h)
-    --traceIOIfDebug debug $ "----------------"
     -- return data to the banach space analyser
     return tableExprData
 

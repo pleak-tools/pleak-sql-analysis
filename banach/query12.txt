@@ -1,1 +1,1 @@
-SELECT COUNT (*) FROM ships WHERE (ships.name == "alma" OR ships.name == "lehm" OR ships.name = "milka") AND ships.draft BETWEEN -5 AND 5
+SELECT COUNT (*) FROM ship WHERE (ship.name = 'alma' OR ship.name = 'lehm' OR ship.name = 'milka') AND ship.draft BETWEEN -5 AND 5;

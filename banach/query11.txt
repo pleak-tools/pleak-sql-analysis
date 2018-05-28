@@ -1,1 +1,1 @@
-SELECT SUM |ships.latitude| ^ 2 + |ships.longitude| ^ 2+ |ships.maxspeed| ^ 2 FROM ships WHERE (NOT ships.name <= 34 OR ships.cargo == 0) AND ships.draft == 0
+SELECT SUM (abs(ship.latitude) ^ 2 + abs(ship.longitude) ^ 2 + abs(ship.max_speed) ^ 2) FROM ship WHERE (NOT ship.name = 'alma' OR ship.cargo = 0) AND ship.draft = 0;

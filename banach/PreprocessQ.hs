@@ -90,32 +90,6 @@ badQFuns (F _ b : qs) =
         SelectPlain _ -> badQFuns qs
         _        -> (True, error_queryExpr_aggrInterm b)
 
-fillMissingWith :: Int -> Int -> [Int] -> [Int]
-fillMissingWith y n xs  = fillMissingWithRec xs y n 0
-
-fillMissingWithRec [] y n i = replicate (n-i) y
-fillMissingWithRec (x:xs) y n i =
-    if (i == n) then []
-    else if (x == i) then x : fillMissingWithRec xs y  n(i+1)
-    else if (x > i) then y : fillMissingWithRec (x:xs) y n (i+1)
-    else error $ error_internal_fillMissing x i xs
-
-
-processAllTables :: [TableAlias] -> [TableName] -> [[VarName]] -> [[VarName]] -> [B.Table] -> [NormFunction] -> [[VarName]] -> [[Int]] -> [(TableAlias, TableData)]
-processAllTables [] [] [] [] [] [] [] [] = []
-processAllTables (tableAlias:xs0) (x1:xs1) (x2:xs2) (x3:xs3) (x4:xs4) (x5:xs5) (x6:xs6) (x7:xs7) =
-    let tableData = processOneTable tableAlias x1 x2 x3 x4 x5 x6 x7 in
-    (tableAlias,tableData) : (processAllTables xs0 xs1 xs2 xs3 xs4 xs5 xs6 xs7)
-
-processOneTable :: TableAlias -> TableName -> [VarName] -> [VarName] -> B.Table -> NormFunction -> [VarName] -> [Int] -> TableData
-processOneTable tableAlias tableName colNames taggedColNames tableValues normFun dbSensitiveVars dbSensitiveRows =
-
-    -- let non-sensitive rows be indexed by -1
-    let numOfRows             = length tableValues in
-    let extendedSensitiveRows = map (\x -> [x]) $ fillMissingWith (-1) numOfRows dbSensitiveRows in
-
-    T tableValues colNames taggedColNames normFun extendedSensitiveRows dbSensitiveVars tableName
-
 deriveExprNorm :: Bool -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [NormFunction] -> B.Expr -> B.TableExpr -> B.TableExpr
 deriveExprNorm debug inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
 
@@ -161,7 +135,7 @@ inputWrtEachTable debug inputMap allSensCols (tableAlias : ts) filtQuery (sel,fr
 
     let tableNorm     = getNorm          tableData in
     let tableName     = getTableName     tableData in
-    let tableSensVars = getSensitiveCols tableData in
+    let tableSensVars = getSensCols      tableData in
     let tableSensCols = S.fromList $ map (inputMap ! ) tableSensVars in
 
     -- now transform the main query to a banach expression, now it is fine to use only the current table's sensitive columns
@@ -229,36 +203,36 @@ processQuery outputTableName queryMap taskName tableAlias tableName =
 
 
 -- assume that the tables are located in the same place where the query is
-readAllTables :: String -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
-readAllTables queryPath tableNames tableAliases = do
+readTableData :: String -> M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
+readTableData queryPath typeMap tableNames tableAliases = do
 
-    -- collect all tables and all column names that will be used in our query
+    -- collect all norm-related table data
     -- read table sensitivities from corresponding files
     -- mapM is a standard function [IO a] -> IO [a]
-    let dbData     = mapM (\tableName -> readDB            $ queryPath ++ tableName ++ ".db")  tableNames
     let dbNormData = mapM (\tableName -> parseNormFromFile $ queryPath ++ tableName ++ ".nrm") tableNames
+    let tableColNames = map (\t -> M.keys (typeMap ! t)) tableNames
 
-    (tableColNames,  tableValues)   <- fmap unzip dbData
     (tableSensitives,tableNormFuns) <- fmap unzip dbNormData
-    let (tableSensitiveRows,tableSensitiveVars) = unzip tableSensitives
+    let (_,tableSensitiveVars) = unzip tableSensitives
 
     -- we put table names in front of column names
     let namePrefices = map (\tableAlias -> tableAlias ++ ".") tableAliases
-    let taggedTableColNames = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableColNames
-    let taggedSensitiveVars = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableSensitiveVars
+    let fullTableColNames = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableColNames
+    let fullSensitiveVarNames = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableSensitiveVars
 
     -- put all table data together
-    let tableMap = processAllTables tableAliases tableNames tableColNames taggedTableColNames tableValues tableNormFuns taggedSensitiveVars tableSensitiveRows
-    return (M.fromList tableMap)
+    let tableData = zipWith4 T tableNames fullTableColNames fullSensitiveVarNames tableNormFuns
+    let tableMap = M.fromList $ zip tableAliases tableData
+    return tableMap
 
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> String -> IO ([String], [(String,String)], [(TableName, B.TableExpr,(String,String,String))])
+getBanachAnalyserInput :: Bool -> String -> String -> IO ([String], [(String,[(String,String)])], [(TableName, B.TableExpr,(String,String,String))])
 getBanachAnalyserInput debug inputSchema inputQuery = do
 
     putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
-    let queryPath = reverse $ dropWhile (/= '/') (reverse inputQuery)
+    let dataPath = reverse $ dropWhile (/= '/') (reverse inputSchema)
 
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
     -- (outputTableName,queryMap1) <- parseSqlQueryFromFile inputQuery
@@ -269,7 +243,9 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
 
     queryFileContents <- readInput inputSchema
     schemas <- parseSchemas queryFileContents
-    let typeMap = M.fromList $ map (\(x,y) -> (reverse $ takeWhile (/= '.') (reverse x), y)) (concat (map extractTypes schemas))
+    let typeList = map extractTypes schemas
+    let typeListTrimmedTypenames  = map (\(x,ys) -> (x, map (\(y1,y2) -> (y1, takeWhile (\z -> ord(z) >= 65) (map toLower y2) )) ys)) typeList
+    let typeMap  = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) typeListTrimmedTypenames
 
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
@@ -290,21 +266,20 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     --traceIOIfDebug debug $ "TableF " ++ show outputFilterFuns
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
-    inputTableMap <- readAllTables queryPath inputTableNames inputTableAliases
+    inputTableMap <- readTableData dataPath typeMap inputTableNames inputTableAliases
 
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
-    let (initColNames, tableColNames, colNames, sensitiveVarList) = getAllColumns inputTableMap
-    -- we drop the numerical part from all data types
-    -- assume that only "int", "float", "bool", "text" are left
-    let tableColTypes   = zipWith (\x y -> (x, takeWhile (\z -> ord(z) >= 65) (map toLower (typeMap ! y)))) tableColNames initColNames
-    let taggedTypes   = zipWith (\x y -> (x, takeWhile (\z -> ord(z) >= 65) (map toLower (typeMap ! y)))) colNames initColNames
-    let taggedTypeMap = M.fromList $ taggedTypes
-    let tableColTypeMap = M.fromList $ tableColTypes
+    let orderedTableAliases = M.keys inputTableMap
+
+    let colNames         = concat $ map (getUsedCols . (inputTableMap ! ) ) orderedTableAliases
+    let sensitiveVarList = concat $ map (getSensCols . (inputTableMap ! ) ) orderedTableAliases
+
+    let fullTypeMap = foldr M.union M.empty (zipWith (\tableAlias tableName -> M.mapKeys (\s -> tableAlias ++ "." ++ s) (typeMap ! tableName)) inputTableAliases inputTableNames)
+
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Types1: " ++ show typeMap
-    traceIOIfDebug debug $ "Types2: " ++ show taggedTypeMap
-    traceIOIfDebug debug $ "Types3: " ++ show tableColTypeMap
-    let filterAexprs = map (snd . applyAexprTypes taggedTypeMap) filterAexprs'
+    traceIOIfDebug debug $ "Types2: " ++ show fullTypeMap
+    let filterAexprs = map (snd . applyAexprTypes fullTypeMap) filterAexprs'
 
     -- assign a unique integer to each column name, which is the order of this column in the cross product table
     let inputMap        = M.fromList $ zip colNames [0..length colNames - 1]
@@ -329,8 +304,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap True x)) filterAexprs
     let (filtQueryFuns, pubFilterAexprs) = addFiltersToQueries [outputQueryFun] filterAexprs filterSensVars
     let filtQueryFun = head filtQueryFuns
-    --let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet filtQueryFun
-    let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet (applyQueryTypes taggedTypeMap filtQueryFun)
+    let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet (applyQueryTypes fullTypeMap filtQueryFun)
     let pubFilter  = map aexprToString pubFilterAexprs
 
     traceIOIfDebug debug $ "----------------"
@@ -344,8 +318,6 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     let fr  = intercalate ", " usedTables
     let wh  = if length pubFilter == 0 then "true" else intercalate " AND " pubFilter
 
-    args <- getProgramOptions
-
     -- compute min/max queries using sel, fr, wh
     let minmaxQuery = case queryAggr of
                           B.SelectMin _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
@@ -358,7 +330,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     let finalTableExpr = queryAggr
 
     --bring the input to the form [(TableName, TableExpr, QueryString)]
-    let dataWrtEachTable = inputWrtEachTable debug inputMap sensitiveColSet (M.keys inputTableMap) finalTableExpr (sel,fr ++ minmaxQuery,wh) inputTableMap
+    let dataWrtEachTable = inputWrtEachTable debug inputMap sensitiveColSet orderedTableAliases finalTableExpr (sel,fr ++ minmaxQuery,wh) inputTableMap
     let (allTableNames, finalTableExpr, sqlQueries) = unzip3 dataWrtEachTable
 
     -- this is only for testing
@@ -370,7 +342,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
 
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let tableExprData = (extColNames, tableColTypes, zip3 allTableNames finalTableExpr sqlQueries)
+    let tableExprData = (extColNames, typeList, zip3 allTableNames finalTableExpr sqlQueries)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

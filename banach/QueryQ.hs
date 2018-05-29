@@ -43,17 +43,14 @@ data Query
   deriving (Show)
 
 data TableData =
-    -- content initColNames taggedColNames norms aggrNorms sensRows sensCols originalTablename 
-    T B.Table [VarName] [VarName] NormFunction [[Int]] [VarName] TableName
+    -- original name  usedCols     sensCols   norms
+    T  TableName      [VarName]    [VarName]  NormFunction
   deriving Show
 
-getTableValues   (T x _ _ _ _ _ _) = x
-getColNames      (T _ x _ _ _ _ _) = x
-getTagColNames   (T _ _ x _ _ _ _) = x
-getNorm          (T _ _ _ x _ _ _) = x
-getSensitiveRows (T _ _ _ _ x _ _) = x
-getSensitiveCols (T _ _ _ _ _ x _) = x
-getTableName     (T _ _ _ _ _ _ x) = x
+getTableName    (T x _ _ _) = x
+getUsedCols     (T _ x _ _) = x
+getSensCols     (T _ _ x _) = x
+getNorm         (T _ _ _ x) = x
 
 getQueryGroupNames (P x _ _ _) = x
 getQueryFunctions  (P _ x _ _) = x
@@ -77,55 +74,6 @@ infNeg = ABinary ASub (AText "minmaxT.min") (AText "minmaxT.max")
 infMax = AText "minmaxT.max"
 infMin = AText "minmaxT.min"
 
-------------------------------------------------
----- Executing public parts of an SQL query ----
-------------------------------------------------
-
--- put the columns of all input tables together
-getAllColumns :: M.Map TableAlias TableData -> ([VarName], [VarName], [VarName], [VarName])
-getAllColumns tableMap =
-
-    let tableAliases = M.keys tableMap in
-
-    let allTableVars     = map ( (\t -> let prefix = (getTableName t) ++ "." in map (prefix ++ ) (getColNames t)) . (tableMap ! ) ) tableAliases in
-    let allInputVars     = map (getColNames .      (tableMap ! ) ) tableAliases in
-    let allTaggedVars    = map (getTagColNames .   (tableMap ! ) ) tableAliases in
-    let allSensitiveVars = map (getSensitiveCols . (tableMap ! ) ) tableAliases in
-
-    -- the input variables are concatenated in the order of tables, since each of them describes a column
-    let tableVarList     = concat allTableVars in
-    let inputVarList     = concat allInputVars in
-    let tagInputVarList  = concat allTaggedVars in
-    let sensitiveVarList = concat allSensitiveVars in
-
-    (inputVarList, tableVarList, tagInputVarList, sensitiveVarList)
-
----------------------------------------------
--- TODO we will not need the next cross product functions in the new version
-
--- finds a cross product of N lists, applies the operation 'f' to elements that come together
-crossProduct :: (a -> a -> a) -> [a] -> [[a]] -> [a]
-crossProduct f start = foldr (\xs ys -> [f x y | x <- xs, y <- ys]) start
-
-tableJoin :: [B.Table] -> B.Table
-tableJoin xs = crossProduct (++) [[]] xs
-
-vectorJoin :: [[[a]]] -> [[a]]
-vectorJoin xss = crossProduct (++) [[]] xss
-
-charVecJoin :: [[Bool]] -> [Bool]
-charVecJoin xs = crossProduct (||) [False] xs
-
--- compute table data for a cross product
-getTableCrossProductTable :: M.Map TableAlias TableData -> B.Table
-getTableCrossProductTable tableMap =
-
-    -- find the cross product of all used tables
-    let tableAliases = M.keys tableMap in
-    let allTables        = map (getTableValues .   (tableMap ! ) ) tableAliases in
-    let crossProductTable = tableJoin allTables in
-    crossProductTable
-
 --------------------------------------------------------------
 -- add longer prefices to column names in compound queries
 
@@ -142,6 +90,9 @@ applyQueryTypes typeMap (F aexpr b) =
 
 updateAExprVariableNames :: (S.Set String) -> TableAlias -> AExpr VarName -> AExpr VarName
 updateAExprVariableNames fullTablePaths prefix aexpr = updatePreficesAexpr fullTablePaths prefix aexpr
+
+--------------------------------------------------------------
+-- some query transformations
 
 queryToExpr :: (M.Map VarName B.Var) -> (S.Set B.Var) -> Function -> (B.Expr, B.TableExpr, String)
 queryToExpr inputMap allSensitiveCols (F aexpr y) =

@@ -61,20 +61,26 @@ readDB dbFileName = do
     return (varNames, table)
 
 -- read the database from the file as several matrices of different data types
-readDBDifferentTypes :: String -> String -> M.Map String String -> IO ([String], [[Bool]], [[Int]], [[Double]], [[String]], [Int], [Int], [Int], [Int])
+readDBDifferentTypes :: String -> String -> M.Map String (M.Map String String) -> IO ([String], [[Bool]], [[Int]], [[Double]], [[String]], [Int], [Int], [Int], [Int])
 readDBDifferentTypes dbFileName tableName typeMap = do
     (varNames, table) <- readDBString dbFileName
-    let varTypes = map (\x -> (typeMap ! (tableName ++ "." ++ x))) varNames
-    let boolCols = fmap (map (readErr "bool") .   (filterWith (== "bool") varTypes)) table :: [[Bool]]
-    let intCols  = fmap (map (readErr "int") .  (filterWith (== "int") varTypes)) table :: [[Int]]
-    let dblCols  = fmap (map (readErr "float") . (filterWith (== "float") varTypes)) table :: [[Double]]
-    let strCols  = fmap (filterWith (== "text") varTypes) table :: [[String]]
+    let varTypes = map (\x -> typeMap ! tableName ! x) varNames
+
+    let filtBool   = map (\s -> map toLower (take 4 s) == "bool") varTypes
+    let filtInt    = map (\s -> map toLower (take 3 s) == "int") varTypes
+    let filtDouble = map (\s -> map toLower (take 5 s) == "float") varTypes
+    let filtString = map (\s -> map toLower (take 4 s) == "text") varTypes
+
+    let boolCols = fmap (map (readErr "bool") .   (filterByKey filtBool)) table :: [[Bool]]
+    let intCols  = fmap (map (readErr "int") .  (filterByKey filtInt)) table :: [[Int]]
+    let dblCols  = fmap (map (readErr "float") . (filterByKey filtDouble)) table :: [[Double]]
+    let strCols  = fmap (filterByKey filtString) table :: [[String]]
 
     let indices = [0..length varNames - 1]
-    let boolIndices = filterWith (== "bool") varTypes indices
-    let intIndices = filterWith (== "int") varTypes indices
-    let dblIndices = filterWith (== "float") varTypes indices
-    let stringIndices = filterWith (== "text") varTypes indices
+    let boolIndices = (filterByKey filtBool) indices
+    let intIndices = (filterByKey filtInt) indices
+    let dblIndices = (filterByKey filtDouble) indices
+    let stringIndices = (filterByKey filtString) indices
 
     return (varNames, boolCols, intCols, dblCols, strCols, boolIndices, intIndices, dblIndices, stringIndices)
 
@@ -104,7 +110,7 @@ readDBString dbFileName = do
     let table    = map words ls
     return (varNames, table)
 
-filterWith :: (a -> Bool) -> [a] -> [b] -> [b]
-filterWith f keys vals =
-    let fs = filter (\(x,y) -> if f x then True else False) (zip keys vals) in
+filterByKey :: [Bool] -> [b] -> [b]
+filterByKey keys vals =
+    let fs = filter (\(x,y) -> x) (zip keys vals) in
     map snd fs

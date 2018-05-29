@@ -84,10 +84,10 @@ verifySchema fp = mapM_ go
       Just (fp, r, c) -> fatal (printf "Expecting only CREATE statements in schema. Error at %s:%d:%d." fp r c)
       --Just (_, r, c) -> fatal (printf "Expecting only CREATE statements in schema. Error at %s:%d:%d." fp r c)
 
-extractTypes :: Statement -> [(String,String)]
+extractTypes :: Statement -> (String,[(String,String)])
 extractTypes (CreateTable _ (Name _ [Nmc tableName]) attributeDefList _ _ _) =
     let attrTypes = extractTypesRec attributeDefList in
-    map (\(x, y) -> (tableName ++ "." ++ x, y)) attrTypes
+    (tableName, attrTypes)
 
 extractTypesRec :: [AttributeDef] -> [(String,String)]
 extractTypesRec [] = []

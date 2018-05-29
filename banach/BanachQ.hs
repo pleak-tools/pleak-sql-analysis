@@ -797,7 +797,7 @@ analyzeTableExprQ fr wh srt colNames te =
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
 
-performAnalyses :: ProgramOptions -> [String] -> [(String, String)] -> [(String, TableExpr, (String,String,String))] -> IO ()
+performAnalyses :: ProgramOptions -> [String] -> [(String,[(String, String)])] -> [(String, TableExpr, (String,String,String))] -> IO ()
 performAnalyses args colNames typeMap tableExprData = do
   let debug = not (alternative args)
   let (tableNames,_,_) = unzip3 tableExprData

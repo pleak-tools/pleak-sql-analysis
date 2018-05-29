@@ -6,6 +6,7 @@ import ParserQ (parseNormFromFile)
 import ErrorMsg
 
 import Debug.Trace
+import Data.Char
 import Data.List
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -21,7 +22,7 @@ createTableSql tableName = do
   let sensTableName = sensRows tableName
   let normFileName = tableName ++ ".nrm"
   ((sensRows, _), _) <- parseNormFromFile normFileName
-  let sensRowsSet = S.fromList sensRows
+  let sensRowsSet = S.fromList (take numRows sensRows)
   return [
     "DROP TABLE IF EXISTS " ++ tableName,
     "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ col -> col ++ " float8, ") colNames ++ "ID int8)",
@@ -30,9 +31,9 @@ createTableSql tableName = do
     "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
     "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
 
-createTableSqlTyped :: String -> [(String, String)] -> IO [String]
+createTableSqlTyped :: String -> [(String,[(String, String)])] -> IO [String]
 createTableSqlTyped tableName types = do
-  let typeMap = M.fromList types
+  let typeMap = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) types
   let dbFileName = tableName ++ ".db"
   (colNames, tbl) <- readDBString dbFileName
 
@@ -52,8 +53,8 @@ createTableSqlTyped tableName types = do
   let sensTableName = sensRows tableName
   let normFileName = tableName ++ ".nrm"
   ((sensRows, _), _) <- parseNormFromFile normFileName
-  let sensRowsSet = S.fromList sensRows
-  let colTypes = map (\col -> typeMap ! (tableName ++ "." ++ col)) colNames
+  let sensRowsSet = S.fromList (take numRows sensRows)
+  let colTypes = map (\col -> typeMap ! tableName ! col) colNames
   return [
     "DROP TABLE IF EXISTS " ++ tableName,
     "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (col,t) -> col ++ " " ++ t ++", ") (zip colNames colTypes) ++ "ID int8)",
@@ -63,7 +64,7 @@ createTableSqlTyped tableName types = do
     "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
   where
       stringForm s t = 
-                       if t /= "text" then s
+                       if map toLower (take 4 t) /= "text" then s
                        else if head s == '\'' then s
                        else if head s == '\"' then "\'" ++ tail (init s) ++ "\'"
                        else "\'" ++ s ++ "\'"

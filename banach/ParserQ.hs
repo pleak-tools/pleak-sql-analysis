@@ -39,6 +39,7 @@ defaultOutputTableName = "output"
 -- keywords
 allKeyWordList :: [String]
 allKeyWordList = ["return",
+               "all", "none",
                "const","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","l0","linf","prod","inv","div","min","max","sigmoid","tauoid",
                "selectMin","selectMax","selectProd","selectL"]
 
@@ -491,11 +492,14 @@ sqlQueryWithGroupBy = do
 -- the second row in the norm file is the list of sensitive columns
 norm :: Parser (([Int], [VarName]), NormFunction)
 norm = do
-  is <- many integer
+  kw  <- readKeyWord "all" <|> readKeyWord "none" <|> return ""
+  is' <- many integer
+  let is = if kw == "all" then [0..]
+           else if kw == "none" then []
+           else is'
   xs <- many varName
   void (delim)
-  --TODO such approach fails to detect parsing errors in custom norms
-  f <- try customNorm <|> defaultNorm xs
+  f <- customNorm <|> defaultNorm xs
   return ((is, xs), f)
 
 customNorm = do
@@ -547,7 +551,10 @@ asgn = symbol "="
 
 -- line comment
 lineComment :: String
-lineComment = "//"
+lineComment = "--"
+
+lineComment2 :: String
+lineComment2 = "//"
 
 -- block comment
 blockCommentStart :: String
@@ -563,6 +570,11 @@ blockCommentEnd = "*/"
 -- a keyword
 keyWord :: String -> Parser ()
 keyWord w = lexeme (C.string w *> notFollowedBy C.alphaNumChar)
+
+readKeyWord :: String -> Parser String
+readKeyWord w = do
+    lexeme (C.string w *> notFollowedBy C.alphaNumChar)
+    return w
 
 caseInsensKeyWord :: String -> Parser ()
 caseInsensKeyWord w = lexeme (C.string' w *> notFollowedBy C.alphaNumChar)
@@ -606,7 +618,7 @@ spaceConsumer :: Parser ()
 spaceConsumer = 
         L.space C.space1 lineCmnt blockCmnt
     where
-        lineCmnt  = L.skipLineComment lineComment
+        lineCmnt  = L.skipLineComment lineComment <|> L.skipLineComment lineComment2
         blockCmnt = L.skipBlockComment blockCommentStart blockCommentEnd
 
 -- reads a lexeme and removes all trailing whitespaces and comments

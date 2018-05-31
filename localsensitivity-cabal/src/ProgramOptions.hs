@@ -15,6 +15,7 @@ data ProgramOptions
     alternative       :: Bool,
     primaryKeys       :: Bool,
     direct            :: Bool,
+    dbConnString      :: String,
     debugPrintZ3      :: Bool,
     debugPrintSchema  :: Bool,
     debugPrintQuery   :: Bool,
@@ -35,6 +36,7 @@ programArgs = ProgramOptions
   <*> switch (short 'a' <> long "alternative" <> hidden <> help "Use alternative input and output format")
   <*> switch (short 'p' <> long "primary-keys" <> hidden <> help "Find which columns of the result table are primary keys")
   <*> switch (short 'D' <> long "direct" <> hidden <> help "Analyze tables used more than once directly instead of each copy separately (EXPERIMENTAL)")
+  <*> strOption (short 'C' <> long "db-connection" <> value "dbname=banach" <> help "Specify database connection string")
   <*> switch (long "debug-print-z3" <> hidden <> help "Print generated Z3 input")
   <*> switch (long "debug-print-schema" <> hidden <> help "Print debug information about the database schema")
   <*> switch (long "debug-print-query" <> hidden <> help "Print debug information about the SQL select query")

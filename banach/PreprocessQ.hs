@@ -41,45 +41,11 @@ traceIOIfDebug debug msg = do
 ---- Converting a Query to Banach Analyser input   ----
 -------------------------------------------------------
 
-norm2Expr :: (Show a, Ord a) => String -> (M.Map VarName a) -> NormFunction -> (Norm a, ADouble)
-norm2Expr prefix inputMap (NF asgnMap y) =
-    let x = extractArg y in
-    let (_,z) = matchAsgnVariable prefix inputMap asgnMap x in
-    (z, normArg y)
-
-processExpression :: (Show a, Ord a) => 
-                     String ->                                 -- the name of the database file that we prepend to all variable names
-                     (M.Map VarName a) ->                      -- input variable map
-                     (M.Map VarName Expr) ->                   -- assigmnent variable map
-                     Expr ->                                   -- the expression that we rewrite
-                     (S.Set a, Norm a)
-processExpression s inputMap asgnMap expr =
-    let varNames = extractArgs expr in
-    let usedInputVarNames = filter (\x -> M.member (s ++ x) inputMap) varNames in
-    let usedAsgnVarNames  = filter (\x -> M.member x asgnMap)  varNames in
-
-    let inputVars        = map (\x -> inputMap ! (s ++ x)) usedInputVarNames in
-    let asgnInputsExprs  = map (matchAsgnVariable s inputMap asgnMap) usedAsgnVarNames in
-
-    let (asgnInputs,asgnExprs) = unzip asgnInputsExprs in
-    (S.union (S.fromList inputVars) (foldr S.union S.empty asgnInputs), normExpression expr inputVars asgnExprs asgnInputs)
-
---check if the variable is a keys in a map, apply processExpression to the value of that key
-matchAsgnVariable :: (Show a, Ord a) => String -> (M.Map VarName a) -> (M.Map VarName Expr) -> VarName -> (S.Set a, Norm a)
-matchAsgnVariable s inputMap asgnMap x =
-
-        -- if y is an assignment variable, find its value recursively
-        let expr = (asgnMap ! x) in
-        processExpression s inputMap asgnMap expr
-
--------------------------------------------
----- Extraction of table information   ----
--------------------------------------------
 
 -- substitute expressions of fs into aexpr
 mergeQueryFuns :: [Function] -> AExpr VarName -> AExpr VarName
 mergeQueryFuns fs aexpr =
-    let aexprMap = M.fromList $ map (\(F aexpr2 b) -> (extractArg b,aexpr2)) fs in
+    let aexprMap = M.fromList $ map (\(F aexpr2 b) -> (getVarNameFromTableExpr b,aexpr2)) fs in
     aexprSubstitute aexprMap aexpr
 
 -- this checks that the subqueries are all of select-type
@@ -94,7 +60,7 @@ deriveExprNorm :: Bool -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -
 deriveExprNorm debug inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
 
     let namePrefices = map (\tableAlias -> tableAlias ++ ".") dbNormTableAliases in
-    let (dbNorms1,dbAggrNorms) = unzip $ zipWith (\x y -> norm2Expr x inputMap y) namePrefices dbNormFuns in
+    let (dbNorms1,dbAggrNorms) = unzip $ zipWith (\x y -> normToExpr x inputMap y) namePrefices dbNormFuns in
     let dbNorms = map (markNormCols sensitiveCols) dbNorms1 in
 
     -- if there are several tables, we assume that we compute sensitivity w.r.t. max of them

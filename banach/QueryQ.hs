@@ -13,6 +13,7 @@ import qualified Banach as B
 import ErrorMsg
 import ExprQ
 import AexprQ
+import NormsQ
 
 type TableName  = String
 type TableAlias = String
@@ -96,22 +97,28 @@ updateAExprVariableNames fullTablePaths prefix aexpr = updatePreficesAexpr fullT
 
 queryToExpr :: (M.Map VarName B.Var) -> (S.Set B.Var) -> Function -> (B.Expr, B.TableExpr, String)
 queryToExpr inputMap allSensitiveCols (F aexpr y) =
-    let x = extractArg y in
+    let x = getVarNameFromTableExpr y in
     let asgnMap = aexprToExpr x $ aexprNormalize aexpr in
-    let queryExpr = snd $ exprToBExpr allSensitiveCols inputMap asgnMap (asgnMap ! x) in
+    let queryAggr = tableExprToBTableExpr allSensitiveCols inputMap asgnMap y in
     let queryStr  = exprToString True asgnMap (asgnMap ! x) in
-    let queryAggr = queryArg y [queryExpr] in
+    let queryExpr = head (getExprFromTableExpr queryAggr) in
     (queryExpr,queryAggr,queryStr)
 
 queryToString :: Function -> String
 queryToString (F aexpr y) =
-    let x = extractArg y in
+    let x = getVarNameFromTableExpr y in
     let asgnMap = aexprToExpr x $ aexprNormalize aexpr in
     exprToString True asgnMap (asgnMap ! x)
 
 insertZeroSens :: (S.Set B.Var) -> B.TableExpr -> (B.Expr, B.TableExpr)
 insertZeroSens tableSensitiveCols tableExpr =
     markTableExprCols tableSensitiveCols tableExpr
+
+normToExpr :: (Show a, Ord a) => String -> (M.Map VarName a) -> NormFunction -> (Norm a, ADouble)
+normToExpr prefix inputMap (NF asgnMap y) =
+    let x = getVarNameFromTableExpr y in
+    let z = exprToNorm prefix inputMap asgnMap (asgnMap ! x) in
+    (z, tableExprToADouble y)
 
 ---------------------------------------------
 -- filtering

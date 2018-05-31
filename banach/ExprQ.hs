@@ -53,9 +53,6 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
                | SelectPlain VarName            -- does not apply aggregation, is used only for intermediate representation
                | SelectDistinct VarName           -- TODO not supported yet, used only to generate nice error messages
-               | Filt Ordering VarName Double     -- used for filters, actually is not a 'Table' expression, we just use the same data structure
-               | FiltNeg Ordering VarName Double
-               | Filter VarName
   deriving Show
 
 --------------------------
@@ -72,8 +69,8 @@ getExprFromTableExpr expr =
 
 --------------------------
 -- extract arguments
-extractArg :: TableExpr -> VarName
-extractArg t =
+getVarNameFromTableExpr :: TableExpr -> VarName
+getVarNameFromTableExpr t =
     case t of
         SelectProd x   -> x
         SelectMin x    -> x
@@ -82,66 +79,9 @@ extractArg t =
         SelectSum  x   -> x
         SelectSumBin x -> x
         SelectCount x  -> x
-        SelectDistinct  x  -> x
-        SelectPlain x       -> x
-        Filt _ x _     -> x
-        FiltNeg _ x _  -> x
-        Filter x       -> x
+        SelectDistinct x -> x
+        SelectPlain x    -> x
 
-extractArgs :: Expr -> [VarName]
-extractArgs t =
-    case t of
-        LZero x          -> [x]
-        Power x _        -> [x]
-        PowerLN x _      -> [x]
-        Exp _ x          -> [x]
-        Sigmoid _ _ x    -> [x]
-        Tauoid _ _ x     -> [x]
-        Const _          -> []
-        ScaleNorm _ x    -> [x]
-        ZeroSens x       -> [x]
-        L _ xs           -> xs
-        LInf xs          -> xs
-        Prod xs          -> xs
-        Min xs           -> xs
-        Max xs           -> xs
-        Sum xs           -> xs
-        Id  x            -> [x]
-        ARMin            -> []
-        ARMax            -> []
-        Text _           -> []
-        Like x y         -> [x,y]
-        Comp _ x y       -> [x,y]
-        CompInt _ x y    -> [x,y]
-        CompStr x y      -> [x,y]
-
-normArg :: TableExpr -> ADouble
-normArg t =
-    case t of
-        SelectMax _  -> Any
-        SelectL c _  -> Exactly c
-
---------------------------
--- insert arguments
-queryArg :: TableExpr -> [B.Expr] -> B.TableExpr
-queryArg t ys =
-    case t of
-        SelectProd _   -> B.SelectProd ys
-        SelectMin _    -> B.SelectMin ys
-        SelectMax _    -> B.SelectMax ys
-        SelectL c _    -> B.SelectL c ys
-        -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
-        SelectSum  x   -> B.SelectSump 1.0 ys
-        -- TODO p = 0.0 serves as a marker for further optimization, we could do something better
-        SelectSumBin x -> B.SelectL 0.0 ys
-        -- if it turns out that, if SelectCount is left as it is,
-        -- then all filters are defined over non-sensitive variables, so they are all public
-        SelectCount x  -> B.SelectL 0.0 $ map (const (B.Const 1.0)) ys
-        SelectDistinct  _  -> error $ error_queryExpr_syntax t
-        SelectPlain _       -> error $ error_queryExpr_syntax t
-        Filt _ _ _     -> error $ error_internal_queryExprFilter t
-        FiltNeg _ _ _  -> error $ error_internal_queryExprFilter t
-        Filter _       -> error $ error_internal_queryExprFilter t
 
 --------------------------
 -- puts zeroSens in front of all insensitive variables, remove zeroSens from sensitive variables
@@ -234,7 +174,7 @@ getAllExprVars asgnMap expr =
 
 getAllTableExprVars :: M.Map VarName Expr -> TableExpr -> S.Set VarName
 getAllTableExprVars asgnMap b =
-    let x = extractArg b in
+    let x = getVarNameFromTableExpr b in
     takeAlteredIfExists x asgnMap (getAllExprVars asgnMap) S.singleton
 
 --------------------------
@@ -282,9 +222,6 @@ updatePreficesTableExpr fullTablePaths prefix expr =
         SelectCount x    -> SelectCount    (updatePrefices fullTablePaths prefix x)
         SelectDistinct x -> SelectDistinct (updatePrefices fullTablePaths prefix x)
         SelectPlain x         -> SelectPlain         (updatePrefices fullTablePaths prefix x)
-        Filt a x c       -> Filt a         (updatePrefices fullTablePaths prefix x) c
-        FiltNeg a x c    -> FiltNeg a      (updatePrefices fullTablePaths prefix x) c
-        Filter x         -> Filter         (updatePrefices fullTablePaths prefix x)
 
 -- this is needed to make error of a missing head clearer
 -- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa
@@ -536,13 +473,12 @@ tableExprToString isPublic asgnMap b =
         SelectProd x   -> "SELECT PRODUCT(" ++ processRec x ++ ")"
         SelectMin x    -> "SELECT MIN(" ++ processRec x ++ ")"
         SelectMax x    -> "SELECT MAX(" ++ processRec x ++ ")"
-        SelectL _ x    -> "UNSUPPORTED SELECT(" ++ processRec x ++ ")"
+        SelectL p x    -> "SELECT (SUM(" ++ processRec x ++ " ^ " ++ show p ++ ") ^ " ++ show (1/p) ++ ")"
         SelectSum  x   -> "SELECT SUM(" ++ processRec x ++ ")"
         SelectSumBin x -> "SELECT SUM(" ++ processRec x ++ ")"
         SelectCount x  -> "SELECT COUNT(" ++ processRec x ++ ")"
         SelectDistinct  x  -> "SELECT DISTINCT(" ++ processRec x ++ ")"
         SelectPlain x       -> "SELECT " ++ processRec x
-        Filter x       -> processRec x 
     where processRec x = takeAlteredIfExists x asgnMap (exprToString isPublic asgnMap) id
 
 takeAlteredIfExists :: (Show a, Show b, Ord a) => a -> M.Map a b -> (b -> c) -> (a -> c) -> c
@@ -670,6 +606,25 @@ updateTableExpr expr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm =
                                   Exactly p -> B.SelectSump p $ map g es
         B.SelectSumInf es  -> B.SelectSumInf $ map g es
     where f x = case x of {Exactly c -> show (round c); Any -> "inf"}
+
+
+exprToNorm :: (Show a) => String -> M.Map VarName a -> M.Map VarName Expr -> Expr -> Norm a
+exprToNorm prefix inputMap asgnMap t =
+    case t of
+        PowerLN x c      -> NormLN (processRec x)
+        LZero x          -> NormLZero (processRec x)
+        ScaleNorm c x    -> NormScale c (processRec x)
+        ZeroSens _       -> NormZero
+        L c xs           -> NormL (Exactly c) (map processRec xs)
+        LInf xs          -> NormL Any (map processRec xs)
+    where
+        processRec x = if M.member x asgnMap then exprToNorm prefix inputMap asgnMap (asgnMap ! x) else Col (inputMap ! (prefix ++ x))
+
+tableExprToADouble :: TableExpr -> ADouble
+tableExprToADouble t =
+    case t of
+        SelectMax _  -> Any
+        SelectL c _  -> Exactly c
 
 -- Expr to B.Expr
 -- the constructor may depend on whether the arguments are input variables or expressions
@@ -826,7 +781,4 @@ tableExprToBTableExpr sensitiveCols inputMap asgnMap t =
         SelectCount x  -> B.SelectL 0.0 $ map (const (B.Const 1.0)) (processRec x)
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
         SelectPlain _       -> error $ error_queryExpr_syntax t
-        Filt _ _ _     -> error $ error_internal_queryExprFilter t
-        FiltNeg _ _ _  -> error $ error_internal_queryExprFilter t
-        Filter _       -> error $ error_internal_queryExprFilter t
     where processRec x = [snd $ exprToBExpr sensitiveCols inputMap asgnMap (asgnMap ! x)]

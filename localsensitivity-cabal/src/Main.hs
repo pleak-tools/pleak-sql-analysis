@@ -110,6 +110,6 @@ main = do
       return query
   forM_ queries $ \ query ->
     performLocalSensitivityAnalysis
-                    (debugVerbose args)
+                    args
                     (dbFromCatalogUpdates catUpdates)
                     query

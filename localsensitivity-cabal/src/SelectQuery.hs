@@ -111,7 +111,7 @@ unsupportedWhere local query =
   map (anSrc.getAnnotation) $
   filter (not.isSupportedWhereExpr) $
   if local
-    then universeBi (selWhere query)
+    then [] -- universeBi (selWhere query)
     else universeBi (selWhere query) ++ universeBi (selTref query)
 
 isSupportedWhereExpr :: ScalarExpr -> Bool

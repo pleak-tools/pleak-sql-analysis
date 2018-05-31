@@ -15,7 +15,8 @@ executable sqlsa
                         array,
                         hssqlppp, text, groom,
                         uniplate, optparse-applicative, semigroups,
-                        containers, process, async
+                        containers, process, async,
+                        HDBC, HDBC-postgresql
   hs-source-dirs:       src
   other-modules:        Catalog, Schema, Logging, SelectQuery, LocalSensitivity, ProgramOptions
   default-language:     Haskell2010

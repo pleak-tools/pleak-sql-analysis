@@ -137,6 +137,7 @@ permuts xs = f (length xs) xs where
 
 instance Ord SqlValue where
   compare (SqlString x1) (SqlString x2) = compare x1 x2
+  compare (SqlByteString x1) (SqlByteString x2) = compare x1 x2
   compare (SqlChar x1) (SqlChar x2) = compare x1 x2
   compare (SqlInteger x1) (SqlInteger x2) = compare x1 x2
   compare (SqlInt64 x1) (SqlInt64 x2) = compare x1 x2
@@ -300,48 +301,51 @@ performLocalSensitivityAnalysis :: ProgramOptions -> Map CatName [(CatName, CatN
 performLocalSensitivityAnalysis args schema query = do
   putStrLn "performLocalSensitivityAnalysis"
   putStrLn "Processing the schema"
-  origTableCols <- fmap Map.fromList $ forM (Map.toList schema) $ \ (n1,ns) -> do
+  (tblNames, colss, typess) <- fmap unzip3 $ forM (Map.toList schema) $ \ (n1,ns) -> do
     let tblName = T.unpack n1
     printf "table %s\n" tblName
     let cols = map (T.unpack . fst) ns
+    let types = map (T.unpack . snd) ns
     forM_ ns $ \ (c,t) -> printf "  %s: %s\n" (T.unpack c) (T.unpack t)
-    return (tblName, cols)
+    return (tblName, cols, types)
+  let origTableCols = Map.fromList $ zip tblNames colss
+  let origTableTypes = Map.fromList $ zip tblNames typess
   let np = NoiseParameters { noise_epsilon = 1, noise_b2 = 0.5 }
   --forM_ [0.1,0.2..0.9] $ \ b2 -> do
   --  _ <- performLocalSensitivityAnalysis' debug np{noise_b2 = b2} origTableCols query
   --  return ()
-  _ <- performLocalSensitivityAnalysis' args np origTableCols query
+  _ <- performLocalSensitivityAnalysis' args np origTableCols origTableTypes query
   return ()
 
-performLocalSensitivityAnalysis' :: ProgramOptions -> NoiseParameters -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [DerT])])])
-performLocalSensitivityAnalysis' args np origTableCols query = do
+performLocalSensitivityAnalysis' :: ProgramOptions -> NoiseParameters -> Map String [String] -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [DerT])])])
+performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
   let debug = debugVerbose args
   putStrLn "performLocalSensitivityAnalysis'"
   putStrLn (showQuery query)
 
   putStrLn "Processing FROM clause"
-  (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,nmcsToAddr,totalNumCols,colEq,numTables) <- do
+  (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables) <- do
     let tmpTableName = ('$' :)
-    (tableNames, origTableNames, colNamess, derss) <- fmap unzip4 $ forM (selTref query) $ \ tr -> do
+    (tableNames, origTableNames, colNamess, colTypess, derss) <- fmap unzip5 $ forM (selTref query) $ \ tr -> do
       case tr of
         Tref _ n -> do
           let tblName = head (nmcs n)
           printf "%s -> %s\n" tblName tblName
-          return (tblName, tblName, origTableCols Map.! tblName, Nothing)
+          return (tblName, tblName, origTableCols Map.! tblName, origTableTypes Map.! tblName, Nothing)
         TableAlias _ newTblName0 (Tref _ n) -> do
           let newTblName = ncStr newTblName0
           let origTblName = head (nmcs n)
           printf "%s -> %s\n" origTblName newTblName
-          return (newTblName, origTblName, origTableCols Map.! origTblName, Nothing)
+          return (newTblName, origTblName, origTableCols Map.! origTblName, origTableTypes Map.! origTblName, Nothing)
         TableAlias _ newTblName0 (SubTref _ subquery) -> do
           let newTblName = ncStr newTblName0
           putStrLn "Processing subquery"
           putStrLn "==================="
-          (subColNames, res, ders) <- performLocalSensitivityAnalysis' args np origTableCols subquery
+          (subColNames, res, ders) <- performLocalSensitivityAnalysis' args np origTableCols origTableTypes subquery
           putStrLn "============================"
           putStrLn "Finished processing subquery"
           printf "-> %s\n" newTblName
-          return (newTblName, tmpTableName newTblName, subColNames, Just ders)
+          return (newTblName, tmpTableName newTblName, subColNames, undefined, Just ders)
     --let subQueryDers = Map.fromList $ map (\ (x, Just y) -> (x,y)) $ filter (isJust . snd) $ zip origTableNames derss
     -- add identity subquery derivatives for those tables that are not actually results of subqueries
     let hasSubQueries = any isJust derss
@@ -375,10 +379,13 @@ performLocalSensitivityAnalysis' args np origTableCols query = do
     let totalNumCols = tblAddr ! numTables
     let addrToTbl = listArray (0,totalNumCols-1) (concatMap (\ i -> replicate (numCols i) i) [0..numTables-1]) :: UArray Int Int
     let addrToTblCol = listArray (0,totalNumCols-1) [(t,c) | (t,cs) <- zip tableNames colNamess, c <- cs] :: Array Int (String,String)
+    let addrToColType = listArray (0,totalNumCols-1) [ct | (t,cts) <- zip tableNames colTypess, ct <- cts] :: Array Int String
     putStr "addrToTblCol: "
     print addrToTblCol
+    putStr "addrToColType: "
+    print addrToColType
     colEq <- newArray ((0,0), (totalNumCols-1,totalNumCols-1)) False :: IO (IOUArray (Int,Int) Bool)
-    return (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,nmcsToAddr,totalNumCols,colEq,numTables)
+    return (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables)
 
   putStrLn "Processing SELECT clause"
   let
@@ -575,7 +582,7 @@ performLocalSensitivityAnalysis' args np origTableCols query = do
       return $
         "SELECT " ++
         (intercalate ", " $ (flip map dselects $ \ (b, a) ->
-          (case b of Nothing -> "cast (null as double precision)"; Just a2 -> showAddrCol a2) ++ " AS " ++ (let (t,c) = addrToTblCol ! a in '_' : c)) ++
+          (case b of Nothing -> "cast (null as " ++ (addrToColType ! a) ++ ")"; Just a2 -> showAddrCol a2) ++ " AS " ++ (let (t,c) = addrToTblCol ! a in '_' : c)) ++
           [case aggrOp of
              AggrCount -> "COUNT(*)"
              AggrSum | not distinguishCountsAndSums -> "COUNT(*)"

@@ -135,6 +135,16 @@ permuts xs = f (length xs) xs where
   f n (x:xs) = [insert x k p | p <- f (n-1) xs, k <- [0..n-1]]
 
 
+instance Ord SqlValue where
+  compare (SqlString x1) (SqlString x2) = compare x1 x2
+  compare (SqlChar x1) (SqlChar x2) = compare x1 x2
+  compare (SqlInteger x1) (SqlInteger x2) = compare x1 x2
+  compare (SqlInt64 x1) (SqlInt64 x2) = compare x1 x2
+  compare (SqlInt32 x1) (SqlInt32 x2) = compare x1 x2
+  compare (SqlDouble x1) (SqlDouble x2) = compare x1 x2
+  compare (SqlRational x1) (SqlRational x2) = compare x1 x2
+  compare (SqlBool x1) (SqlBool x2) = compare x1 x2
+
 -- A pattern is either the null pattern or a list of nonnegative integers where 0 matches any positive integer
 -- e.g. [2,0,3,0] matches all lists [2,i,3,j] where i and j are any positive integers
 -- The null pattern does not match anything
@@ -153,7 +163,7 @@ permuts xs = f (length xs) xs where
 -- and   p2 is the intersection of all patterns p2 mapped by cpm2 such that p <= p2
 --       (i.e. the smallest pattern p2 mapped by cpm2 such that p <= p2)
 -- The arguments to mergeCpms are given as sorted association lists
-mergeCpms :: [([Int],[DerT])] -> [([Int],[DerT])] -> [([Int],[DerT])]
+mergeCpms :: [([SqlValue],[DerT])] -> [([SqlValue],[DerT])] -> [([SqlValue],[DerT])]
 mergeCpms [] cpm = cpm
 mergeCpms cpm [] = cpm
 mergeCpms [([],n1)] [([],n2)] = [([], zipWith (+) n1 n2)]
@@ -164,13 +174,13 @@ mergeCpms cpm1 cpm2 = -- trace (printf "mergeCpms %s %s" (show cpm1) (show cpm2)
     mgb2 = mgb cpm2
     (c10,m1) =
       case mgb1 of
-        (0,cpm):mgb -> (cpm, mgb)
+        (SqlNull,cpm):mgb -> (cpm, mgb)
         _ -> ([], mgb1)
     (c20,m2) =
       case mgb2 of
-        (0,cpm):mgb -> (cpm, mgb)
+        (SqlNull,cpm):mgb -> (cpm, mgb)
         _ -> ([], mgb2)
-    mapfun (ys,n) = (0:ys, n)
+    mapfun (ys,n) = (SqlNull:ys, n)
     cpm0 = map mapfun $ mergeCpms c10 c20
     f [] [] = []
     f [] ((x,cpm2):m2) =
@@ -195,7 +205,7 @@ mergeCpms cpm1 cpm2 = -- trace (printf "mergeCpms %s %s" (show cpm1) (show cpm2)
   in
     cpm0 ++ f m1 m2
 
-mergeManyCpms :: [[([Int],[DerT])]] -> [([Int],[DerT])]
+mergeManyCpms :: [[([SqlValue],[DerT])]] -> [([SqlValue],[DerT])]
 mergeManyCpms [] = []
 mergeManyCpms [cpm] = cpm
 mergeManyCpms cpms =
@@ -204,26 +214,26 @@ mergeManyCpms cpms =
   in
     mergeCpms (mergeManyCpms cpms1) (mergeManyCpms cpms2)
 
-patternIntersection :: Maybe [Int] -> Maybe [Int] -> Maybe [Int]
-patternIntersection Nothing _ = Nothing
-patternIntersection _ Nothing = Nothing
-patternIntersection (Just p1) (Just p2) = patternIntersection' p1 p2
-
-patternIntersection' :: [Int] -> [Int] -> Maybe [Int]
-patternIntersection' [] [] = Just []
-patternIntersection' (0 : xs) (y : ys) = (y :) <$> patternIntersection' xs ys
-patternIntersection' (x : xs) (0 : ys) = (x :) <$> patternIntersection' xs ys
-patternIntersection' (x : xs) (y : ys) | x == y    = (x :) <$> patternIntersection' xs ys
-                                       | otherwise = Nothing
-
-isPatternSubset :: [Int] -> [Int] -> Bool
-isPatternSubset [] [] = True
-isPatternSubset (x : xs) (0 : ys) = isPatternSubset xs ys
-isPatternSubset (x : xs) (y : ys) = x == y && isPatternSubset xs ys
-
-derMapCrossProd :: [[([Int], [Int], [DerT])]] -> [([Int], [Int], [DerT])]
-derMapCrossProd [dm] = dm
-derMapCrossProd (dm : dms) = [(e1 ++ e2, v1 ++ v2, [d1 * d2]) | let dmcp = derMapCrossProd dms, (e1,v1,[d1]) <- dm, (e2,v2,[d2]) <- dmcp]
+--patternIntersection :: Maybe [Int] -> Maybe [Int] -> Maybe [Int]
+--patternIntersection Nothing _ = Nothing
+--patternIntersection _ Nothing = Nothing
+--patternIntersection (Just p1) (Just p2) = patternIntersection' p1 p2
+--
+--patternIntersection' :: [Int] -> [Int] -> Maybe [Int]
+--patternIntersection' [] [] = Just []
+--patternIntersection' (0 : xs) (y : ys) = (y :) <$> patternIntersection' xs ys
+--patternIntersection' (x : xs) (0 : ys) = (x :) <$> patternIntersection' xs ys
+--patternIntersection' (x : xs) (y : ys) | x == y    = (x :) <$> patternIntersection' xs ys
+--                                       | otherwise = Nothing
+--
+--isPatternSubset :: [Int] -> [Int] -> Bool
+--isPatternSubset [] [] = True
+--isPatternSubset (x : xs) (0 : ys) = isPatternSubset xs ys
+--isPatternSubset (x : xs) (y : ys) = x == y && isPatternSubset xs ys
+--
+--derMapCrossProd :: [[([Int], [Int], [DerT])]] -> [([Int], [Int], [DerT])]
+--derMapCrossProd [dm] = dm
+--derMapCrossProd (dm : dms) = [(e1 ++ e2, v1 ++ v2, [d1 * d2]) | let dmcp = derMapCrossProd dms, (e1,v1,[d1]) <- dm, (e2,v2,[d2]) <- dmcp]
 
 
 compute_generalized_Cauchy_distribution_quantiles noise_Cauchy_gamma =
@@ -372,8 +382,8 @@ performLocalSensitivityAnalysis' args np origTableCols query = do
 
   putStrLn "Processing SELECT clause"
   let
-    (selectedColNames,groupExprs,numGroupExprs,uncompiledSumExprs,aggrOps,assembleResult,assembleDer,numAssembledVs,numSumExprs) =
-      (selectedColNames,groupExprs,numGroupExprs,uncompiledSumExprs,aggrOps,assembleResult,assembleDer,numAssembledVs,numSumExprs)
+    (selectedColNames,groupExprs,numGroupExprs,uncompiledSumExprs,aggrOps,assembleDer,numAssembledVs,numSumExprs) =
+      (selectedColNames,groupExprs,numGroupExprs,uncompiledSumExprs,aggrOps,assembleDer,numAssembledVs,numSumExprs)
       where
         (selectedColNames, eithers) = unzip $
           case selSelectList query of
@@ -399,17 +409,16 @@ performLocalSensitivityAnalysis' args np origTableCols query = do
         --uncompiledSumExprs = map snd sumExprs00
         (uncompiledSumExprs,aggrOps) = unzip sumExprs00
         numGroupExprs = length groupExprs
-        (assembleResult,assembleDer,numAssembledVs) =
+        (assembleDer,numAssembledVs) =
           if null uncompiledSumExprs
             then
               if selDistinct query == All
-                then (id, id, numGroupExprs)
-                else (\ ([],vs,[]) -> ([],vs,[1::DerT]), \ (els,vs,[]) -> (els,vs,[1::DerT]), numGroupExprs)
+                then (id, numGroupExprs)
+                else (\ (els,vs,[]) -> (els,vs,[1::DerT]), numGroupExprs)
             else
               if null groupExprs
-                -- TODO: add proper support for float instead of using round
-                then (\ ([],vs,d) -> ([],assembleResult0 (map round d) vs,[1]), id, numGroupExprs)
-                else (\ ([],vs,d) -> ([],assembleResult0 (map round d) vs,[1]), \ (els,vs,d) -> (els,assembleResult0 (map (const 0) d) vs,[2]), numExprs)
+                then (id, numGroupExprs)
+                else (\ (els,vs,d) -> (els,assembleResult0 (map (const SqlNull) d) vs,[2]), numExprs)
           where
             numExprs = length uncompiledSumExprs + numGroupExprs
             -- assemble a query result row from the values of sumExprs and groupExprs
@@ -599,7 +608,7 @@ performLocalSensitivityAnalysis' args np origTableCols query = do
       putStrLn bigQuery
       return bigQuery
 
-    findDerivativesQ :: [Int] -> IO [([[Int]], [Int], [DerT])]
+    findDerivativesQ :: [Int] -> IO [([[SqlValue]], [SqlValue], [DerT])]
     findDerivativesQ [dtable] = do
       q <- findBigQueryForDerivatives dtable
       res <- sendQueryToDb args q
@@ -607,33 +616,17 @@ performLocalSensitivityAnalysis' args np origTableCols query = do
       if null res
         then do
           putStrLn "empty derivative"
-          return [([replicate nc 0], [], replicate (1 + length noise_distributions) 0)]
+          return [([replicate nc SqlNull], [], replicate (1 + length noise_distributions) 0)]
         else forM res $ \ rs -> do
           let (rs1,rs2) = splitAt nc rs
-          let els = flip map rs1 $ \ r -> case fromSql r :: Maybe Int of Just el -> el
-                                                                         Nothing -> 0
+          let els = rs1
+          --let els = flip map rs1 $ \ r -> case fromSql r :: Maybe Int of Just el -> el
+          --                                                               Nothing -> 0
           let d = fromSql (head rs2) :: Double
           let ds = map fromSql (tail rs2) :: [Double]
           smss <- smootheRow d ds
           printf "%s -> %f # %s # %s\n" (show els) d (show ds) (showNoiseLevelList smss)
           return ([els],[],d:smss)
-
-  --putStrLn "Queries for derivatives:"
-  --forM_ [0..numTables-1] findQueryForDerivatives
-
-  --putStrLn "Queries for SmoothSensitivityDer:"
-  --forM_ [0..numTables-1] $ \ i -> forM_ [0..numTables-1] $ \ j -> when (i /= j) $ findQueryForSmoothSensitivityDer i j >>= putStrLn
-
-  --putStrLn "Big queries for derivatives:"
-  --forM_ [0..numTables-1] $ \ i -> findDerivativesQ [i]
-
-  prevEq <- fmap (listArray (0,totalNumCols-1) :: [Maybe Int] -> Array Int (Maybe Int)) $ forM [0..totalNumCols-1] $ \ i -> do
-    eqs <- fmap concat $ forM [0..i-1] $ \ j -> do
-      b <- readArray colEq (i,j)
-      return $ if b then [j] else []
-    return $ if null eqs then Nothing else Just (maximum eqs)
-
-  let smoothDerMap = error "smoothDerMap undefined" :: Map (Int,Int) [([Int],DerT)]
 
   printf "distrSmNlm = %s\n" (showNoiseLevelList $ map (`distrSmNlm` np) noise_distributions)
 
@@ -652,7 +645,7 @@ performLocalSensitivityAnalysis' args np origTableCols query = do
     unsplitElsVs (els,vs,d) = (els ++ vs, d)
 
     -- dtncs contains a list of pairs of a table and the number of times to differentiate w.r.t. that table
-    findDerivativesWrtOrigTables :: [(String,Int)] -> IO [([Int], [Int], [DerT])]
+    findDerivativesWrtOrigTables :: [(String,Int)] -> IO [([SqlValue], [SqlValue], [DerT])]
     findDerivativesWrtOrigTables dtncs = do
       when debug $ putStr "Finding derivatives w.r.t. original tables "
       when debug $ print dtncs
@@ -670,12 +663,12 @@ performLocalSensitivityAnalysis' args np origTableCols query = do
       let ders4 = map splitUnassembledElsVs ders3
       --when debug $ putStrLn "ders4:"
       --printDerivatives ders4
-      let ders5 = map (if null dtncs then assembleResult else assembleDer) ders4
+      let ders5 = map assembleDer ders4
       --when debug $ putStrLn "ders5:"
       --printDerivatives ders5
       return ders5
 
-    findAllDerivativesWrtOrigTables :: IO [([(String,Int)], [([Int], [Int], [DerT])])]
+    findAllDerivativesWrtOrigTables :: IO [([(String,Int)], [([SqlValue], [SqlValue], [DerT])])]
     findAllDerivativesWrtOrigTables =
       let
         --f []            [] = (\ x -> [([],x)]) <$> findDerivativesWrtOrigTables []

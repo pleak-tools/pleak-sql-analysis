@@ -1,10 +1,12 @@
 module LocalSensitivity (performLocalSensitivityAnalysis) where
 
 import Control.Monad
-import qualified Data.Map as Map
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
+import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.Map (Map)
+import Data.Set (Set)
 import Data.Array.IArray
 import Data.Array.Unboxed
 import Data.Array.MArray
@@ -38,6 +40,9 @@ showScalarExpr = TL.unpack . prettyScalarExpr prettyFlags
 showQuery = TL.unpack . prettyQueryExpr prettyFlags
 
 sumExprBound = 1000
+
+minExprBound = 0
+maxExprBound = 1000
 
 data NoiseParameters =
   NoiseParameters {
@@ -269,11 +274,14 @@ nmcs (Name _ ncs) = map ncStr ncs
 aggrOp :: Name -> String
 aggrOp = map toLower . head . nmcs
 
-data AggrOp = AggrCount | AggrSum
+data AggrOp = AggrCount | AggrSum | AggrMin | AggrMax
+  deriving Eq
 
 instance Show AggrOp where
   show AggrCount = "COUNT"
   show AggrSum = "SUM"
+  show AggrMin = "MIN"
+  show AggrMax = "MAX"
 
 scalarExprAddrs :: (Name -> Int) -> ScalarExpr -> [Int]
 scalarExprAddrs nta = nub . f where
@@ -324,7 +332,7 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
   putStrLn (showQuery query)
 
   putStrLn "Processing FROM clause"
-  (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables) <- do
+  (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,origTableIds,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables) <- do
     let tmpTableName = ('$' :)
     (tableNames, origTableNames, colNamess, colTypess, derss) <- fmap unzip5 $ forM (selTref query) $ \ tr -> do
       case tr of
@@ -366,10 +374,14 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
     let newTableIdsMap = Map.fromList $ map (\ xs -> (fst (head xs), map (tableId . snd) xs)) $ groupBy (\ x y -> fst x == fst y) $ sort $ zip origTableNames tableNames
     let newTableIds = (newTableIdsMap Map.!)
     let origTables = Map.keys newTableIdsMap
+    let origTableNameToId = (Map.fromList (zip origTables [0..]) Map.!)
+    let origTableIds = map origTableNameToId origTableNames
     putStr "Tables: "
     print tableNames
     putStr "Original tables: "
     print origTables
+    putStr "Original table IDs of selected tables: "
+    print origTableIds
     let newTableCount = length . newTableIds
     let colId = (Map.fromList (zip tableNames (map (\ colNames -> (Map.fromList (zip colNames [0..]) Map.!)) colNamess)) Map.!)
     let numCols = (Map.fromList (zip [0..] (map length colNamess)) Map.!)
@@ -385,12 +397,12 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
     putStr "addrToColType: "
     print addrToColType
     colEq <- newArray ((0,0), (totalNumCols-1,totalNumCols-1)) False :: IO (IOUArray (Int,Int) Bool)
-    return (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables)
+    return (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,origTableIds,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables)
 
   putStrLn "Processing SELECT clause"
   let
-    (selectedColNames,groupExprs,numGroupExprs,uncompiledSumExprs,aggrOps,assembleDer,numAssembledVs,numSumExprs) =
-      (selectedColNames,groupExprs,numGroupExprs,uncompiledSumExprs,aggrOps,assembleDer,numAssembledVs,numSumExprs)
+    (selectedColNames,groupExprs,numGroupExprs,uncompiledSumExprs,minMaxExprs,aggrOps,minMaxAggrOps,assembleDer,numAssembledVs,numSumExprs) =
+      (selectedColNames,groupExprs,numGroupExprs,uncompiledSumExprs,minMaxExprs,aggrOps,minMaxAggrOps,assembleDer,numAssembledVs,numSumExprs)
       where
         (selectedColNames, eithers) = unzip $
           case selSelectList query of
@@ -406,15 +418,20 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
                         case aggrOp ns of
                           "count" -> (NumberLit undefined "1", AggrCount)
                           "sum" -> (e1, AggrSum)
+                          "min" -> (e1, AggrMin)
+                          "max" -> (e1, AggrMax)
                     SelectItem _ e1 _ ->
                       Right $
                         e1
                 )
         (sumExprs00,groupExprs) =
           partitionEithers eithers
+        sumExprs0 = filter ((`elem` [AggrCount, AggrSum]) . snd) sumExprs00
         --sumExprs0 = map fst sumExprs00
         --uncompiledSumExprs = map snd sumExprs00
-        (uncompiledSumExprs,aggrOps) = unzip sumExprs00
+        (uncompiledSumExprs,aggrOps) = unzip sumExprs0
+        sumExprsMinMax = filter ((`elem` [AggrMin, AggrMax]) . snd) sumExprs00
+        (minMaxExprs,minMaxAggrOps) = unzip sumExprsMinMax
         numGroupExprs = length groupExprs
         (assembleDer,numAssembledVs) =
           if null uncompiledSumExprs
@@ -435,292 +452,343 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
               f (Right _ : es) ss (g : gs) = g : f es ss gs
         numSumExprs = length uncompiledSumExprs
 
-  let aggrExprBound = fromIntegral $
-                        case aggrOps of [AggrCount] -> 1
-                                        _           -> sumExprBound
-
-  printf "Selected column names: %s\n" (show selectedColNames)
-
-  sumExprsAndTables <- forM uncompiledSumExprs $ \ se -> do
-    putStrLn $ showScalarExpr se
-    let as = scalarExprAddrs (nmcsToAddr . nmcs) se
-    let tables = nub $ map (addrToTbl !) as
-    print as
-    print tables
-    return (se,tables)
-
-  putStrLn "Processing WHERE clause"
-
-  wheresAndTables <- do
-    let
-      processWhere w =
-        case w of
-          BinaryOp _ n (Identifier _ n1) (Identifier _ n2) | nmcs n == ["="] -> do
-            let na1 = nmcsToAddr $ nmcs n1
-            let na2 = nmcsToAddr $ nmcs n2
-            writeArray colEq (na1,na2) True :: IO ()
-            return []
-          BinaryOp _ n w1 w2 | nmcs n == ["and"] -> do
-            r1 <- processWhere w1
-            r2 <- processWhere w2
-            return (r1 ++ r2)
-          _ -> do
-            putStrLn $ TL.unpack $ prettyScalarExpr prettyFlags w
-            let as = scalarExprAddrs (nmcsToAddr . nmcs) w
-            let tables = nub $ map (addrToTbl !) as
-            print as
-            print tables
-            return [(w,tables)]
-    let wheres = extractWhereExpr query
-    wheresAndTables <- fmap concat $ forM wheres processWhere
-    return wheresAndTables
-
-  forM_ [0..totalNumCols-1] $ \ i -> do
-    writeArray colEq (i,i) True
-    forM_ [0..totalNumCols-1] $ \ j -> do
-      b <- readArray colEq (j,i)
-      when b $ writeArray colEq (i,j) True
-  forM_ [0..totalNumCols-1] $ \ k -> do
-    forM_ [0..totalNumCols-1] $ \ i -> do
-      forM_ [0..totalNumCols-1] $ \ j -> do
-        b1 <- readArray colEq (i,k)
-        b2 <- readArray colEq (k,j)
-        when (b1 && b2) $ writeArray colEq (i,j) True
-
-  colEqComponents <- fmap concat $ forM [0..totalNumCols-1] $ \ i -> do
-    eqs <- fmap concat $ forM [0..totalNumCols-1] $ \ j -> do
-      b <- readArray colEq (i,j)
-      return $ if b then [j] else []
-    return $ if head eqs == i then [eqs] else []
-  putStr "colEqComponents: "
-  print colEqComponents
+  printf "minMaxAggrOps = %s\n" (show minMaxAggrOps)
 
   let
-    smootheRow d1 sds = do
-      -- TODO: allow xs to be floating-point numbers
+    findQueryForMinMax aggrOp e1 =
+        "SELECT " ++ intercalate ", " ((showScalarExpr e1 ++ " AS _value") : map (++ ".ID") tableNames) ++
+        " FROM " ++ intercalate ", " (zipWith (\ ot t -> ot ++ " AS " ++ t) origTableNames tableNames) ++
+        (if null dwheresList then "" else " WHERE ") ++ intercalate " AND " dwheresList ++
+        " ORDER BY _value" ++ if aggrOp == AggrMin then "" else " DESC"
+      where
+        dwheresList = map showScalarExpr $ extractWhereExpr query
+
+
+  let distrBetas = map (`distrBeta` np) noise_distributions
+
+  nls2 <- if not (null minMaxExprs)
+    then do
+      let canComputeSmoothNoiseLevel = numGroupExprs == 0 && numSumExprs == 0 && length minMaxExprs == 1
+      fmap head $ forM (zip minMaxAggrOps minMaxExprs) $ \ (aggrOp,e) -> do
+        let q = findQueryForMinMax aggrOp e
+        putStrLn q
+        res <- sendQueryToDb args q
+        rms0 <- forM res $ \ (r:rs) -> do
+          let r' = fromSql r :: Double
+          let rs' = map fromSql rs :: [Int]
+          let rs'' = zip origTableIds rs'
+          --putStrLn $ show r' ++ " " ++ show rs''
+          let r'' = case aggrOp of AggrMin -> r' - minExprBound; AggrMax -> maxExprBound - r'
+          when debug $ putStrLn $ show r'' ++ " " ++ show rs''
+          return (r'', rs'')
+        let
+          process [] sms _ = return sms
+          process ((r,s):rms) sms removedRows = do
+            let n = Set.size removedRows
+            let smsatds = map (\ beta -> r * exp (-beta * fromIntegral n)) distrBetas
+            when debug $ printf "%0.3f %d %s %s\n" r n (show smsatds) (show $ Set.elems removedRows) :: IO ()
+            process rms (zipWith max sms smsatds) (Set.fromList s `Set.union` removedRows)
+        let rms1 = rms0 ++ [(maxExprBound - minExprBound, [])]
+        sms1 <- process rms1 (map (const 0) distrBetas) Set.empty
+        let r1 = fst (head rms1)
+        let rms2 = map (\ (r,s) -> (r - r1, s)) (tail rms1)
+        sms2 <- process rms2 sms1 Set.empty
+        printf "smooth sensitivity (w.r.t. all tables combined): %s\n" (showNoiseLevelList sms2)
+        when canComputeSmoothNoiseLevel $ printf "smooth sensitivity (with gamma = 4) w.r.t. all tables combined: %0.3f\n" (sms2 !! 1)
+        let distr_smnlms = map (`distrSmNlm` np) noise_distributions
+        let smnls = zipWith (*) sms2 distr_smnlms
+        when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
+        return smnls
+    else do
+      let aggrExprBound = fromIntegral $
+                            case aggrOps of [AggrCount] -> 1
+                                            _           -> sumExprBound
+
+      printf "Selected column names: %s\n" (show selectedColNames)
+
+      sumExprsAndTables <- forM uncompiledSumExprs $ \ se -> do
+        putStrLn $ showScalarExpr se
+        let as = scalarExprAddrs (nmcsToAddr . nmcs) se
+        let tables = nub $ map (addrToTbl !) as
+        print as
+        print tables
+        return (se,tables)
+
+      putStrLn "Processing WHERE clause"
+
+      wheresAndTables <- do
+        let
+          processWhere w =
+            case w of
+              BinaryOp _ n (Identifier _ n1) (Identifier _ n2) | nmcs n == ["="] -> do
+                let na1 = nmcsToAddr $ nmcs n1
+                let na2 = nmcsToAddr $ nmcs n2
+                writeArray colEq (na1,na2) True :: IO ()
+                return []
+              BinaryOp _ n w1 w2 | nmcs n == ["and"] -> do
+                r1 <- processWhere w1
+                r2 <- processWhere w2
+                return (r1 ++ r2)
+              _ -> do
+                putStrLn $ TL.unpack $ prettyScalarExpr prettyFlags w
+                let as = scalarExprAddrs (nmcsToAddr . nmcs) w
+                let tables = nub $ map (addrToTbl !) as
+                print as
+                print tables
+                return [(w,tables)]
+        let wheres = extractWhereExpr query
+        wheresAndTables <- fmap concat $ forM wheres processWhere
+        return wheresAndTables
+
+      forM_ [0..totalNumCols-1] $ \ i -> do
+        writeArray colEq (i,i) True
+        forM_ [0..totalNumCols-1] $ \ j -> do
+          b <- readArray colEq (j,i)
+          when b $ writeArray colEq (i,j) True
+      forM_ [0..totalNumCols-1] $ \ k -> do
+        forM_ [0..totalNumCols-1] $ \ i -> do
+          forM_ [0..totalNumCols-1] $ \ j -> do
+            b1 <- readArray colEq (i,k)
+            b2 <- readArray colEq (k,j)
+            when (b1 && b2) $ writeArray colEq (i,j) True
+
+      colEqComponents <- fmap concat $ forM [0..totalNumCols-1] $ \ i -> do
+        eqs <- fmap concat $ forM [0..totalNumCols-1] $ \ j -> do
+          b <- readArray colEq (i,j)
+          return $ if b then [j] else []
+        return $ if head eqs == i then [eqs] else []
+      putStr "colEqComponents: "
+      print colEqComponents
+
       let
-        satds k xs =
-          if null ys || k < limit
-            then replicate (numeq - r) (x + q) ++ replicate r (x + q + 1) ++ ys
-            else satds (k - limit) (replicate numeq y ++ ys)
-          where
-            x = head xs
-            numeq = length $ takeWhile (x ==) xs
-            ys = dropWhile (x ==) xs
-            y = head ys
-            limit = numeq * (y - x)
-            (q,r) = quotRem k numeq
-      let xs = map round $ sort sds
-      let satd0 k xs = product (map (fromIntegral :: Int -> Double) (satds k xs)) * aggrExprBound
-      let numMissingRows = satd0 0 xs - d1
-      let satd k xs = satd0 k xs - numMissingRows
-      let smsens0 beta k xs = satd k xs * exp (-beta * fromIntegral k)
-      let
-        smsens beta xs =
+        smootheRow d1 sds = do
+          -- TODO: allow xs to be floating-point numbers
           let
-            isdecr k = smsens0 beta k xs > smsens0 beta (k+1) xs
-            f k = if isdecr k then k else f (2 * k)
-            g k1 k2 | k1 == k2  = k1
-                    | isdecr k3 = g k1 k3
-                    | otherwise = g (k3+1) k2
-              where k3 = (k1 + k2) `div` 2
-          in smsens0 beta (g 0 (f 1)) xs
-      let betas = map (`distrBeta` np) noise_distributions
-      --printf "  beta = %s\n" (showNoiseLevelList betas)
-      --printf "  1/beta = %s\n" (showNoiseLevelList (map (1/) betas))
-      --forM_ [0..100] $ \ i ->
-      --  printf "  %2d: %20s %10.3f %10.3f\n" i (show (satds i xs)) (satd i xs) (smsens0 beta i xs)
-      putStr ""
-      let smss = map (`smsens` xs) betas
-      return smss
+            satds k xs =
+              if null ys || k < limit
+                then replicate (numeq - r) (x + q) ++ replicate r (x + q + 1) ++ ys
+                else satds (k - limit) (replicate numeq y ++ ys)
+              where
+                x = head xs
+                numeq = length $ takeWhile (x ==) xs
+                ys = dropWhile (x ==) xs
+                y = head ys
+                limit = numeq * (y - x)
+                (q,r) = quotRem k numeq
+          let xs = map round $ sort sds
+          let satd0 k xs = product (map (fromIntegral :: Int -> Double) (satds k xs)) * aggrExprBound
+          let numMissingRows = satd0 0 xs - d1
+          let satd k xs = satd0 k xs - numMissingRows
+          let smsens0 beta k xs = satd k xs * exp (-beta * fromIntegral k)
+          let
+            smsens beta xs =
+              let
+                isdecr k = smsens0 beta k xs > smsens0 beta (k+1) xs
+                f k = if isdecr k then k else f (2 * k)
+                g k1 k2 | k1 == k2  = k1
+                        | isdecr k3 = g k1 k3
+                        | otherwise = g (k3+1) k2
+                  where k3 = (k1 + k2) `div` 2
+              in smsens0 beta (g 0 (f 1)) xs
+          --let betas = map (`distrBeta` np) noise_distributions
+          --printf "  beta = %s\n" (showNoiseLevelList betas)
+          --printf "  1/beta = %s\n" (showNoiseLevelList (map (1/) betas))
+          --forM_ [0..100] $ \ i ->
+          --  printf "  %2d: %20s %10.3f %10.3f\n" i (show (satds i xs)) (satd i xs) (smsens0 beta i xs)
+          putStr ""
+          let smss = map (`smsens` xs) distrBetas
+          return smss
 
-  let
-    findQueryForSmoothSensitivityDer dtable ti = --printf "Query for SmoothSensitivityDer (%d,%d):\n" dtable ti >>
-                                                 findQueryForDerivativesGeneric includeWhereForTheseTables partitionColEqComp isTableNameIncluded distinguishCountsAndSums
-      where
-        -- (i,j) -> r -> the derivative of the count of table j (filtered by the where conditions) w.r.t. row r of table i
-        tiName = tableName ti
-        includeWhereForTheseTables tables = null tables || tables == [ti]
-        partitionColEqComp as = (filter ((== dtable) . (addrToTbl !)) as, filter ((== ti) . (addrToTbl !)) as)
-        isTableNameIncluded t = (t == tiName)
-        distinguishCountsAndSums = False
-
-    findQueryForDerivatives dtable = --printf "Query for derivatives w.r.t. table %s:\n" dtableName >>
-                                     findQueryForDerivativesGeneric includeWhereForTheseTables partitionColEqComp isTableNameIncluded distinguishCountsAndSums
-      where
-        dtableName = tableName dtable
-        includeWhereForTheseTables tables = dtable `notElem` tables
-        partitionColEqComp = partition ((== dtable) . (addrToTbl !))
-        isTableNameIncluded t = (t /= dtableName)
-        distinguishCountsAndSums = True
-
-    findQueryForDerivativesGeneric includeWhereForTheseTables partitionColEqComp isTableNameIncluded distinguishCountsAndSums = do
-      let showTblCol (t,c) = t ++ '.' : c
-      let showAddrCol = showTblCol . (addrToTblCol !)
       let
-        wheres = concat $ flip map wheresAndTables $ \ (w,tables) ->
-          if includeWhereForTheseTables tables
-            then [w]
-            else []
-      let dwheres1 = flip map wheres showScalarExpr
+        findQueryForSmoothSensitivityDer dtable ti = --printf "Query for SmoothSensitivityDer (%d,%d):\n" dtable ti >>
+                                                     findQueryForDerivativesGeneric includeWhereForTheseTables partitionColEqComp isTableNameIncluded distinguishCountsAndSums
+          where
+            -- (i,j) -> r -> the derivative of the count of table j (filtered by the where conditions) w.r.t. row r of table i
+            tiName = tableName ti
+            includeWhereForTheseTables tables = null tables || tables == [ti]
+            partitionColEqComp as = (filter ((== dtable) . (addrToTbl !)) as, filter ((== ti) . (addrToTbl !)) as)
+            isTableNameIncluded t = (t == tiName)
+            distinguishCountsAndSums = False
+
+        findQueryForDerivatives dtable = --printf "Query for derivatives w.r.t. table %s:\n" dtableName >>
+                                         findQueryForDerivativesGeneric includeWhereForTheseTables partitionColEqComp isTableNameIncluded distinguishCountsAndSums
+          where
+            dtableName = tableName dtable
+            includeWhereForTheseTables tables = dtable `notElem` tables
+            partitionColEqComp = partition ((== dtable) . (addrToTbl !))
+            isTableNameIncluded t = (t /= dtableName)
+            distinguishCountsAndSums = True
+
+        findQueryForDerivativesGeneric includeWhereForTheseTables partitionColEqComp isTableNameIncluded distinguishCountsAndSums = do
+          let showTblCol (t,c) = t ++ '.' : c
+          let showAddrCol = showTblCol . (addrToTblCol !)
+          let
+            wheres = concat $ flip map wheresAndTables $ \ (w,tables) ->
+              if includeWhereForTheseTables tables
+                then [w]
+                else []
+          let dwheres1 = flip map wheres showScalarExpr
+          let
+            (dwheress,dselectss) =
+              unzip $ flip map colEqComponents $ \ as ->
+                let (currAs,otherAs) = partitionColEqComp as
+                    dwheres = if null otherAs then [] else zip otherAs (tail otherAs)
+                    dselects = flip map currAs $ \ a ->
+                      case otherAs of
+                        [] -> (Nothing, a)
+                        a2:_ -> (Just a2, a)
+                in (dwheres,dselects)
+          let dwheres2raw = concat dwheress
+          let dwheres2 = map (\ (a1,a2) -> printf "%s = %s" (showAddrCol a1) (showAddrCol a2)) dwheres2raw
+          let dselects = concat dselectss
+          let dwheresList = dwheres1 ++ dwheres2
+          let groupByList = intercalate ", " $ flip map dselects $ \ (b, a) -> let (t,c) = addrToTblCol ! a in '_' : c
+          putStr ""
+          return $
+            "SELECT " ++
+            (intercalate ", " $ (flip map dselects $ \ (b, a) ->
+              (case b of Nothing -> "cast (null as " ++ (addrToColType ! a) ++ ")"; Just a2 -> showAddrCol a2) ++ " AS " ++ (let (t,c) = addrToTblCol ! a in '_' : c)) ++
+              [case aggrOp of
+                 AggrCount -> "COUNT(*)"
+                 AggrSum | not distinguishCountsAndSums -> "COUNT(*)"
+                 AggrSum | distinguishCountsAndSums -> show aggrOp ++ '(' : (if includeWhereForTheseTables tables then showScalarExpr se else show sumExprBound) ++ ")"
+                 _ -> error ("Aggregation operation " ++ show aggrOp ++ " not supported")
+               ++ " AS _derivative"
+               | ((se,tables),aggrOp) <- zip sumExprsAndTables aggrOps]) ++
+            " FROM " ++
+            intercalate ", " (filter (not . null) $ zipWith (\ ot t -> if isTableNameIncluded t then ot ++ " AS " ++ t else "") origTableNames tableNames) ++
+            (if null dwheresList then "" else " WHERE ") ++
+            intercalate " AND " dwheresList ++
+            " GROUP BY " ++ groupByList
+
+        findBigQueryForDerivatives dtable = do
+          let dtableName = tableName dtable
+          let colNames = colNamess !! dtable
+          d <- findQueryForDerivatives dtable
+          ds <- forM (filter (/= dtable) [0..numTables-1]) (findQueryForSmoothSensitivityDer dtable)
+          printf "Big query for derivatives w.r.t. table %s:\n" dtableName
+          let
+            bigQuery =
+              "SELECT " ++
+              intercalate ", " (map (\ cn -> "d._" ++ cn ++ " AS " ++ cn) colNames ++
+                                "d._derivative AS _d" :
+                                map (\ i -> 'd' : show i ++ "._derivative AS _d" ++ show i) [1..numTables-1]) ++
+              " FROM " ++
+              intercalate ", " (('(' : d ++ ") AS d") : zipWith (\ i d1 -> '(' : d1 ++ ") AS d" ++ show i) [1..] ds) ++
+              " WHERE " ++
+              intercalate " AND " ['(' : qcn ++ " = " ++ "d._" ++ cn ++ " OR " ++ qcn ++ " IS NULL)" | i <- [1..numTables-1], cn <- colNames, let qcn = 'd' : show i ++ "._" ++ cn]
+          putStrLn bigQuery
+          return bigQuery
+
+        findDerivativesQ :: [Int] -> IO [([[SqlValue]], [SqlValue], [DerT])]
+        findDerivativesQ [dtable] = do
+          q <- findBigQueryForDerivatives dtable
+          res <- sendQueryToDb args q
+          let nc = numCols dtable
+          if null res
+            then do
+              putStrLn "empty derivative"
+              return [([replicate nc SqlNull], [], replicate (1 + length noise_distributions) 0)]
+            else forM res $ \ rs -> do
+              let (rs1,rs2) = splitAt nc rs
+              let els = rs1
+              --let els = flip map rs1 $ \ r -> case fromSql r :: Maybe Int of Just el -> el
+              --                                                               Nothing -> 0
+              let d = fromSql (head rs2) :: Double
+              let ds = map fromSql (tail rs2) :: [Double]
+              smss <- smootheRow d ds
+              printf "%s -> %f # %s # %s\n" (show els) d (show ds) (showNoiseLevelList smss)
+              return ([els],[],d:smss)
+
+      printf "distrSmNlm = %s\n" (showNoiseLevelList $ map (`distrSmNlm` np) noise_distributions)
+
       let
-        (dwheress,dselectss) =
-          unzip $ flip map colEqComponents $ \ as ->
-            let (currAs,otherAs) = partitionColEqComp as
-                dwheres = if null otherAs then [] else zip otherAs (tail otherAs)
-                dselects = flip map currAs $ \ a ->
-                  case otherAs of
-                    [] -> (Nothing, a)
-                    a2:_ -> (Just a2, a)
-            in (dwheres,dselects)
-      let dwheres2raw = concat dwheress
-      let dwheres2 = map (\ (a1,a2) -> printf "%s = %s" (showAddrCol a1) (showAddrCol a2)) dwheres2raw
-      let dselects = concat dselectss
-      let dwheresList = dwheres1 ++ dwheres2
-      let groupByList = intercalate ", " $ flip map dselects $ \ (b, a) -> let (t,c) = addrToTblCol ! a in '_' : c
-      putStr ""
-      return $
-        "SELECT " ++
-        (intercalate ", " $ (flip map dselects $ \ (b, a) ->
-          (case b of Nothing -> "cast (null as " ++ (addrToColType ! a) ++ ")"; Just a2 -> showAddrCol a2) ++ " AS " ++ (let (t,c) = addrToTblCol ! a in '_' : c)) ++
-          [case aggrOp of
-             AggrCount -> "COUNT(*)"
-             AggrSum | not distinguishCountsAndSums -> "COUNT(*)"
-             AggrSum | distinguishCountsAndSums -> show aggrOp ++ '(' : (if includeWhereForTheseTables tables then showScalarExpr se else show sumExprBound) ++ ")"
-             _ -> error ("Aggregation operation " ++ show aggrOp ++ " not supported")
-           ++ " AS _derivative"
-           | ((se,tables),aggrOp) <- zip sumExprsAndTables aggrOps]) ++
-        " FROM " ++
-        intercalate ", " (filter (not . null) $ zipWith (\ ot t -> if isTableNameIncluded t then ot ++ " AS " ++ t else "") origTableNames tableNames) ++
-        (if null dwheresList then "" else " WHERE ") ++
-        intercalate " AND " dwheresList ++
-        " GROUP BY " ++ groupByList
+        printDerivatives :: [([Int], [Int], [DerT])] -> IO ()
+        printDerivatives ders = when debug $ do
+          forM_ ders $ \ (els',vs,d) ->
+            printf "    %s -> %s -> %s\n" (show els') (show vs) (show d) :: IO ()
 
-    findBigQueryForDerivatives dtable = do
-      let dtableName = tableName dtable
-      let colNames = colNamess !! dtable
-      d <- findQueryForDerivatives dtable
-      ds <- forM (filter (/= dtable) [0..numTables-1]) (findQueryForSmoothSensitivityDer dtable)
-      printf "Big query for derivatives w.r.t. table %s:\n" dtableName
-      let
-        bigQuery =
-          "SELECT " ++
-          intercalate ", " (map (\ cn -> "d._" ++ cn ++ " AS " ++ cn) colNames ++
-                            "d._derivative AS _d" :
-                            map (\ i -> 'd' : show i ++ "._derivative AS _d" ++ show i) [1..numTables-1]) ++
-          " FROM " ++
-          intercalate ", " (('(' : d ++ ") AS d") : zipWith (\ i d1 -> '(' : d1 ++ ") AS d" ++ show i) [1..] ds) ++
-          " WHERE " ++
-          intercalate " AND " ['(' : qcn ++ " = " ++ "d._" ++ cn ++ " OR " ++ qcn ++ " IS NULL)" | i <- [1..numTables-1], cn <- colNames, let qcn = 'd' : show i ++ "._" ++ cn]
-      putStrLn bigQuery
-      return bigQuery
+        splitUnassembledElsVs (els,d) = (els',vs,d) where
+          (els',vs) = splitAt (length els - numGroupExprs) els
 
-    findDerivativesQ :: [Int] -> IO [([[SqlValue]], [SqlValue], [DerT])]
-    findDerivativesQ [dtable] = do
-      q <- findBigQueryForDerivatives dtable
-      res <- sendQueryToDb args q
-      let nc = numCols dtable
-      if null res
-        then do
-          putStrLn "empty derivative"
-          return [([replicate nc SqlNull], [], replicate (1 + length noise_distributions) 0)]
-        else forM res $ \ rs -> do
-          let (rs1,rs2) = splitAt nc rs
-          let els = rs1
-          --let els = flip map rs1 $ \ r -> case fromSql r :: Maybe Int of Just el -> el
-          --                                                               Nothing -> 0
-          let d = fromSql (head rs2) :: Double
-          let ds = map fromSql (tail rs2) :: [Double]
-          smss <- smootheRow d ds
-          printf "%s -> %f # %s # %s\n" (show els) d (show ds) (showNoiseLevelList smss)
-          return ([els],[],d:smss)
+        splitElsVs (els,d) = (els',vs,d) where
+          (els',vs) = splitAt (length els - numAssembledVs) els
 
-  printf "distrSmNlm = %s\n" (showNoiseLevelList $ map (`distrSmNlm` np) noise_distributions)
+        unsplitElsVs (els,vs,d) = (els ++ vs, d)
 
-  let
-    printDerivatives :: [([Int], [Int], [DerT])] -> IO ()
-    printDerivatives ders = when debug $ do
-      forM_ ders $ \ (els',vs,d) ->
-        printf "    %s -> %s -> %s\n" (show els') (show vs) (show d) :: IO ()
+        -- dtncs contains a list of pairs of a table and the number of times to differentiate w.r.t. that table
+        findDerivativesWrtOrigTables :: [(String,Int)] -> IO [([SqlValue], [SqlValue], [DerT])]
+        findDerivativesWrtOrigTables dtncs = do
+          when debug $ putStr "Finding derivatives w.r.t. original tables "
+          when debug $ print dtncs
+          ders3 <- fmap concat $ forM (crossProd $ map (\ (tn,c) -> combins c (newTableIds tn)) dtncs) $ \ tableIdss -> do
+            let tableIds = concat tableIdss
+            let sti = sort tableIds
+            ders <- findDerivativesQ sti
+            ders2 <- fmap concat $ forM ders $ \ (gels,vs,d) -> do
+              let tels = (Map.fromList (zip sti gels) Map.!)
+              let oels = map (map tels) tableIdss
+              let poelss = crossProd (map permuts oels)
+              forM poelss $ \ poels -> do
+                return (concat (concat poels) ++ vs, d)
+            return ders2
+          let ders4 = map splitUnassembledElsVs ders3
+          --when debug $ putStrLn "ders4:"
+          --printDerivatives ders4
+          let ders5 = map assembleDer ders4
+          --when debug $ putStrLn "ders5:"
+          --printDerivatives ders5
+          return ders5
 
-    splitUnassembledElsVs (els,d) = (els',vs,d) where
-      (els',vs) = splitAt (length els - numGroupExprs) els
+        findAllDerivativesWrtOrigTables :: IO [([(String,Int)], [([SqlValue], [SqlValue], [DerT])])]
+        findAllDerivativesWrtOrigTables =
+          let
+            --f []            [] = (\ x -> [([],x)]) <$> findDerivativesWrtOrigTables []
+            f dtncs@[(_,1)] [] = (\ x -> [(dtncs,x)]) <$> findDerivativesWrtOrigTables dtncs
+            f _             [] = return []
+            f dtncs ((tn,ntc) : tncs) =
+              fmap concat $ forM [0..ntc] $ \ i ->
+                f (if i == 0 then dtncs else (tn,i) : dtncs) tncs
+          in
+            f [] (zip origTables (map newTableCount origTables))
 
-    splitElsVs (els,d) = (els',vs,d) where
-      (els',vs) = splitAt (length els - numAssembledVs) els
+      derivatives <- findAllDerivativesWrtOrigTables
+      let canComputeNoiseLevel = numGroupExprs == 0 && numSumExprs == 1
 
-    unsplitElsVs (els,vs,d) = (els ++ vs, d)
+      -- TODO: support subqueries for smooth sensitivity
+      ders3 <- if hasSubQueries then error "Support of subqueries is currently broken" else return derivatives
+      nlss <- fmap transpose $ forM ders3 $ \ (dtncs,ders) -> do
+        putStr "Combined derivatives w.r.t. original tables "
+        print dtncs
+        let ders4 = map splitElsVs $ mergeManyCpms (map ((:[]) . unsplitElsVs) ders)
+        let numdtables = sum (map snd dtncs)
+        let
+          nlm :: Double -> Double -> Double
+          nlm noise_C1 noise_C2 = if numdtables == 0 then 0 else noise_C2 / noise_b2 np * (noise_C1 / noise_b1 np) ^ (numdtables - 1) / noise_epsilon np ^ numdtables
 
-    -- dtncs contains a list of pairs of a table and the number of times to differentiate w.r.t. that table
-    findDerivativesWrtOrigTables :: [(String,Int)] -> IO [([SqlValue], [SqlValue], [DerT])]
-    findDerivativesWrtOrigTables dtncs = do
-      when debug $ putStr "Finding derivatives w.r.t. original tables "
-      when debug $ print dtncs
-      ders3 <- fmap concat $ forM (crossProd $ map (\ (tn,c) -> combins c (newTableIds tn)) dtncs) $ \ tableIdss -> do
-        let tableIds = concat tableIdss
-        let sti = sort tableIds
-        ders <- findDerivativesQ sti
-        ders2 <- fmap concat $ forM ders $ \ (gels,vs,d) -> do
-          let tels = (Map.fromList (zip sti gels) Map.!)
-          let oels = map (map tels) tableIdss
-          let poelss = crossProd (map permuts oels)
-          forM poelss $ \ poels -> do
-            return (concat (concat poels) ++ vs, d)
-        return ders2
-      let ders4 = map splitUnassembledElsVs ders3
-      --when debug $ putStrLn "ders4:"
-      --printDerivatives ders4
-      let ders5 = map assembleDer ders4
-      --when debug $ putStrLn "ders5:"
-      --printDerivatives ders5
-      return ders5
+          distr_nlm :: NoiseDistribution -> Double
+          distr_nlm d = nlm (distrC1 d) (distrC2 d)
+        let distr_smnlms = map (`distrSmNlm` np) noise_distributions
+        let canComputeSmoothNoiseLevel = canComputeNoiseLevel && numdtables == 1
+        when canComputeSmoothNoiseLevel $ printf "Smooth noise level multiplier = %s\n" (showNoiseLevelList distr_smnlms)
+        maxs <- fmap (map maximum . transpose) $ forM ders4 $ \ (els',vs,d) -> do
+          let d1 = if null d then 1 else head d
+          printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
+          if canComputeNoiseLevel && length d >= 1
+            then return d
+            else return [d1]
+        let maxd:maxsmss = if null maxs then replicate (1 + length noise_distributions) 0 else maxs
+        let smnls = zipWith (*) maxsmss distr_smnlms
+        when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
+        when canComputeSmoothNoiseLevel $ printf "smooth sensitivity (with gamma = 4) w.r.t. table %s: %0.3f\n" (fst (head dtncs)) (maxsmss !! 1)
+        return $ if null smnls then replicate (length noise_distributions) 0 else smnls
+      let noiseLevels = map maximum nlss
+      let nls2 = noiseLevels
+      return nls2
 
-    findAllDerivativesWrtOrigTables :: IO [([(String,Int)], [([SqlValue], [SqlValue], [DerT])])]
-    findAllDerivativesWrtOrigTables =
-      let
-        --f []            [] = (\ x -> [([],x)]) <$> findDerivativesWrtOrigTables []
-        f dtncs@[(_,1)] [] = (\ x -> [(dtncs,x)]) <$> findDerivativesWrtOrigTables dtncs
-        f _             [] = return []
-        f dtncs ((tn,ntc) : tncs) =
-          fmap concat $ forM [0..ntc] $ \ i ->
-            f (if i == 0 then dtncs else (tn,i) : dtncs) tncs
-      in
-        f [] (zip origTables (map newTableCount origTables))
-
-  derivatives <- findAllDerivativesWrtOrigTables
   queryResult <- sendQueryToDb args (showQuery query)
-  let canComputeNoiseLevel = numGroupExprs == 0 && numSumExprs == 1
 
-  -- TODO: support subqueries for smooth sensitivity
-  ders3 <- if hasSubQueries then error "Support of subqueries is currently broken" else return derivatives
-  nlss <- fmap transpose $ forM ders3 $ \ (dtncs,ders) -> do
-    putStr "Combined derivatives w.r.t. original tables "
-    print dtncs
-    let ders4 = map splitElsVs $ mergeManyCpms (map ((:[]) . unsplitElsVs) ders)
-    let numdtables = sum (map snd dtncs)
-    let
-      nlm :: Double -> Double -> Double
-      nlm noise_C1 noise_C2 = if numdtables == 0 then 0 else noise_C2 / noise_b2 np * (noise_C1 / noise_b1 np) ^ (numdtables - 1) / noise_epsilon np ^ numdtables
-
-      distr_nlm :: NoiseDistribution -> Double
-      distr_nlm d = nlm (distrC1 d) (distrC2 d)
-    let distr_smnlms = map (`distrSmNlm` np) noise_distributions
-    let canComputeSmoothNoiseLevel = canComputeNoiseLevel && numdtables == 1
-    when canComputeSmoothNoiseLevel $ printf "Smooth noise level multiplier = %s\n" (showNoiseLevelList distr_smnlms)
-    maxs <- fmap (map maximum . transpose) $ forM ders4 $ \ (els',vs,d) -> do
-      let d1 = if null d then 1 else head d
-      printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
-      if canComputeNoiseLevel && length d >= 1
-        then return d
-        else return [d1]
-    let maxd:maxsmss = if null maxs then replicate (1 + length noise_distributions) 0 else maxs
-    let smnls = zipWith (*) maxsmss distr_smnlms
-    when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
-    when canComputeSmoothNoiseLevel $ printf "smooth sensitivity (with gamma = 4) w.r.t. table %s: %0.3f\n" (fst (head dtncs)) (maxsmss !! 1)
-    return $ if null smnls then replicate (length noise_distributions) 0 else smnls
-  let noiseLevels = map maximum nlss
-  let nls2 = noiseLevels
-  if canComputeNoiseLevel
+  if numGroupExprs == 0 && numSumExprs + length minMaxExprs == 1
     then do
       --printf "query result = %0.3f\n" (fromIntegral (head (head queryResult)) :: Double)
       printf "query result = %s\n" (case fromSql (head (head queryResult)) :: Maybe Double of Just r -> show r; Nothing -> "NULL")

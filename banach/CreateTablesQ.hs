@@ -38,16 +38,16 @@ createTableSqlTyped tableName types = do
   (colNames, tbl) <- readDBString dbFileName
 
   -- TODO this piece is used only for testing, can be removed if does not work
-  (_, boolCols, intCols, dblCols, strCols, boolIndices, intIndices, dblIndices, stringIndices) <- readDBDifferentTypes dbFileName tableName typeMap
-  traceIO $ ("==== " ++ tableName ++ "====")
-  traceIO $ ("--- boolCols ---")
-  traceIO $ show boolCols ++ " " ++ show boolIndices
-  traceIO $ ("--- intCols ---")
-  traceIO $ show intCols ++ " " ++ show intIndices
-  traceIO $ ("--- dblCols ---")
-  traceIO $ show dblCols ++ " " ++ show dblIndices
-  traceIO $ ("--- strCols ---")
-  traceIO $ show strCols ++ " " ++ show stringIndices
+  --(_, boolCols, intCols, dblCols, strCols, boolIndices, intIndices, dblIndices, stringIndices) <- readDBDifferentTypes dbFileName tableName typeMap
+  --traceIO $ ("==== " ++ tableName ++ "====")
+  --traceIO $ ("--- boolCols ---")
+  --traceIO $ show boolCols ++ " " ++ show boolIndices
+  --traceIO $ ("--- intCols ---")
+  --traceIO $ show intCols ++ " " ++ show intIndices
+  --traceIO $ ("--- dblCols ---")
+  --traceIO $ show dblCols ++ " " ++ show dblIndices
+  --traceIO $ ("--- strCols ---")
+  --traceIO $ show strCols ++ " " ++ show stringIndices
 
   let numRows = length tbl
   let sensTableName = sensRows tableName

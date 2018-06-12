@@ -37,9 +37,9 @@ data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm
           | Text String                   -- this is needed to store strings that remain public and go only into the filters
           | Like VarName VarName          -- stores LIKE expressions for filtering
           | Comp Ordering VarName VarName -- compares two variables, turns to sigmoid/tauoid if necessary
-          | CompStr VarName VarName -- compares two strings, uses l0-norm
+          | CompStr VarName VarName       -- compares two strings, uses l0-norm
           | CompInt Ordering VarName VarName -- compares two variables, turns to mixmax-based filter if necessary
-          | LZero VarName                 -- we use it only inside norm definiitons
+          | LZero VarName                 -- we use it only inside norm definitions
   deriving Show
 
 -- expressions of type TableExpr use values from the whole table
@@ -51,8 +51,8 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectSum VarName         -- E1+...+En with norm that is not specified yet and will be derived later
                | SelectSumBin VarName      -- sums binary variables
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
-               | SelectPlain VarName            -- does not apply aggregation, is used only for intermediate representation
-               | SelectDistinct VarName           -- TODO not supported yet, used only to generate nice error messages
+               | SelectPlain VarName       -- does not apply aggregation, is used only for intermediate representation
+               | SelectDistinct VarName    -- TODO not supported yet, used only to generate nice error messages
   deriving Show
 
 --------------------------
@@ -223,98 +223,6 @@ updatePreficesTableExpr fullTablePaths prefix expr =
         SelectDistinct x -> SelectDistinct (updatePrefices fullTablePaths prefix x)
         SelectPlain x         -> SelectPlain         (updatePrefices fullTablePaths prefix x)
 
--- this is needed to make error of a missing head clearer
--- the errors come where the argument has to be an input variable, but it is actually an expression, and vice versa
-headInputVar :: Expr -> [a] -> [b] -> a
-headInputVar t [] [] = error $ error_queryExpr_undefinedVars t
-headInputVar t [] _  = error $ error_queryExpr_missingInputVars t
-headInputVar t xs _  = head xs
-
-headAsgnVar :: Expr -> [a] -> [b] -> b
-headAsgnVar t [] [] = error $ error_queryExpr_undefinedVars t
-headAsgnVar t _  [] = error $ error_queryExpr_missingAsgnVars t
-headAsgnVar t _  xs = head xs
-
--- if some variables are not immediate inputs, they may just be represented as (B.Power z 1.0) for inputs z, so we may try to take z
-onlyInputVars :: Expr -> [a] -> [B.Expr] -> [a]
-onlyInputVars t [] [] = error $ error_queryExpr_undefinedVars t
-onlyInputVars t xs [] = xs
-onlyInputVars t xs ys = 
-    let zs = filter (\y -> case y of {B.Power z 1.0 -> True; _ -> False}) ys in
-    if length zs == length ys then
-        let ws = map (\z -> case z of {B.Power w 1.0 -> w}) zs in
-        xs ++ onlyInputVars t xs zs
-    else error $ error_queryExpr_notAllInputVars t
-
-onlyAsgnVars :: Expr -> [a] -> [b] -> [b]
-onlyAsgnVars t [] [] = error $ error_queryExpr_undefinedVars t
-onlyAsgnVars t [] xs = xs
-onlyAsgnVars t _ _   = error $ error_queryExpr_notAllAsgnVars t
-
--- the constructor may depend on whether the arguments are input variables or expressions
--- arg1: the term
--- arg2: used input variables
--- arg3: used assignment variables
--- arg4: the list of input vars in turn used by asgn variables -- needed e.g to decide whether Prod becomes B.Prod or B.Prod2
-queryExpression :: M.Map VarName Expr -> Expr -> [B.Var] -> [B.Expr] -> [S.Set B.Var] -> B.Expr
-queryExpression asgnMap t xs es vss = 
-    case t of
-        Power _ c        -> if xs /= [] then B.Power (headInputVar t xs es) c
-                            else             B.ComposePower (headAsgnVar t xs es) c
-
-        PowerLN _ c -> if xs /= [] then B.PowerLN (headInputVar t xs es) c
-                       else
-                           let e = (headAsgnVar t xs es) in
-                           case e of
-                               B.Power x 1.0 -> B.PowerLN x c
-                               _             -> B.PowerLN (headInputVar t xs es) c
-
-        Exp c _          -> if xs /= [] then B.Exp c (headInputVar t xs es)
-                            else             B.ComposeExp c (headAsgnVar t xs es)
-
-        Sigmoid a c x    -> if xs /= [] then B.Sigmoid a c (headInputVar t xs es)
-                            else             B.ComposeSigmoid a c (headAsgnVar t xs es)
-
-        Tauoid a c x     -> if xs /= [] then B.Tauoid a c (headInputVar t xs es)
-                            else             B.ComposeTauoid a c (headAsgnVar t xs es)
-
-        Const c          -> B.Const c
-        ScaleNorm c _    -> B.ScaleNorm c (headAsgnVar t xs es)
-        ZeroSens _       -> B.ZeroSens (headAsgnVar t xs es)
-
-        L c _            -> if (pairwiseDisjoint vss) && (allUnique xs) then 
-                                if xs /= [] then B.L c (onlyInputVars t xs es)
-                                else             B.ComposeL c (onlyAsgnVars t xs es)
-                            else error err
-
-        LInf _           -> if (allUnique xs) then B.LInf (onlyInputVars t xs es)
-                            else error err
-
-        -- checks if the variables of different args are pairwise disjoint
-        Prod _           -> if (pairwiseDisjoint vss) then B.Prod (onlyAsgnVars  t xs es)
-                            else                           B.Prod2 (onlyAsgnVars  t xs es)
-
-        Min _            -> B.Min (onlyAsgnVars  t xs es)
-                            --if (pairwiseDisjoint vss) then B.Min (onlyAsgnVars  t xs es)
-                            --else error err
-        Max _            -> B.Max (onlyAsgnVars  t xs es)
-                            --if (pairwiseDisjoint vss) then B.Max (onlyAsgnVars  t xs es)
-                            --else error err
-
-        -- checks if the variables of different args are pairwise disjoint
-        -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
-        Sum _            -> if (pairwiseDisjoint vss) then B.Sump 1.0 (onlyAsgnVars  t xs es)
-                            else                           B.Sum2 (onlyAsgnVars  t xs es)
-
-        -- this is our reserved 'identity' that does nothing
-        Id _             -> if xs /= [] then B.Power (headInputVar t xs es) 1.0
-                            else             (headAsgnVar t xs es)
-        -- in the following, 1.0 and -1.0 are used only to show whether it was min or max, and will be modified later
-        ARMax            -> B.Prec (B.AR {B.fx =  1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}})
-        ARMin            -> B.Prec (B.AR {B.fx = -1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}})
-        _ -> error $ "___" ++ show t
-   where err = error_queryExpr_repeatingVars t
-
 -- puts preanalysed aggregated function results into correspoding placeholders
 applyPrecAggr :: Double -> Double -> B.Expr -> B.Expr
 applyPrecAggr arMin arMax expr =
@@ -363,18 +271,6 @@ precAggr :: [Double] -> [Double] -> [B.TableExpr] -> [B.TableExpr]
 precAggr (arMin:arMins) (arMax:arMaxs) (e:es) =
     (applyPrecAggrTable arMin arMax e) : precAggr arMins arMaxs es
 
--- the definition of Norm allows to use any variables inside argumets (both input and assignment variables)
-normExpression :: Expr -> [a] -> [Norm a] -> [S.Set a] -> (Norm a)
-normExpression t xs es _ =
-    let zs = (map (\ x -> Col x) xs) ++ es in
-    case t of
-        PowerLN _ _      -> NormLN (head zs)
-        LZero _          -> NormLZero (head zs)
-        ScaleNorm c _    -> NormScale c (head zs)
-        ZeroSens _       -> NormZero
-        L c _            -> NormL (Exactly c) zs
-        LInf _           -> NormL Any zs
-
 allUnique :: Ord a => [a] -> Bool
 allUnique xs =
     let ys = S.fromList xs in
@@ -401,7 +297,7 @@ exprToString isPublic asgnMap expr =
         Sigmoid a c x    -> if isPublic then
                                 "(case when " ++ z ++ " > " ++ show c ++ " then 1 else 0 end)"
                             else
-                                "exp(" ++ w ++ ") / (exp(" ++ w ++ ") + 1)"
+                                "(exp(" ++ w ++ ") / (exp(" ++ w ++ ") + 1))"
                             where
                                 z = processRec x
                                 w = show a ++ " * (" ++ z ++ " - " ++ show c ++ ")"
@@ -409,7 +305,7 @@ exprToString isPublic asgnMap expr =
         Tauoid a c x     -> if isPublic then
                                 "(case when " ++ z ++ " = " ++ show c ++ " then 1 else 0 end)"
                             else
-                                "2 / (exp(" ++ w ++ ") + exp(-" ++ w ++ "))"
+                                "(2 / (exp(" ++ w ++ ") + exp(-" ++ w ++ ")))"
                             where
                                 z = processRec x
                                 w = show a ++ " * (" ++ z ++ " - " ++ show c ++ ")"
@@ -417,12 +313,12 @@ exprToString isPublic asgnMap expr =
         Const c          -> show c
         ScaleNorm a x    -> processRec x
         ZeroSens x       -> processRec x
-        L p xs           -> "("    ++ intercalate " + " (map (\x -> processRec x ++ "^" ++ show p) xs) ++ ")^" ++ show (1/p)
+        L p xs           -> "(("    ++ intercalate " + " (map (\x -> processRec x ++ "^" ++ show p) xs) ++ ")^" ++ show (1/p) ++ ")"
         LInf xs          -> "greatest(" ++ intercalate " + " (map (\x -> "abs(" ++ processRec x ++ ")") xs) ++ ")"
-        Prod xs          -> intercalate " * " $ map processRec xs
+        Prod xs          -> "(" ++ (intercalate " * " $ map processRec xs) ++ ")"
         Min xs           -> "least(" ++ (intercalate ", " $ map processRec xs) ++ ")"
         Max xs           -> "greatest(" ++ (intercalate ", " $ map processRec xs) ++ ")"
-        Sum xs           -> intercalate " + " $ map processRec xs
+        Sum xs           -> "(" ++ (intercalate " + " $ map processRec xs) ++ ")"
         Id  x            -> processRec x
         ARMin            -> "(ArMin PLACEHOLDER)"
         ARMax            -> "(ArMax PLACEHOLDER)"
@@ -431,7 +327,7 @@ exprToString isPublic asgnMap expr =
         Comp EQ x1 x2    -> if isPublic then
                                 "(case when " ++ z1 ++ " = " ++ z2 ++ " then 1 else 0 end)"
                             else
-                                "2 / (exp(" ++ w ++ ") + exp(-" ++ w ++ "))"
+                                "(2 / (exp(" ++ w ++ ") + exp(-" ++ w ++ ")))"
                             where
                                 z1 = processRec x1
                                 z2 = processRec x2
@@ -439,7 +335,7 @@ exprToString isPublic asgnMap expr =
         Comp GT x1 x2   -> if isPublic then
                                 "(case when " ++ z1 ++ " > " ++ z2 ++ " then 1 else 0 end)"
                             else
-                                "exp(" ++ w ++ ") / (exp(" ++ w ++ ") + 1)"
+                                "(exp(" ++ w ++ ") / (exp(" ++ w ++ ") + 1))"
                             where
                                 z1 = processRec x1
                                 z2 = processRec x2
@@ -453,14 +349,14 @@ exprToString isPublic asgnMap expr =
         CompInt EQ x1 x2 -> if isPublic then
                                 "(case when " ++ z1 ++ " = " ++ z2 ++ " then 1 else 0 end)"
                             else
-                                "1 - min(max(abs(x1 - x2),0) * " ++ show scInt ++ ",1)"
+                                "(1 - min(max(abs(x1 - x2),0) * " ++ show scInt ++ ",1))"
                             where
                                 z1 = processRec x1
                                 z2 = processRec x2
         CompInt GT x1 x2   -> if isPublic then
                                 "(case when " ++ z1 ++ " > " ++ z2 ++ " then 1 else 0 end)"
                             else
-                                "min(max(x1 - x2,0) * " ++ show scInt ++ ",1)"
+                                "(min(max(x1 - x2,0) * " ++ show scInt ++ ",1))"
                             where
                                 z1 = processRec x1
                                 z2 = processRec x2

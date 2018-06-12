@@ -12,8 +12,8 @@ main = do
   let debug = not (alternative args)
   if generateQueries args
     then do
-      (colNames,typeMap,tableExprData) <- PQ.getBanachAnalyserInput debug (inputFp1 args) (inputFp2 args)
-      BQ.performAnalyses args colNames typeMap tableExprData
+      (initialQuery,colNames,typeMap,taskMap,tableExprData) <- PQ.getBanachAnalyserInput debug (inputFp1 args) (inputFp2 args)
+      BQ.performAnalyses args initialQuery colNames typeMap taskMap tableExprData
     else do
       (outputTableName,qr,table,taskMap,tableExprData,colNames) <- P.getBanachAnalyserInput debug (inputFp2 args)
       B.performAnalyses args table outputTableName qr taskMap tableExprData

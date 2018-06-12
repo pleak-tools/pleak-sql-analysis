@@ -797,8 +797,8 @@ analyzeTableExprQ fr wh srt colNames te =
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
 
-performAnalyses :: ProgramOptions -> [String] -> [(String,[(String, String)])] -> [(String, TableExpr, (String,String,String))] -> IO ()
-performAnalyses args colNames typeMap tableExprData = do
+performAnalyses :: ProgramOptions -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, TableExpr, (String,String,String))] -> IO ()
+performAnalyses args initialQuery colNames typeMap taskMap tableExprData = do
   let debug = not (alternative args)
   let (tableNames,_,_) = unzip3 tableExprData
   let uniqueTableNames = nub tableNames
@@ -809,16 +809,46 @@ performAnalyses args colNames typeMap tableExprData = do
                                             return cts
   when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
   when debug $ putStrLn "================================="
+  when debug $ putStrLn "Computing the initial query:"
+  when debug $ putStrLn initialQuery
+  qr <- if (dbSensitivity args) then sendDoubleQueryToDb args initialQuery else (do return 0)
+  when (dbSensitivity args && debug) $ putStrLn (show qr)
+  when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL queries for computing the analysis results:"
   --let fromPart = intercalate ", " tableNames
   --let wherePart = ""
   --forM_ tableExprData $ \ (tableName, te, sqlQuery) -> do
   --  let [_, fromWhere] = splitOn " FROM " sqlQuery
   --  let [fromPart, wherePart] = splitOn " WHERE " fromWhere
-  forM_ tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) -> do
+  res0 <- forM tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
-    putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
+    when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
+    result <- performAnalysis args fromPart wherePart tableName colNames te
+    return (tableName, result)
+
+  let taskAggr0 = map (\(taskName,is,b) -> (taskName, B.sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0)) $ map (res0 !!) is, b)) taskMap
+
+  -- add an aggregated result to the output, sum up the sensitivities and take time minimal b
+  let taskAggr = map (\(taskName,vs,b) ->
+                         if b then
+                             let v = foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0) (snd $ unzip vs) in
+                             (taskName, (B.resultForAllTables, v):vs)
+                         else
+                             (taskName,vs)
+                     ) taskAggr0
+
+  let taskStr = if alternative args then
+          map (\(taskName,res) -> taskName ++ [B.unitSeparator] ++
+                  (intercalate [B.unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show qr, show (sds/b), show ((sds/b) / qr * 100)]) res)) taskAggr
+      else
+          map (\(taskName,res) -> taskName ++ "\n" ++
+                  (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f\t %0.6f\t %0.6f\t %0.3f" tableName sds qr (sds/b) ((sds/b) / qr * 100)) res)) taskAggr
+  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") taskStr
+
+performAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> TableExpr -> IO (Double,Double)
+performAnalysis args fromPart wherePart tableName colNames te = do
+    let debug = not (alternative args)
     let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames te
     when debug $putStrLn "Analysis result:"
     when debug $print ar
@@ -833,8 +863,12 @@ performAnalyses args colNames typeMap tableExprData = do
     when debug $ printf "b = %0.6f\n" b
     let qr = constProp $ fx ar
     when debug $ putStrLn "Query result:"
-    putStrLn (show qr ++ ";")
+    when debug $ putStrLn (show qr ++ ";")
+    when (dbSensitivity args && debug) $ sendDoubleQueryToDb args (show qr) >>= printf "database returns %0.6f\n"
     let sds = constProp $ subg (sdsf ar) beta
-    putStrLn "-- beta-smooth derivative sensitivity:"
-    putStrLn (show sds ++ ";")
-    when (dbSensitivity args) $ sendDoubleQueryToDb args (show sds) >>= printf "database returns %0.6f\n"
+    when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
+    when debug $ putStrLn (show sds ++ ";")
+    sds_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show sds) else (do return 0)
+    when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" sds_value
+    return (b,sds_value)
+

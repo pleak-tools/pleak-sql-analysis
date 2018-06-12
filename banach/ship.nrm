@@ -1,12 +1,12 @@
-3 6                         //the rows 3 and 6 (indexation starts with 0) are sensitive
-latitude longitude length;  //sensitive columns
+3 6                            //the rows 3 and 6 (indexation starts with 0) are sensitive
+latitude longitude max_speed;  //sensitive columns
 
 // a longer description of the norm
 u1 = lp 2.0 latitude longitude;
 u2 = 1.0 * u1; //it is possible to rescale sensitivity w.r.t. distance here
-//v1 = lp 1.0 max_speed;
-//v2 = 20.0 * v1; //decrease sensitivity w.r.t. velocity
+v1 = lp 1.0 max_speed;
+v2 = 20.0 * v1; //decrease sensitivity w.r.t. velocity
 w1 = lp 1.0 length;
-w2 = 10.0 * w1; //it is possible to rescale sensitivity w.r.t. ship length here
-z = lp 1.0 u2 w2;
+w2 = 1.0 * w1; //it is possible to rescale sensitivity w.r.t. ship length here
+z = lp 1.0 u2 v2 w2;
 return linf z;

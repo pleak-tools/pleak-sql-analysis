@@ -86,6 +86,9 @@ data AnalysisResult = AR {
 unitSeparator :: Char
 unitSeparator = chr 31
 
+unitSeparator2 :: Char
+unitSeparator2 = chr 30
+
 epsilon :: Double
 epsilon = 1.0
 
@@ -530,7 +533,6 @@ performAnalyses args rows outputTableName qr taskMap tableExprData = do
   -- covert to a properly formatted string, let the tasks be separated by a special character 30
   -- when combining table copies, we take maximal noise level since it correpons to maximal beta
   let taskAggr0 = map (\(taskName,is) -> (taskName, sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0)) $ map (res0 !!) is)) taskMap
-  let unitSeparator2 = chr 30
 
   -- add an aggregated result to the output, sum up the sensitivities and take time minimal b
   let taskAggr = map (\(taskName,vs) ->

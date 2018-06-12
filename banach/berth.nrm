@@ -1,4 +1,4 @@
-0 1 2 3 4 5
+all
 berthlength;
-z = 10.0 * berthlength;
+z = 1.0 * berthlength;
 return linf z;

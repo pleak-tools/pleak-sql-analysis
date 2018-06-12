@@ -1,7 +1,7 @@
 INSERT INTO reachable_ports SELECT
     port.port_id AS port_id,
     ((ship.latitude - port.latitude) ^ 2 + (ship.longitude - port.longitude) ^ 2) ^ 0.5 / ship.max_speed AS arrival
-from port, ship, parameters
+FROM port, ship, parameters
 WHERE
     ship.name = parameters.shipname
 ;

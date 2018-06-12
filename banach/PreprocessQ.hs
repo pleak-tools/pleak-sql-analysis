@@ -194,10 +194,10 @@ readTableData queryPath typeMap tableNames tableAliases = do
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> String -> IO ([String], [(String,[(String,String)])], [(TableName, B.TableExpr,(String,String,String))])
+getBanachAnalyserInput :: Bool -> String -> String -> IO (String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [(TableName, B.TableExpr,(String,String,String))])
 getBanachAnalyserInput debug inputSchema inputQuery = do
 
-    putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
+    when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
     let dataPath = reverse $ dropWhile (/= '/') (reverse inputSchema)
 
     -- "sqlQuery" parses a single query of the form SELECT ... FROM ... WHERE
@@ -218,8 +218,9 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     let (taskNames, inputTableAliases, inputTableNames, outputQueryFuns, filterAexprs') = processQuery outputTableName queryMap "" outputTableName outputTableName
 
     let indexedTaskNames = zip taskNames [0..(length taskNames) - 1]
-    let taskMaps = concat $ map (\(ts,i) -> (map (\t -> (t,[i])) ) ts) indexedTaskNames
-    let taskMap  = M.toList $ M.fromListWith (++) $ filter (\(t,_) -> t /= "") taskMaps
+    let taskMaps = concat $ map (\(ts,i) -> (map (\t -> (t,[i]))) ts) indexedTaskNames
+    let taskMap'  = M.toList $ M.fromListWith (++) $ filter (\(t,_) -> t /= "") taskMaps
+    let taskMap   = map (\(t,is) -> if t == outputTableName then (t,is,True) else (t,is,False)) taskMap'
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Input table names:   " ++ show inputTableNames
@@ -259,6 +260,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     when (length outputQueryFuns > 1) $ error $ error_queryExpr_singleColumn
     let outputQueryFun  = head outputQueryFuns
     let queryStr = queryToString outputQueryFun
+    let queryAggrStr = queryAggrToString outputQueryFun
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show queryStr
@@ -308,7 +310,8 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
 
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let tableExprData = (extColNames, typeList, zip3 allTableNames finalTableExpr sqlQueries)
+    let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ wh
+    let tableExprData = (initialQuery, extColNames, typeList, taskMap, zip3 allTableNames finalTableExpr sqlQueries)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

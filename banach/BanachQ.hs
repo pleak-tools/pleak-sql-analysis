@@ -797,14 +797,14 @@ analyzeTableExprQ fr wh srt colNames te =
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
 
-performAnalyses :: ProgramOptions -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, TableExpr, (String,String,String))] -> IO ()
-performAnalyses args initialQuery colNames typeMap taskMap tableExprData = do
+performAnalyses :: ProgramOptions -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, TableExpr, (String,String,String))] -> IO ()
+performAnalyses args dataPath initialQuery colNames typeMap taskMap tableExprData = do
   let debug = not (alternative args)
   let (tableNames,_,_) = unzip3 tableExprData
   let uniqueTableNames = nub tableNames
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
-  ctss <- forM uniqueTableNames $ \ t -> do cts <- createTableSqlTyped t typeMap
+  ctss <- forM uniqueTableNames $ \ t -> do cts <- createTableSqlTyped dataPath t typeMap
                                             when debug $ putStr (concatMap (++ ";\n") cts)
                                             return cts
   when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)

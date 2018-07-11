@@ -194,7 +194,7 @@ readTableData queryPath typeMap tableNames tableAliases = do
 
 -- putting everything together
 --getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> String -> IO (String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [(TableName, B.TableExpr,(String,String,String))])
+getBanachAnalyserInput :: Bool -> String -> String -> IO (String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [(TableName, B.TableExpr,(String,String,String))])
 getBanachAnalyserInput debug inputSchema inputQuery = do
 
     when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
@@ -311,7 +311,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
     let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ wh
-    let tableExprData = (initialQuery, extColNames, typeList, taskMap, zip3 allTableNames finalTableExpr sqlQueries)
+    let tableExprData = (dataPath,initialQuery, extColNames, typeList, taskMap, zip3 allTableNames finalTableExpr sqlQueries)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

@@ -14,13 +14,13 @@ import qualified Data.Set as S
 sensRows :: String -> String
 sensRows tableName = tableName ++ "_sensRows"
 
-createTableSql :: String -> IO [String]
-createTableSql tableName = do
-  let dbFileName = tableName ++ ".db"
+createTableSql :: String -> String -> IO [String]
+createTableSql dataPath tableName = do
+  let dbFileName = dataPath ++ tableName ++ ".db"
   (colNames, tbl) <- readDB dbFileName
   let numRows = length tbl
   let sensTableName = sensRows tableName
-  let normFileName = tableName ++ ".nrm"
+  let normFileName = dataPath ++ tableName ++ ".nrm"
   ((sensRows, _), _) <- parseNormFromFile normFileName
   let sensRowsSet = S.fromList (take numRows sensRows)
   return [
@@ -31,10 +31,10 @@ createTableSql tableName = do
     "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
     "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
 
-createTableSqlTyped :: String -> [(String,[(String, String)])] -> IO [String]
-createTableSqlTyped tableName types = do
+createTableSqlTyped :: String -> String -> [(String,[(String, String)])] -> IO [String]
+createTableSqlTyped dataPath tableName types = do
   let typeMap = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) types
-  let dbFileName = tableName ++ ".db"
+  let dbFileName = dataPath ++ tableName ++ ".db"
   (colNames, tbl) <- readDBString dbFileName
 
   -- TODO this piece is used only for testing, can be removed if does not work
@@ -51,7 +51,7 @@ createTableSqlTyped tableName types = do
 
   let numRows = length tbl
   let sensTableName = sensRows tableName
-  let normFileName = tableName ++ ".nrm"
+  let normFileName = dataPath ++ tableName ++ ".nrm"
   ((sensRows, _), _) <- parseNormFromFile normFileName
   let sensRowsSet = S.fromList (take numRows sensRows)
   let colTypes = map (\col -> typeMap ! tableName ! col) colNames

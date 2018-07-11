@@ -69,8 +69,8 @@ half   = AConst   0.5
 oneNeg = AConst (-1.0)
 two    = AConst   2.0
 
-inf    = AText "minmaxT.max - minmaxT.min"
-infNeg = AText "minmaxT.min - minmaxT.max"
+inf    = AText "(minmaxT.max - minmaxT.min)"
+infNeg = AText "(minmaxT.min - minmaxT.max)"
 
 infMax = AText "minmaxT.max"
 infMin = AText "minmaxT.min"

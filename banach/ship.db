@@ -5,7 +5,7 @@ ship_id name   cargo latitude longitude length draft max_speed
  4      delta     0     140 140              80     0     50
  5      milka     0     180 170              110    0     30
  6      alma      0     130 130              90     0     30
- 7      farmi     0     230 240              150    0     20
+ 7      farmi     0     230 240              50     0     20
  8      kass      0      90 180              40     0     40
  9      lehm      0     240 190              110    0     40
 10      sipsik    0     260 180              120    0     30

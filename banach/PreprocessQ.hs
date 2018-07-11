@@ -286,6 +286,10 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     let fr  = intercalate ", " usedTables
     let wh  = if length pubFilter == 0 then "true" else intercalate " AND " pubFilter
 
+    -- this is needed to reconstruct the initial query
+    let allFilter  = map aexprToString filterAexprs
+    let whAll      = if length allFilter == 0 then "true" else intercalate " AND " allFilter
+
     -- compute min/max queries using sel, fr, wh
     let minmaxQuery = case queryAggr of
                           B.SelectMin _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
@@ -310,7 +314,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
 
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ wh
+    let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ whAll
     let tableExprData = (dataPath,initialQuery, extColNames, typeList, taskMap, zip3 allTableNames finalTableExpr sqlQueries)
 
     traceIOIfDebug debug $ "----------------"

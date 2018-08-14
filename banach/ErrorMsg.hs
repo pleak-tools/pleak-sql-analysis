@@ -47,6 +47,8 @@ error_noColNames = "ERROR: all columns of intermediate tables need to be named, 
 error_typeDoesNotExist s = "ERROR: data type \'" ++ s ++ "\' is not supported."
 error_tableTypeError x varType = "ERROR: table value " ++ show x ++ " is not of type " ++ varType ++ "."
 
+error_schema good bad = "ERROR: need to provide schemas for input tables " ++ show bad ++ ", found schemas only for " ++ show good ++ "."
+
 -- internall errors that may come due to bugs in the analyser itself
 error_internal      = "INTERNAL ERROR: Some internal analyser problem: "
 error_internal_queryExprFilter t       = error_internal ++ "\n query expression " ++ show t ++ " identified as a filter."

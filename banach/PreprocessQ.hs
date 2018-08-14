@@ -176,6 +176,8 @@ readTableData queryPath typeMap tableNames tableAliases = do
     -- read table sensitivities from corresponding files
     -- mapM is a standard function [IO a] -> IO [a]
     let dbNormData = mapM (\tableName -> parseNormFromFile $ queryPath ++ tableName ++ ".nrm") tableNames
+    let badNames = filter (\t -> not (M.member t typeMap)) tableNames
+    when (length badNames > 0) $ error (error_schema (M.keys typeMap) badNames)
     let tableColNames = map (\t -> M.keys (typeMap ! t)) tableNames
 
     (tableSensitives,tableNormFuns) <- fmap unzip dbNormData

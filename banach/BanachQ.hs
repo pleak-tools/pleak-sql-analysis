@@ -797,8 +797,8 @@ analyzeTableExprQ fr wh srt colNames te =
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
 
-performAnalyses :: ProgramOptions -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, TableExpr, (String,String,String))] -> IO ()
-performAnalyses args dataPath initialQuery colNames typeMap taskMap tableExprData = do
+performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, TableExpr, (String,String,String))] -> IO (Double,[(String, [(String, (Double, Double))])])
+performAnalyses args epsilon beta dataPath initialQuery colNames typeMap taskMap tableExprData = do
   let debug = not (alternative args)
   let (tableNames,_,_) = unzip3 tableExprData
   let uniqueTableNames = nub tableNames
@@ -824,7 +824,7 @@ performAnalyses args dataPath initialQuery colNames typeMap taskMap tableExprDat
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
-    result <- performAnalysis args fromPart wherePart tableName colNames te
+    result <- performAnalysis args epsilon beta fromPart wherePart tableName colNames te
     return (tableName, result)
 
   let taskAggr0 = map (\(taskName,is,b) -> (taskName, B.sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0)) $ map (res0 !!) is, b)) taskMap
@@ -837,26 +837,20 @@ performAnalyses args dataPath initialQuery colNames typeMap taskMap tableExprDat
                          else
                              (taskName,vs)
                      ) taskAggr0
+  return (qr,taskAggr)
 
-  let taskStr = if alternative args then
-          map (\(taskName,res) -> taskName ++ [B.unitSeparator] ++
-                  (intercalate [B.unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show qr, show (sds/b), show ((sds/b) / qr * 100)]) res)) taskAggr
-      else
-          map (\(taskName,res) -> taskName ++ "\n" ++
-                  (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f\t %0.6f\t %0.6f\t %0.3f" tableName sds qr (sds/b) ((sds/b) / qr * 100)) res)) taskAggr
-  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") taskStr
 
-performAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> TableExpr -> IO (Double,Double)
-performAnalysis args fromPart wherePart tableName colNames te = do
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> TableExpr -> IO (Double,Double)
+performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames te = do
     let debug = not (alternative args)
     let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames te
     when debug $putStrLn "Analysis result:"
     when debug $print ar
-    let epsilon = getEpsilon args
+    --let epsilon = getEpsilon args
     when debug $ printf "epsilon = %0.6f\n" epsilon
     when debug $ printf "gamma = %0.6f\n" gamma
     let defaultBeta = epsilon / (2 * (gamma + 1))
-    let fixedBeta = getBeta args
+    --let fixedBeta = getBeta args
     let beta = chooseSUBBeta defaultBeta fixedBeta (sdsf ar)
     when debug $ printf "beta = %0.6f\n" beta
     let b = epsilon / (gamma + 1) - beta

@@ -10,6 +10,7 @@ data ProgramOptions
     inputFp1         :: FilePath,
     inputFp2         :: FilePath,
     alternative      :: Bool,
+    policyAnalysis   :: Bool,
     generateQueries  :: Bool,
     dbSensitivity    :: Bool,
     dbCreateTables   :: Bool,
@@ -23,6 +24,7 @@ programArgs = ProgramOptions
   <$> strArgument (metavar "SCHEMA INPUT" <> help "schema input file")
   <*> strArgument (metavar "QUERY INPUT" <> help "query input file")
   <*> switch (short 'a' <> long "alternative" <> hidden <> help "Use alternative input and output format")
+  <*> switch (short 'p' <> long "policy-analysis" <> hidden <> help "Analyse privacy treating epsilon in [0,1] as attacker's guessing probability")
   <*> switch (short 'Q' <> long "queries" <> hidden <> help "Generate SQL queries for computing sensitivity instead of actually computing it")
   <*> switch (short 'D' <> long "db-sensitivity" <> hidden <> help "Send the generated query for computing sensitivity automatically to the database")
   <*> switch (long "db-create-tables" <> hidden <> help "Create the required tables in the database using the data in input files")

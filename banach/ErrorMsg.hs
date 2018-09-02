@@ -24,6 +24,8 @@ error_emptyTable    = "ERROR: Cannot analyse sensitivity of an empty table."
 error_parseSqlQuery s t = "ERROR: Could not parse the query from file " ++ show s ++ "\nError details: " ++ t
 error_parseQuery    s t = "ERROR: Could not parse the query from file " ++ show s ++ "\nError details: " ++ t
 error_parseNorm     s t = "ERROR: Could not parse the norm from file "  ++ show s ++ "\nError details: " ++ t
+error_parsePolicy     s t = "ERROR: Could not parse policy from file "  ++ show s ++ "\nError details: " ++ t
+error_parseAttacker   s t = "ERROR: Could not parse attacker settings from file "  ++ show s ++ "\nError details: " ++ t
 error_parseData     s   = "ERROR: Could not parse the data table from file " ++ show s
 
 -- unsupported SQL syntax
@@ -67,3 +69,7 @@ error_badAggrNorm t p q  = "ERROR: can compute sensitivity for " ++ show t ++ " 
 --the next error is not used anymore
 error_verifyNorm t  = "INTERNAL ERROR: Could not prove that the database norm is at least as large as the query norm for sensitivity w.r.t. table " ++ show t
 
+-- policy analysis error messages
+error_attackerBreaksEverything t = "ERROR: impossible to enforce policy for " ++ t ++ " against current attacker definition."
+error_badAttackerPolicyCombination attState plcState = "INTERNAL ERROR: no implementation for attacker state " ++ show attState ++ " and policy state " ++ show plcState ++ "."
+error_unboundedDataType t = "ERROR: data type " ++ t ++ " cannot be included into policy yet."

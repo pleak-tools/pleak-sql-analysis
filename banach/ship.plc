@@ -1,0 +1,7 @@
+leak
+ship_id exact;
+latitude approx 10;
+longitude approx 10;
+
+cost
+420

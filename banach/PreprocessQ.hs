@@ -2,7 +2,7 @@ module PreprocessQ where
 
 import Debug.Trace
 
-import Control.Monad (when)
+import Control.Monad (when, zipWithM)
 import Data.Char
 import Data.Either
 import Data.List
@@ -20,6 +20,7 @@ import ErrorMsg
 import ExprQ
 import NormsQ
 import ParserQ
+import PolicyQ
 import QueryQ
 import ReaderQ
 import SchemaQ
@@ -167,15 +168,23 @@ processQuery outputTableName queryMap taskName tableAlias tableName =
 
         (map (taskName :) taskNames, map (prefix ++) tableAliases, tableNames, outputQueryFuns, outputFilters)
 
-
 -- assume that the tables are located in the same place where the query is
-readTableData :: String -> M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
-readTableData queryPath typeMap tableNames tableAliases = do
+readTableData :: Bool -> String -> M.Map String VarState -> M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData, M.Map TableAlias (M.Map String VarState, Double))
+readTableData policy queryPath attMap typeMap tableNames tableAliases = do
 
     -- collect all norm-related table data
     -- read table sensitivities from corresponding files
     -- mapM is a standard function [IO a] -> IO [a]
-    let dbNormData = mapM (\tableName -> parseNormFromFile $ queryPath ++ tableName ++ ".nrm") tableNames
+    let plcMaps = if policy then
+            mapM (\tableName -> parsePolicyFromFile $ queryPath ++ tableName ++ ".plc") tableNames
+        else
+            return ([])
+
+    let dbNormData = if policy then
+            fmap (zipWith (\tableName (plcMap,_) -> constructNormData tableName attMap plcMap) tableNames) plcMaps
+        else
+            mapM (\tableName -> parseNormFromFile $ queryPath ++ tableName ++ ".nrm") tableNames
+
     let badNames = filter (\t -> not (M.member t typeMap)) tableNames
     when (length badNames > 0) $ error (error_schema (M.keys typeMap) badNames)
     let tableColNames = map (\t -> M.keys (typeMap ! t)) tableNames
@@ -190,14 +199,14 @@ readTableData queryPath typeMap tableNames tableAliases = do
 
     -- put all table data together
     let tableData = zipWith4 T tableNames fullTableColNames fullSensitiveVarNames tableNormFuns
-    let tableMap = M.fromList $ zip tableAliases tableData
-    return tableMap
+    let tableMap  = M.fromList $ zip tableAliases tableData
+    policyMap <- fmap (\ps -> M.fromList $ zip tableNames ps) plcMaps
+    return (tableMap,policyMap)
 
 
 -- putting everything together
---getBanachAnalyserInput :: String -> IO (B.Table, B.TableExpr)
-getBanachAnalyserInput :: Bool -> String -> String -> IO (String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [(TableName, B.TableExpr,(String,String,String))])
-getBanachAnalyserInput debug inputSchema inputQuery = do
+getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> IO (M.Map TableName (M.Map String VarState, Double), M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [(TableName, B.TableExpr,(String,String,String))])
+getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker = do
 
     when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
     let dataPath = reverse $ dropWhile (/= '/') (reverse inputSchema)
@@ -230,12 +239,9 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     traceIOIfDebug debug $ "Task names:          " ++ show taskNames
     traceIOIfDebug debug $ "Task map:            " ++ show taskMap
 
-    --traceIOIfDebug debug $ "----------------"
-    --traceIOIfDebug debug $ "TableQ " ++ show outputQueryFuns
-    --traceIOIfDebug debug $ "TableF " ++ show outputFilterFuns
-
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
-    inputTableMap <- readTableData dataPath typeMap inputTableNames inputTableAliases
+    attMap <- if policy then parseAttackerFromFile inputAttacker else return M.empty
+    (inputTableMap, plcMap) <- readTableData policy dataPath attMap typeMap inputTableNames inputTableAliases
 
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
     let orderedTableAliases = M.keys inputTableMap
@@ -317,7 +323,7 @@ getBanachAnalyserInput debug inputSchema inputQuery = do
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
     let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ whAll
-    let tableExprData = (dataPath,initialQuery, extColNames, typeList, taskMap, zip3 allTableNames finalTableExpr sqlQueries)
+    let tableExprData = (plcMap,attMap,dataPath,initialQuery, extColNames, typeList, taskMap, zip3 allTableNames finalTableExpr sqlQueries)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

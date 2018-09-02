@@ -22,6 +22,7 @@ import Data.Void
 import AexprQ
 import ErrorMsg
 import ExprQ
+import PolicyQ
 import QueryQ
 import ReaderQ
 
@@ -38,7 +39,7 @@ defaultOutputTableName = "output"
 ---------------------------------------------------------------------------------------------
 -- keywords
 allKeyWordList :: [String]
-allKeyWordList = ["return",
+allKeyWordList = ["return","cost","leak",
                "all", "none",
                "const","LN","exp","sqrt","root","scaleNorm","zeroSens","lp","l0","linf","prod","inv","div","min","max","sigmoid","tauoid",
                "selectMin","selectMax","selectProd","selectL"]
@@ -536,6 +537,53 @@ function = do
   let as = concat ass
   return (NF (M.fromList as) b)
 
+------------------------------------------
+---- Parsing policy and attacker file ----
+------------------------------------------
+policy :: Parser (M.Map String VarState, Double)
+policy = do
+  keyWord "leak"
+  ps <- many varStateStmt
+  keyWord "cost"
+  c <- float
+  return (M.fromList ps, c)
+
+attacker :: Parser (M.Map String VarState)
+attacker = do
+  ps <- many varStateStmt
+  return (M.fromList ps)
+
+varStateStmt :: Parser (String,VarState)
+varStateStmt = do
+  a <- varName
+  b <- varStateVal
+  void (delim)
+  return (a,b)
+
+varStateVal :: Parser VarState
+varStateVal = varStateExact
+  <|> varStateApprox
+  <|> varStateRange
+  <|> varStateNone
+
+varStateExact = do
+  keyWord "exact"
+  return Exact
+
+varStateApprox = do
+  keyWord "approx"
+  r  <- float
+  return (Approx r)
+
+varStateRange = do
+  keyWord "range"
+  lb <- float
+  ub <- float
+  return (Range lb ub)
+
+varStateNone = do
+  keyWord "none"
+  return None
 
 ------------------------------
 ---- Symbols and keywords ----
@@ -666,6 +714,8 @@ parseFromFile p err s = fmap (parseData p (err s)) (readInput s)
 parseTestFromFile :: (Show a, ShowErrorComponent e) => Parsec e String a -> FilePath -> IO ()
 parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
 
+parsePolicyFromFile fileName = parseFromFile policy error_parsePolicy fileName
+parseAttackerFromFile fileName = parseFromFile attacker error_parseAttacker fileName
 parseNormFromFile fileName = parseFromFile norm error_parseNorm fileName
 parseSqlQueryFromFile fileName = parseFromFile sqlQueries error_parseSqlQuery fileName
 

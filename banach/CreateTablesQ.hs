@@ -14,14 +14,18 @@ import qualified Data.Set as S
 sensRows :: String -> String
 sensRows tableName = tableName ++ "_sensRows"
 
-createTableSql :: String -> String -> IO [String]
-createTableSql dataPath tableName = do
+createTableSql :: Bool -> String -> String -> IO [String]
+createTableSql policy dataPath tableName = do
   let dbFileName = dataPath ++ tableName ++ ".db"
   (colNames, tbl) <- readDB dbFileName
   let numRows = length tbl
   let sensTableName = sensRows tableName
-  let normFileName = dataPath ++ tableName ++ ".nrm"
-  ((sensRows, _), _) <- parseNormFromFile normFileName
+  sensRows <- if policy then do return ([0..])
+              else do
+                  let normFileName = dataPath ++ tableName ++ ".nrm"
+                  ((sR, _), _) <- parseNormFromFile normFileName
+                  return sR
+
   let sensRowsSet = S.fromList (take numRows sensRows)
   return [
     "DROP TABLE IF EXISTS " ++ tableName,
@@ -31,8 +35,8 @@ createTableSql dataPath tableName = do
     "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
     "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
 
-createTableSqlTyped :: String -> String -> [(String,[(String, String)])] -> IO [String]
-createTableSqlTyped dataPath tableName types = do
+createTableSqlTyped :: Bool -> String -> String -> [(String,[(String, String)])] -> IO [String]
+createTableSqlTyped policy dataPath tableName types = do
   let typeMap = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) types
   let dbFileName = dataPath ++ tableName ++ ".db"
   (colNames, tbl) <- readDBString dbFileName
@@ -51,8 +55,12 @@ createTableSqlTyped dataPath tableName types = do
 
   let numRows = length tbl
   let sensTableName = sensRows tableName
-  let normFileName = dataPath ++ tableName ++ ".nrm"
-  ((sensRows, _), _) <- parseNormFromFile normFileName
+  sensRows <- if policy then do return ([0..])
+              else do
+                  let normFileName = dataPath ++ tableName ++ ".nrm"
+                  ((sR, _), _) <- parseNormFromFile normFileName
+                  return sR
+
   let sensRowsSet = S.fromList (take numRows sensRows)
   let colTypes = map (\col -> typeMap ! tableName ! col) colNames
   return [

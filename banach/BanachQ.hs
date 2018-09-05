@@ -804,7 +804,8 @@ performAnalyses args epsilon beta dataPath initialQuery colNames typeMap taskMap
   let uniqueTableNames = nub tableNames
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
-  ctss <- forM uniqueTableNames $ \ t -> do cts <- createTableSqlTyped dataPath t typeMap
+  let policy = (policyAnalysis args)
+  ctss <- forM uniqueTableNames $ \ t -> do cts <- createTableSqlTyped policy dataPath t typeMap
                                             when debug $ putStr (concatMap (++ ";\n") cts)
                                             return cts
   when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)

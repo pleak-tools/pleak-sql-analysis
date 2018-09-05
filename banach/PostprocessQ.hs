@@ -79,7 +79,7 @@ performPolicyAnalysis args dataPath initialQuery colNames typeMap taskMap tableE
   finalError <- repeatUntilGetBestError step initialError 0.0 beta
   let expectedCost = delta * (sum cs)
 
-  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (product pr_pre), show (product pr_post), show expectedCost, show finalError]
+  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show ((product pr_pre)  * 100.0), show ((product pr_post)  * 100.0), show expectedCost, show finalError]
 
 repeatUntilGetBestError :: (Maybe Double -> IO Double) -> Double -> Double -> Double -> IO Double
 repeatUntilGetBestError step prevError betaMin betaMax = do

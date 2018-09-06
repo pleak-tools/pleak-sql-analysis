@@ -7,14 +7,25 @@ import qualified Banach as B
 import ProgramOptions
 import CreateTablesQ
 import DatabaseQ
+import PolicyQ (VarState(..))
 
 import qualified Prelude as P
 import qualified Data.List as L
 import Prelude hiding (fromInteger,fromRational,(!!),(+),(-),(*),(/),(**),(==),(/=),(<=),(>=),(<),(>),exp,abs,sum,product,minimum,maximum)
 import Data.List hiding ((!!),sum,product,minimum,maximum)
 import Data.List.Split
+import qualified Data.Map as M
 import Text.Printf
 import Control.Monad
+import System.Process
+import qualified System.IO.Strict as StrictIO
+
+combinedSensitivityTmpFileName = "_combined_sensitivity.tmp"
+
+readTableToSensitivityMap :: IO (M.Map String Double)
+readTableToSensitivityMap = do
+  s <- StrictIO.readFile combinedSensitivityTmpFileName
+  return $ M.fromList $ map ((\ [w1,w2] -> (w1, read w2 :: Double)) . words) $ lines s
 
 fromInteger :: Integer -> Double
 fromInteger = P.fromInteger
@@ -389,12 +400,12 @@ linfnorm = maximumQ . map absQ
 linfnormT :: ExprQ -> ExprQ
 linfnormT = maximumT . absQ
 
-analyzeExprQ :: [String] -> Expr -> AnalysisResult
+analyzeExprQ :: [String] -> [VarState] -> Expr -> AnalysisResult
 analyzeExprQ colNames = analyzeExpr (map VarQ colNames)
 
-analyzeExpr :: [ExprQ] -> Expr -> AnalysisResult
-analyzeExpr row expr = res where
- res =
+analyzeExpr :: [ExprQ] -> [VarState] -> Expr -> AnalysisResult
+analyzeExpr row varStates = ae where
+ ae expr =
   case expr of
     Prec (B.AR fx (B.SUB subg subBeta) (B.SUB sdsg sdsBeta)) -> AR {fx = Q fx, subf = SUB (Q . subg) subBeta, sdsf = SUB (Q . subg) subBeta,
                                                                     gub = if subBeta > 0 then infinity else subg 0,
@@ -408,10 +419,12 @@ analyzeExpr row expr = res where
           gsens = 0}
     Power i r ->
       let x = row !! i
+          vs = varStates !! i
       in if r == 1
            then aR {fx = x,
                     subf = SUB (\ beta -> ifThenElse (abs x >= 1 / beta) (abs x) (exp (beta * abs x - 1) / beta)) 0,
                     sdsf = SUB (const (Q 1)) 0,
+                    gub = case vs of Range lb ub -> max (abs lb) ub; _ -> infinity,
                     gsens = 1}
            else if r >= 1
              then if x > 0
@@ -421,7 +434,7 @@ analyzeExpr row expr = res where
                    else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
              else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
     ComposePower e1 r ->
-      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) gub _ = analyzeExpr row e1
+      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) gub _ = ae e1
           beta3 = (r-1)*beta1 + beta2
           b1 = if beta3 > 0 then beta1 / beta3 else 1/r
           b2 = if beta3 > 0 then beta2 / beta3 else 1/r
@@ -439,7 +452,7 @@ analyzeExpr row expr = res where
              subf = SUB (const $ exp (r * x)) (abs r),
              sdsf = SUB (const $ abs r * exp (r * x)) (abs r)}
     ComposeExp r e1 ->
-      let AR gx _ (SUB sdsf1g beta2) gub gsens = analyzeExpr row e1
+      let AR gx _ (SUB sdsf1g beta2) gub gsens = ae e1
           b = gsens
           f_x = exp (r * gx)
       in AR {fx = f_x,
@@ -455,7 +468,7 @@ analyzeExpr row expr = res where
              subf = SUB (const z) a',
              sdsf = SUB (const $ a' * y / (y+1)**2) a'}
     ComposeSigmoid a c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = analyzeExpr row e1
+      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
           b = gsens
           y = exp (a * (gx - c))
           z = y / (y + 1)
@@ -474,7 +487,7 @@ analyzeExpr row expr = res where
              subf = SUB (const (Q 1)) 0,
              sdsf = SUB (const $ aa * y / (y+1)**2) a'}
     ComposeSigmoidPrecise aa ab c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = analyzeExpr row e1
+      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
           b = gsens
           y = exp (ab * (gx - c))
           y' = exp (aa * (gx - c))
@@ -493,7 +506,7 @@ analyzeExpr row expr = res where
              subf = SUB (const z) a',
              sdsf = SUB (const $ a' * z) a'}
     ComposeTauoid a c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = analyzeExpr row e1
+      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
           b = gsens
           y1 = exp ((-a) * (gx - c))
           y2 = exp (a * (gx - c))
@@ -515,7 +528,7 @@ analyzeExpr row expr = res where
              subf = SUB (const (Q 1)) 0,
              sdsf = SUB (const $ aa * 2 / (y1 + y2)) a'}
     ComposeTauoidPrecise aa ab c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = analyzeExpr row e1
+      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
           b = gsens
           y1 = exp ((-ab) * (gx - c))
           y2 = exp (ab * (gx - c))
@@ -548,14 +561,14 @@ analyzeExpr row expr = res where
           gub = c,
           gsens = 0}
     ScaleNorm a e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeExpr row e1
+      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = ae e1
       in aR {fx = fx1,
              subf = SUB (\ beta -> subf1g (beta*a)) (subf1beta/a),
              sdsf = SUB (\ beta -> sdsf1g (beta*a) / a) (sdsf1beta/a),
              gub = gub,
              gsens = gsens/a}
     ZeroSens e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub _ = analyzeExpr row e1
+      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub _ = ae e1
       in aR {fx = fx1,
              subf = SUB (const fx1) 0,
              sdsf = SUB (const (Q 0)) 0,
@@ -575,14 +588,14 @@ analyzeExpr row expr = res where
              subf = SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
              sdsf = SUB (const (Q 1)) 0,
              gsens = 1}
-    Prod es -> combineArsProd $ map (analyzeExpr row) es
-    Prod2 es -> combineArsProd2 $ map (analyzeExpr row) es
-    Min es -> combineArsMin $ map (analyzeExpr row) es
-    Max es -> combineArsMax $ map (analyzeExpr row) es
-    ComposeL p es -> combineArsL p $ map (analyzeExpr row) es
-    Sump p es -> combineArsSump p $ map (analyzeExpr row) es
-    SumInf es -> combineArsSumInf $ map (analyzeExpr row) es
-    Sum2 es -> combineArsSum2 $ map (analyzeExpr row) es
+    Prod es -> combineArsProd $ map ae es
+    Prod2 es -> combineArsProd2 $ map ae es
+    Min es -> combineArsMin $ map ae es
+    Max es -> combineArsMax $ map ae es
+    ComposeL p es -> combineArsL p $ map ae es
+    Sump p es -> combineArsSump p $ map ae es
+    SumInf es -> combineArsSumInf $ map ae es
+    Sum2 es -> combineArsSum2 $ map ae es
 
 combineArsProd :: [AnalysisResult] -> AnalysisResult
 combineArsProd ars =
@@ -721,7 +734,9 @@ combineArsSumpT :: Double -> AnalysisResult -> AnalysisResult
 combineArsSumpT p ar =
   aR {fx = sumT (fx ar),
       subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
-      sdsf = SUB (\ beta -> lqnormT p (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+      sdsf = SUB (\ beta -> lqnormT p (subg (sdsf ar) beta)) (subBeta (sdsf ar)),
+      gub = gub ar,
+      gsens = gsens ar}
 
 combineArsSumInf :: [AnalysisResult] -> AnalysisResult
 combineArsSumInf ars =
@@ -742,7 +757,9 @@ combineArsSumInfT :: AnalysisResult -> AnalysisResult
 combineArsSumInfT ar =
   aR {fx = sumT (fx ar),
       subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
-      sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+      sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar)),
+      gub = gub ar,
+      gsens = gsens ar}
 
 combineArsSum2 :: [AnalysisResult] -> AnalysisResult
 combineArsSum2 ars =
@@ -757,8 +774,8 @@ combineArsSum2 ars =
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
 
-analyzeTableExpr :: [String] -> String -> TableExpr -> AnalysisResult
-analyzeTableExpr cols srt te =
+analyzeTableExpr :: [String] -> [VarState] -> String -> TableExpr -> AnalysisResult
+analyzeTableExpr cols varStates srt te =
   case te of
     SelectMin (expr : _) -> oneStepCombine combineArsMinT expr
     SelectMax (expr : _) -> oneStepCombine combineArsMaxT expr
@@ -769,13 +786,15 @@ analyzeTableExpr cols srt te =
     fixedArg arg expr arg' | arg' P.== arg = expr
     oneStepCombine combine expr =
       let
-        AR fx _ (SUB sdsg subBeta) _ _ = combine (analyzeExprQ cols expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens = combine (analyzeExprQ cols varStates expr)
       in
         aR {fx = fx,
-            sdsf = SUB (\ beta -> sdsg beta `Where` (srt ++ ".sensitive")) subBeta}
+            sdsf = SUB (\ beta -> sdsg beta `Where` (srt ++ ".sensitive")) subBeta,
+            gub = gub,
+            gsens = gsens}
     twoStepCombine combine_p combine_inf expr =
       let
-        AR fx _ (SUB sdsg subBeta) _ _ = combine_inf (analyzeExprQ cols expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens = combine_inf (analyzeExprQ cols varStates expr)
         AR _ _ (SUB _ subBeta2) _ _ = combine_p $ AR {sdsf = SUB undefined subBeta}
       in aR {fx = fx,
              sdsf = SUB (\ beta ->
@@ -785,20 +804,22 @@ analyzeTableExpr cols srt te =
                              mainquery = sdsg2 beta
                            in
                              Subquery mainquery subquery)
-                        subBeta2}
+                        subBeta2,
+             gub = gub,
+             gsens = gsens}
 
 -- SELECT expr FROM fr WHERE wh
 -- (colNames !! i) is the name of the variable with number i in expr
 -- fr may contain multiple tables and aliases, e.g. "t as t1, t as t2, t3"
 -- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
 -- srt is the name of the sensitive rows table
-analyzeTableExprQ :: String -> String -> String -> [String] -> TableExpr -> AnalysisResult
-analyzeTableExprQ fr wh srt colNames te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames srt te
+analyzeTableExprQ :: String -> String -> String -> [String] -> [VarState] -> TableExpr -> AnalysisResult
+analyzeTableExprQ fr wh srt colNames varStates te =
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames varStates srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
 
-performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, TableExpr, (String,String,String))] -> IO (Double,[(String, [(String, (Double, Double))])])
-performAnalyses args epsilon beta dataPath initialQuery colNames typeMap taskMap tableExprData = do
+performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> IO (Double,[(String, [(String, (Double, Double))])])
+performAnalyses args epsilon beta dataPath initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap = do
   let debug = not (alternative args)
   let (tableNames,_,_) = unzip3 tableExprData
   let uniqueTableNames = nub tableNames
@@ -821,12 +842,21 @@ performAnalyses args epsilon beta dataPath initialQuery colNames typeMap taskMap
   --forM_ tableExprData $ \ (tableName, te, sqlQuery) -> do
   --  let [_, fromWhere] = splitOn " FROM " sqlQuery
   --  let [fromPart, wherePart] = splitOn " WHERE " fromWhere
-  res0 <- forM tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) -> do
+  let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
+  when debug $ printf "colNames = %s\n" (show colNames)
+  when debug $ printf "varStates = %s\n" (show varStates)
+  res00 <- forM tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
-    result <- performAnalysis args epsilon beta fromPart wherePart tableName colNames te
+    when debug $ print te
+    result <- performAnalysis args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te
     return (tableName, result)
+
+  when (combinedSens args) $ putStrLn "\n-----------------\nCombined sensitivities:"
+  res0 <- forM res00 $ \ (tableName, (b,sds,combinedRes)) -> do
+    when (combinedSens args) $ putStr combinedRes
+    return (tableName,(b,sds))
 
   let taskAggr0 = map (\(taskName,is,b) -> (taskName, B.sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0)) $ map (res0 !!) is, b)) taskMap
 
@@ -841,10 +871,10 @@ performAnalyses args epsilon beta dataPath initialQuery colNames typeMap taskMap
   return (qr,taskAggr)
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> TableExpr -> IO (Double,Double)
-performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames te = do
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr -> IO (Double,Double,String)
+performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te = do
     let debug = not (alternative args)
-    let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames te
+    let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames varStates te
     when debug $putStrLn "Analysis result:"
     when debug $print ar
     --let epsilon = getEpsilon args
@@ -865,5 +895,29 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames te 
     when debug $ putStrLn (show sds ++ ";")
     sds_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show sds) else (do return 0)
     when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" sds_value
-    return (b,sds_value)
+    combinedRes <- if combinedSens args
+      then do
+        printf "./sqlsa --combined-sens%s -B %f -S %f %s %s\n" (if null sensitiveVarList then "" else " -f " ++ intercalate "," sensitiveVarList) beta (gub ar) (inputFp1 args) (inputFp2 args)
+        let sqlsaArgs = ("--combined-sens" :
+                         (if null sensitiveVarList then id else ("-f" :) . (intercalate "," sensitiveVarList :))
+                         ["-B", show beta, "-S", show (gub ar), inputFp1 args, inputFp2 args])
+        callProcess "./sqlsa" sqlsaArgs
+        localSensMap <- readTableToSensitivityMap
+        callProcess "./sqlsa" ("--count-query" : sqlsaArgs)
+        localCountSensMap <- readTableToSensitivityMap
+        printf "localSensMap = %s\n" (show localSensMap)
+        printf "localCountSensMap = %s\n" (show localCountSensMap)
+        let localSens = localSensMap M.! tableName
+        let localCountSens = localCountSensMap M.! tableName
+        let Just distanceG = getG args
+        let ls = localSens / distanceG -- local sensitivity scaled to the combined distance
+        let gsb = localCountSens * gsens ar / exp (beta * distanceG)
+        let combinedSens = maximum [ls, sds_value, gsb]
+        let res = printf "table=%s gub=%0.6f gsens=%0.6f localSens=%0.6f localCountSens=%0.6f ls=%0.6f sds=%0.6f gsb=%0.6f combinedSens=%0.6f\n"
+                         tableName (gub ar) (gsens ar) localSens localCountSens ls sds_value gsb combinedSens
+        putStr res
+        return res
+      else
+        return ""
+    return (b,sds_value,combinedRes)
 

@@ -16,6 +16,7 @@ import Data.Char
 import Data.Either
 import Data.Maybe
 import Data.List
+import System.IO
 import Debug.Trace
 import Text.Printf
 import Database.HsSqlPpp.Catalog
@@ -33,13 +34,14 @@ type Database = [Table]
 -- type of derivatives
 type DerT = Double
 
+combinedSensitivityTmpFileName = "_combined_sensitivity.tmp"
 
 sqlDialect = postgresDialect
 prettyFlags = PrettyFlags {ppDialect = sqlDialect}
 showScalarExpr = TL.unpack . prettyScalarExpr prettyFlags
 showQuery = TL.unpack . prettyQueryExpr prettyFlags
 
-sumExprBound = 1000
+--sumExprBound = 1000
 
 minExprBound = 0
 maxExprBound = 1000
@@ -47,7 +49,8 @@ maxExprBound = 1000
 data NoiseParameters =
   NoiseParameters {
     noise_epsilon :: Double,
-    noise_b2 :: Double -- must be in the interval (0,1)
+    noise_b2 :: Double, -- must be in the interval (0,1)
+    noise_beta :: Maybe Double
   }
 
 noise_b1 :: NoiseParameters -> Double
@@ -96,8 +99,9 @@ noise_Cauchy =
 
 noise_GenCauchy noise_Cauchy_gamma =
   NoiseDistribution {
-    distrBeta = \ np -> noise_b1 np * noise_epsilon np / (noise_Cauchy_gamma + 1),
-    distrSmNlm = \ np -> (noise_Cauchy_gamma + 1) / (noise_b2 np * noise_epsilon np),
+    distrBeta = \ np -> case noise_beta np of Just beta -> beta; Nothing -> noise_b1 np * noise_epsilon np / (noise_Cauchy_gamma + 1),
+    distrSmNlm = \ np -> case noise_beta np of Just beta -> noise_b1 np / (noise_b2 np * beta)
+                                               Nothing -> (noise_Cauchy_gamma + 1) / (noise_b2 np * noise_epsilon np),
     distrC1 = noise_Cauchy_C1,
     distrC2 = noise_Cauchy_C2,
     distrQuantiles = compute_generalized_Cauchy_distribution_quantiles noise_Cauchy_gamma
@@ -318,21 +322,45 @@ performLocalSensitivityAnalysis args schema query = do
     return (tblName, cols, types)
   let origTableCols = Map.fromList $ zip tblNames colss
   let origTableTypes = Map.fromList $ zip tblNames typess
-  let np = NoiseParameters { noise_epsilon = 1, noise_b2 = 0.5 }
+  let np = NoiseParameters { noise_epsilon = 1, noise_b2 = 0.5, noise_beta = getBeta args }
+  printf "beta = %s\n" (show (noise_beta np))
+  (writeCombinedOutput, maybeTmpHandle) <-
+    if combinedSens args
+      then do
+        h <- openFile combinedSensitivityTmpFileName WriteMode
+        return (hPutStrLn h, Just h)
+      else
+        return (const (return ()), Nothing)
   --forM_ [0.1,0.2..0.9] $ \ b2 -> do
   --  _ <- performLocalSensitivityAnalysis' debug np{noise_b2 = b2} origTableCols query
   --  return ()
-  _ <- performLocalSensitivityAnalysis' args np origTableCols origTableTypes query
+  _ <- performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes query
+  case maybeTmpHandle of
+    Just h -> hClose h
+    Nothing -> return ()
   return ()
 
-performLocalSensitivityAnalysis' :: ProgramOptions -> NoiseParameters -> Map String [String] -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [DerT])])])
-performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
+parseCommaSeparatedList :: String -> [String]
+parseCommaSeparatedList [] = [] where
+parseCommaSeparatedList s = f [] s where
+  f [] [] = []
+  f a [] = [reverse a]
+  f a (',':s) = reverse a : f [] s
+  f a (c:s) = f (c:a) s
+
+performLocalSensitivityAnalysis' :: ProgramOptions -> (String -> IO ()) -> NoiseParameters -> Map String [String] -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [DerT])])])
+performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes query = do
   let debug = debugVerbose args
   putStrLn "performLocalSensitivityAnalysis'"
   putStrLn (showQuery query)
 
+  let sumExprBound = getSumExprBound args
+
+  let forbiddenCols = Set.fromList $ parseCommaSeparatedList (forbidden args)
+  printf "forbiddenCols = %s\n" (show forbiddenCols)
+
   putStrLn "Processing FROM clause"
-  (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,origTableIds,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables) <- do
+  (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,origTableIds,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables,forbiddenAddrs) <- do
     let tmpTableName = ('$' :)
     (tableNames, origTableNames, colNamess, colTypess, derss) <- fmap unzip5 $ forM (selTref query) $ \ tr -> do
       case tr of
@@ -349,7 +377,7 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
           let newTblName = ncStr newTblName0
           putStrLn "Processing subquery"
           putStrLn "==================="
-          (subColNames, res, ders) <- performLocalSensitivityAnalysis' args np origTableCols origTableTypes subquery
+          (subColNames, res, ders) <- performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes subquery
           putStrLn "============================"
           putStrLn "Finished processing subquery"
           printf "-> %s\n" newTblName
@@ -390,14 +418,20 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
     let nmcsToAddr ns = let (ti,ci) = nmcsToColId ns in (tblAddr ! ti) + ci
     let totalNumCols = tblAddr ! numTables
     let addrToTbl = listArray (0,totalNumCols-1) (concatMap (\ i -> replicate (numCols i) i) [0..numTables-1]) :: UArray Int Int
-    let addrToTblCol = listArray (0,totalNumCols-1) [(t,c) | (t,cs) <- zip tableNames colNamess, c <- cs] :: Array Int (String,String)
+    let addrToTblColList = [(t,c) | (t,cs) <- zip tableNames colNamess, c <- cs]
+    let addrToTblCol = listArray (0,totalNumCols-1) addrToTblColList :: Array Int (String,String)
+    let forbiddenAddrs = Set.fromList [i | (i,(t,c)) <- zip [0..] addrToTblColList, (t ++ '.' : c) `Set.member` forbiddenCols]
+    putStr "forbiddenAddrs: "
+    print forbiddenAddrs
     let addrToColType = listArray (0,totalNumCols-1) [ct | (t,cts) <- zip tableNames colTypess, ct <- cts] :: Array Int String
     putStr "addrToTblCol: "
     print addrToTblCol
     putStr "addrToColType: "
     print addrToColType
     colEq <- newArray ((0,0), (totalNumCols-1,totalNumCols-1)) False :: IO (IOUArray (Int,Int) Bool)
-    return (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,origTableIds,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables)
+    return (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,origTableIds,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables,forbiddenAddrs)
+
+  let containsForbiddenAddrs as = not $ Set.null (Set.intersection (Set.fromList as) forbiddenAddrs)
 
   putStrLn "Processing SELECT clause"
   let
@@ -415,11 +449,14 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
                   case si of
                     SelectItem _ (App _ ns [e1]) _ ->
                       Left $
-                        case aggrOp ns of
-                          "count" -> (NumberLit undefined "1", AggrCount)
-                          "sum" -> (e1, AggrSum)
-                          "min" -> (e1, AggrMin)
-                          "max" -> (e1, AggrMax)
+                        if countQuery args
+                          then (NumberLit undefined "1", AggrCount)
+                          else
+                            case aggrOp ns of
+                              "count" -> (NumberLit undefined "1", AggrCount)
+                              "sum" -> (e1, AggrSum)
+                              "min" -> (e1, AggrMin)
+                              "max" -> (e1, AggrMax)
                     SelectItem _ e1 _ ->
                       Right $
                         e1
@@ -500,9 +537,8 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
         when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
         return smnls
     else do
-      let aggrExprBound = fromIntegral $
-                            case aggrOps of [AggrCount] -> 1
-                                            _           -> sumExprBound
+      let aggrExprBound = case aggrOps of [AggrCount] -> 1
+                                          _           -> sumExprBound
 
       printf "Selected column names: %s\n" (show selectedColNames)
 
@@ -512,7 +548,8 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
         let tables = nub $ map (addrToTbl !) as
         print as
         print tables
-        return (se,tables)
+        let se' = if containsForbiddenAddrs as then NumberLit undefined (show sumExprBound) else se
+        return (se',tables)
 
       putStrLn "Processing WHERE clause"
 
@@ -523,7 +560,8 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
               BinaryOp _ n (Identifier _ n1) (Identifier _ n2) | nmcs n == ["="] -> do
                 let na1 = nmcsToAddr $ nmcs n1
                 let na2 = nmcsToAddr $ nmcs n2
-                writeArray colEq (na1,na2) True :: IO ()
+                unless (containsForbiddenAddrs [na1,na2]) $
+                  writeArray colEq (na1,na2) True :: IO ()
                 return []
               BinaryOp _ n w1 w2 | nmcs n == ["and"] -> do
                 r1 <- processWhere w1
@@ -535,7 +573,7 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
                 let tables = nub $ map (addrToTbl !) as
                 print as
                 print tables
-                return [(w,tables)]
+                return $ if containsForbiddenAddrs as then [] else [(w,tables)]
         let wheres = extractWhereExpr query
         wheresAndTables <- fmap concat $ forM wheres processWhere
         return wheresAndTables
@@ -780,7 +818,11 @@ performLocalSensitivityAnalysis' args np origTableCols origTableTypes query = do
         let maxd:maxsmss = if null maxs then replicate (1 + length noise_distributions) 0 else maxs
         let smnls = zipWith (*) maxsmss distr_smnlms
         when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
-        when canComputeSmoothNoiseLevel $ printf "smooth sensitivity (with gamma = 4) w.r.t. table %s: %0.3f\n" (fst (head dtncs)) (maxsmss !! 1)
+        when canComputeSmoothNoiseLevel $ do
+          let table = fst (head dtncs)
+          let sens = maxsmss !! 1
+          printf "smooth sensitivity (with gamma = 4) w.r.t. table %s: %0.3f\n" table sens
+          writeCombinedOutput (table ++ " " ++ show sens)
         return $ if null smnls then replicate (length noise_distributions) 0 else smnls
       let noiseLevels = map maximum nlss
       let nls2 = noiseLevels

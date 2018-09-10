@@ -1,0 +1,4 @@
+0 1 2 3 4
+c2;
+d2 = scaleNorm 1.0 c2;
+return lp 1.0 d2;

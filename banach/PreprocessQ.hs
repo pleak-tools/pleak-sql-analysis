@@ -205,7 +205,7 @@ readTableData policy queryPath attMap typeMap tableNames tableAliases = do
 
 
 -- putting everything together
-getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> IO (M.Map TableName (M.Map String VarState, Double), M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [(TableName, B.TableExpr,(String,String,String))])
+getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> IO (M.Map TableName (M.Map String VarState, Double), M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, B.TableExpr,(String,String,String))])
 getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker = do
 
     when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
@@ -240,7 +240,8 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker = do
     traceIOIfDebug debug $ "Task map:            " ++ show taskMap
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
-    attMap <- if policy then parseAttackerFromFile inputAttacker else return M.empty
+    --attMap <- if policy then parseAttackerFromFile inputAttacker else return M.empty
+    attMap <- parseAttackerFromFile inputAttacker
     (inputTableMap, plcMap) <- readTableData policy dataPath attMap typeMap inputTableNames inputTableAliases
 
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
@@ -323,7 +324,7 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker = do
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
     let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ whAll
-    let tableExprData = (plcMap,attMap,dataPath,initialQuery, extColNames, typeList, taskMap, zip3 allTableNames finalTableExpr sqlQueries)
+    let tableExprData = (plcMap,attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, zip3 allTableNames finalTableExpr sqlQueries)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

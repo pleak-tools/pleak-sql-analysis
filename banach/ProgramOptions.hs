@@ -11,6 +11,7 @@ data ProgramOptions
     inputFp2         :: FilePath,
     inputFp3         :: FilePath,
     alternative      :: Bool,
+    combinedSens     :: Bool,
     policyAnalysis   :: Bool,
     generateQueries  :: Bool,
     dbSensitivity    :: Bool,
@@ -18,7 +19,8 @@ data ProgramOptions
     dbConnString     :: String,
     delimiter        :: String,
     getEpsilon       :: Double,
-    getBeta          :: Maybe Double
+    getBeta          :: Maybe Double,
+    getG             :: Maybe Double
   }
 
 programArgs :: Parser ProgramOptions
@@ -27,6 +29,7 @@ programArgs = ProgramOptions
   <*> strArgument (metavar "QUERY INPUT" <> help "query input file")
   <*> strArgument (metavar "ATTACKER INPUT" <> help "attacker description input file")
   <*> switch (short 'a' <> long "alternative" <> hidden <> help "Use alternative input and output format")
+  <*> switch (short 'c' <> long "combined-sens" <> hidden <> help "Call local sensitivity analyzer (must be at ./sqlsa) and combine the results of the two analyzers")
   <*> switch (short 'p' <> long "policy-analysis" <> hidden <> help "Analyse privacy treating epsilon in [0,1] as attacker's guessing probability")
   <*> switch (short 'Q' <> long "queries" <> hidden <> help "Generate SQL queries for computing sensitivity instead of actually computing it")
   <*> switch (short 'D' <> long "db-sensitivity" <> hidden <> help "Send the generated query for computing sensitivity automatically to the database")
@@ -35,6 +38,7 @@ programArgs = ProgramOptions
   <*> strOption (short 'd' <> long "delimiter" <> value " " <> help "Specify data .csv file delimiter (by default a whitespace)")
   <*> option auto (short 'e' <> long "epsilon" <> value 1.0 <> help "Specify epsilon (default is 1)")
   <*> optional (option auto (short 'B' <> long "beta" <> help "Specify beta (default is to choose automatically)"))
+  <*> optional (option auto (short 'G' <> long "distance-G" <> help "Specify G (the distance between two databases that differ by exactly one row)"))
 
 getProgramOptions :: IO ProgramOptions
 getProgramOptions = execParser opts

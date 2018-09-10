@@ -17,13 +17,12 @@ traceIOIfDebug debug msg = do
     if debug then traceIO msg
     else return ()
 
-performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> IO ()
-performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap tableExprData = do
+performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> IO ()
+performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap = do
 
   let epsilon = getEpsilon args
   let beta    = getBeta args
-  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap tableExprData
-
+  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap
   let taskStr = if alternative args then
           map (\(taskName,res) -> taskName ++ [B.unitSeparator] ++
                   (intercalate [B.unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show qr, show (sds/b), show ((sds/b) / qr * 100)]) res)) taskAggr
@@ -72,7 +71,8 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   --traceIO ("Pr_pre: " ++ (show pr_pre))
   --traceIO ("Pr_post: " ++ (show pr_post))
 
-  let step = performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData epsilon
+  let step = performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon
+
   let beta = case fixedBeta of {Nothing -> B.defaultBeta; Just beta -> beta}
   initialError <- step (Just beta)
   
@@ -102,10 +102,10 @@ repeatUntilGetBestError step prevError betaMin betaMax = do
         else do
             return nextError
 
-performPolicyAnalysisStep :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> Double -> Maybe Double -> IO Double
-performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData epsilon beta = do
+performPolicyAnalysisStep :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> Double -> Maybe Double -> IO Double
+performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon beta = do
 
-  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap tableExprData
+  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap
   let resultMap = M.fromList $ snd (last taskAggr)
   let (b,sds) = resultMap ! B.resultForAllTables
   let relativeError = ((sds/b) / qr * 100)

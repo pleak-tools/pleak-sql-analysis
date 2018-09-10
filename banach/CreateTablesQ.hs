@@ -14,10 +14,10 @@ import qualified Data.Set as S
 sensRows :: String -> String
 sensRows tableName = tableName ++ "_sensRows"
 
-createTableSql :: Bool -> String -> String -> IO [String]
-createTableSql policy dataPath tableName = do
+createTableSql :: Bool -> String -> String -> String -> IO [String]
+createTableSql policy dataPath separator tableName = do
   let dbFileName = dataPath ++ tableName ++ ".db"
-  (colNames, tbl) <- readDB dbFileName
+  (colNames, tbl) <- readDB dbFileName separator
   let numRows = length tbl
   let sensTableName = sensRows tableName
   sensRows <- if policy then do return ([0..])
@@ -35,11 +35,11 @@ createTableSql policy dataPath tableName = do
     "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
     "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
 
-createTableSqlTyped :: Bool -> String -> String -> [(String,[(String, String)])] -> IO [String]
-createTableSqlTyped policy dataPath tableName types = do
+createTableSqlTyped :: Bool -> String -> String -> String -> [(String,[(String, String)])] -> IO [String]
+createTableSqlTyped policy dataPath separator tableName types = do
   let typeMap = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) types
   let dbFileName = dataPath ++ tableName ++ ".db"
-  (colNames, tbl) <- readDBString dbFileName
+  (colNames, tbl) <- readDBString dbFileName separator
 
   -- TODO this piece is used only for testing, can be removed if does not work
   --(_, boolCols, intCols, dblCols, strCols, boolIndices, intIndices, dblIndices, stringIndices) <- readDBDifferentTypes dbFileName tableName typeMap

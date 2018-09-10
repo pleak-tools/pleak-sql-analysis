@@ -16,6 +16,7 @@ data ProgramOptions
     dbSensitivity    :: Bool,
     dbCreateTables   :: Bool,
     dbConnString     :: String,
+    delimiter        :: String,
     getEpsilon       :: Double,
     getBeta          :: Maybe Double
   }
@@ -31,6 +32,7 @@ programArgs = ProgramOptions
   <*> switch (short 'D' <> long "db-sensitivity" <> hidden <> help "Send the generated query for computing sensitivity automatically to the database")
   <*> switch (long "db-create-tables" <> hidden <> help "Create the required tables in the database using the data in input files")
   <*> strOption (short 'C' <> long "db-connection" <> value "dbname=banach" <> help "Specify database connection string")
+  <*> strOption (short 'd' <> long "delimiter" <> value " " <> help "Specify data .csv file delimiter (by default a whitespace)")
   <*> option auto (short 'e' <> long "epsilon" <> value 1.0 <> help "Specify epsilon (default is 1)")
   <*> optional (option auto (short 'B' <> long "beta" <> help "Specify beta (default is to choose automatically)"))
 

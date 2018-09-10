@@ -3,6 +3,7 @@ module ReaderQ where
 import Data.List
 import Data.Bits
 import Data.Char
+import Data.List.Split
 import qualified Data.Map as M
 
 import ErrorMsg
@@ -48,22 +49,22 @@ readIntBoolString s =
                 Left  x -> fromIntegral $ fromEnum x
                 Right x -> hash s
 
-readDoubles :: String -> [[Double]]
-readDoubles s = fmap (map readIntBoolString . words) (lines s)
+readDoubles :: String -> String -> [[Double]]
+readDoubles s separator = fmap (map readIntBoolString . (splitOn separator)) (lines s)
 
 -- read the database from the file as a matrix of doubles
 -- read is as a single table row
-readDB :: String -> IO ([String], [[Double]])
-readDB dbFileName = do
+readDB :: String -> String -> IO ([String], [[Double]])
+readDB dbFileName separator = do
     (firstLine:ls) <- fmap lines (readInput dbFileName)
-    let varNames = words firstLine
-    let table    = readDoubles (foldr (\x y -> x ++ "\n" ++ y) "" ls)
+    let varNames = splitOn separator firstLine
+    let table    = readDoubles (foldr (\x y -> x ++ "\n" ++ y) "" ls) separator
     return (varNames, table)
 
 -- read the database from the file as several matrices of different data types
-readDBDifferentTypes :: String -> String -> M.Map String (M.Map String String) -> IO ([String], [[Bool]], [[Int]], [[Double]], [[String]], [Int], [Int], [Int], [Int])
-readDBDifferentTypes dbFileName tableName typeMap = do
-    (varNames, table) <- readDBString dbFileName
+readDBDifferentTypes :: String -> String -> String -> M.Map String (M.Map String String) -> IO ([String], [[Bool]], [[Int]], [[Double]], [[String]], [Int], [Int], [Int], [Int])
+readDBDifferentTypes dbFileName separator tableName typeMap = do
+    (varNames, table) <- readDBString dbFileName separator
     let varTypes = map (\x -> typeMap ! tableName ! x) varNames
 
     let filtBool   = map (\s -> map toLower (take 4 s) == "bool") varTypes
@@ -84,9 +85,9 @@ readDBDifferentTypes dbFileName tableName typeMap = do
 
     return (varNames, boolCols, intCols, dblCols, strCols, boolIndices, intIndices, dblIndices, stringIndices)
 
---readDifferentTypes :: [String] -> String -> [[Either Bool (Either Int (Either Double String))]]
---readDifferentTypes varTypes s =
---    fmap (\xs -> zipWith readSomeType varTypes (words xs)) (lines s)
+--readDifferentTypes :: [String] -> String -> String -> [[Either Bool (Either Int (Either Double String))]]
+--readDifferentTypes varTypes s separator =
+--    fmap (\xs -> zipWith readSomeType varTypes (splitOn separator xs)) (lines s)
 
 --readSomeType :: String -> String -> Either Bool (Either Int (Either Double String))
 --readSomeType varType s =
@@ -103,11 +104,11 @@ readDBDifferentTypes dbFileName tableName typeMap = do
 
 -- read the database from the file as a matrix of strings
 -- read is as a single table row
-readDBString :: String -> IO ([String], [[String]])
-readDBString dbFileName = do
+readDBString :: String -> String -> IO ([String], [[String]])
+readDBString dbFileName separator = do
     (firstLine:ls) <- fmap lines (readInput dbFileName)
-    let varNames = words firstLine
-    let table    = map words ls
+    let varNames = splitOn separator firstLine
+    let table    = map (splitOn separator) ls
     return (varNames, table)
 
 filterByKey :: [Bool] -> [b] -> [b]

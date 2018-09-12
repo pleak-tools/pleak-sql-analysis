@@ -403,6 +403,21 @@ linfnormT = maximumT . absQ
 analyzeExprQ :: [String] -> [VarState] -> Expr -> AnalysisResult
 analyzeExprQ colNames = analyzeExpr (map VarQ colNames)
 
+-- upper bound on the absolute value
+getGubFromVs :: VarState -> Double
+getGubFromVs (Range lb ub) = max (abs lb) ub
+getGubFromVs _             = infinity
+
+-- upper bound on the actual value
+getUbFromVs :: VarState -> Double
+getUbFromVs (Range lb ub) = ub
+getUbFromVs _             = infinity
+
+-- lower bound on the actual value
+getLbFromVs :: VarState -> Double
+getLbFromVs (Range lb ub) = lb
+getLbFromVs _             = -infinity
+
 analyzeExpr :: [ExprQ] -> [VarState] -> Expr -> AnalysisResult
 analyzeExpr row varStates = ae where
  ae expr =
@@ -420,21 +435,24 @@ analyzeExpr row varStates = ae where
     Power i r ->
       let x = row !! i
           vs = varStates !! i
+          x_ub = getGubFromVs vs
       in if r == 1
            then aR {fx = x,
                     subf = SUB (\ beta -> ifThenElse (abs x >= 1 / beta) (abs x) (exp (beta * abs x - 1) / beta)) 0,
                     sdsf = SUB (const (Q 1)) 0,
-                    gub = case vs of Range lb ub -> max (abs lb) ub; _ -> infinity,
+                    gub = x_ub,
                     gsens = 1}
            else if r >= 1
              then if x > 0
                    then aR {fx = x ** r,
                             subf = SUB (\ beta -> ifThenElse (x >= r/beta) (x ** r) (exp (beta*x - r) * (r/beta)**r)) 0,
-                            sdsf = SUB (\ beta -> ifThenElse (x >= (r-1)/beta) (r * x**(r-1)) (r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1))) 0}
+                            sdsf = SUB (\ beta -> ifThenElse (x >= (r-1)/beta) (r * x**(r-1)) (r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1))) 0,
+                            gub = x_ub ** r,
+                            gsens = r * x_ub**(r-1)}
                    else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
              else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
     ComposePower e1 r ->
-      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) gub _ = ae e1
+      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) gub gsens = ae e1
           beta3 = (r-1)*beta1 + beta2
           b1 = if beta3 > 0 then beta1 / beta3 else 1/r
           b2 = if beta3 > 0 then beta2 / beta3 else 1/r
@@ -443,51 +461,77 @@ analyzeExpr row varStates = ae where
                  then AR {fx = gx ** r,
                           subf = SUB (\ beta -> subf1g (beta / r) ** r) (r*beta1),
                           sdsf = SUB (\ beta -> r * (subf1g (b1 * beta))**(r-1) * sdsf1g (b2 * beta)) beta3,
-                          gub = gub ** r}
+                          gub = gub ** r,
+                          gsens = r * gub ** r * gsens}
                  else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
            else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
     Exp r i ->
       let x = row !! i
+          x_ub = getGubFromVs (varStates !! i)
+          f_x_ub = exp (abs r * x_ub)
       in aR {fx = exp (r * x),
              subf = SUB (const $ exp (r * x)) (abs r),
-             sdsf = SUB (const $ abs r * exp (r * x)) (abs r)}
+             sdsf = SUB (const $ abs r * exp (r * x)) (abs r),
+             gub = f_x_ub,
+             gsens = abs r * f_x_ub}
     ComposeExp r e1 ->
       let AR gx _ (SUB sdsf1g beta2) gub gsens = ae e1
           b = gsens
           f_x = exp (r * gx)
+          f_x_ub = exp (abs r * gub)
       in AR {fx = f_x,
              subf = SUB (const f_x) (abs r * b),
              sdsf = SUB (\ beta -> abs r * f_x * sdsf1g (beta - abs r * b)) (abs r * b + beta2),
-             gub = exp (abs r * gub)}
+             gub = f_x_ub,
+             gsens = abs r * f_x_ub * gsens}
     Sigmoid a c i ->
       let x = row !! i
+          vs = varStates !! i
           y = exp (a * (x - c))
           z = y / (y + 1)
           a' = abs a
       in aR {fx = z,
              subf = SUB (const z) a',
-             sdsf = SUB (const $ a' * y / (y+1)**2) a'}
+             sdsf = SUB (const $ a' * y / (y+1)**2) a',
+             gub = case vs of Range lb ub -> let x = ub
+                                                 y = exp (a * (x - c))
+                                                 z = y / (y + 1)
+                                             in z
+                              _ -> infinity,
+             gsens = a'/4}
     ComposeSigmoid a c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
+      let AR gx _ (SUB sdsf1g beta2) gub gsens = ae e1
           b = gsens
           y = exp (a * (gx - c))
           z = y / (y + 1)
           a' = abs a
       in aR {fx = z,
              subf = SUB (const z) (a' * b),
-             sdsf = SUB (\ beta -> a' * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> a' * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             gub = if isInfinite gub then infinity else let gx = gub
+                                                            y = exp (a * (gx - c))
+                                                            z = y / (y + 1)
+                                                        in z,
+             gsens = a'/4 * gsens}
     -- 'aa' is the actual sigmoid precision, 'ab' is the smoothness that we want
     SigmoidPrecise aa ab c i ->
       let x = row !! i
+          vs = varStates !! i
           y = exp (ab * (x - c))
           y' = exp (aa * (x - c))
           z  = y' / (y'+1)
           a' = abs ab
       in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (const $ aa * y / (y+1)**2) a'}
+             sdsf = SUB (const $ aa * y / (y+1)**2) a',
+             gub = case vs of Range lb ub -> let x = ub
+                                                 y' = exp (aa * (x - c))
+                                                 z  = y' / (y'+1)
+                                             in z
+                              _ -> infinity,
+             gsens = abs aa / 4}
     ComposeSigmoidPrecise aa ab c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
+      let AR gx _ (SUB sdsf1g beta2) gub gsens = ae e1
           b = gsens
           y = exp (ab * (gx - c))
           y' = exp (aa * (gx - c))
@@ -495,7 +539,12 @@ analyzeExpr row varStates = ae where
           a' = abs ab
       in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (\ beta -> aa * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> aa * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             gub = if isInfinite gub then infinity else let gx = gub
+                                                            y' = exp (aa * (gx - c))
+                                                            z = y' / (y' + 1)
+                                                        in z,
+             gsens = abs aa / 4 * gsens}
     Tauoid a c i ->
       let x = row !! i
           y1 = exp ((-a) * (x - c))
@@ -504,7 +553,9 @@ analyzeExpr row varStates = ae where
           a' = abs a
       in aR {fx = z,
              subf = SUB (const z) a',
-             sdsf = SUB (const $ a' * z) a'}
+             sdsf = SUB (const $ a' * z) a',
+             gub = 1,
+             gsens = a'}
     ComposeTauoid a c e1 ->
       let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
           b = gsens
@@ -514,7 +565,9 @@ analyzeExpr row varStates = ae where
           a' = abs a
       in aR {fx = z,
              subf = SUB (const z) (a' * b),
-             sdsf = SUB (\ beta -> a' * z * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> a' * z * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             gub = 1,
+             gsens = a' * gsens}
 
     TauoidPrecise aa ab c i ->
       let x = row !! i
@@ -524,9 +577,11 @@ analyzeExpr row varStates = ae where
           y2' = exp (aa * (x - c))
           z = 2 / (y1' + y2')
           a' = abs ab
-      in AR {fx = z,
+      in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (const $ aa * 2 / (y1 + y2)) a'}
+             sdsf = SUB (const $ aa * 2 / (y1 + y2)) a',
+             gub = 1,
+             gsens = abs aa}
     ComposeTauoidPrecise aa ab c e1 ->
       let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
           b = gsens
@@ -536,9 +591,11 @@ analyzeExpr row varStates = ae where
           y2' = exp (aa * (gx - c))
           z = 2 / (y1' + y2')
           a' = abs ab
-      in AR {fx = z,
+      in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (\ beta -> aa * 2 / (y1 + y2) * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> aa * 2 / (y1 + y2) * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             gub = 1,
+             gsens = abs aa * gsens}
 
     L0Predicate i p ->
       let VarQ x = row !! i
@@ -549,16 +606,20 @@ analyzeExpr row varStates = ae where
              gsens = 1}
     PowerLN i r ->
       let x = row !! i
+          x_ub = getUbFromVs (varStates !! i)
+          x_lb = getLbFromVs (varStates !! i)
       in if x > 0
            then aR {fx = x ** r,
                     subf = SUB (const $ x ** r) (abs r),
-                    sdsf = SUB (const $ abs r * x ** r) (abs r)}
+                    sdsf = SUB (const $ abs r * x ** r) (abs r),
+                    gub = if r >= 0 then x_ub ** r else if x_lb > 0 then x_lb ** r else infinity,
+                    gsens = if r >= 0 then r * x_ub ** r else if x_lb > 0 then abs r * x_lb ** r else infinity}
            else error "analyzeExpr/PowerLN: condition (x > 0) not satisfied"
     Const c ->
       aR {fx = Q c,
           subf = SUB (const (Q $ abs c)) 0,
           sdsf = SUB (const (Q 0)) 0,
-          gub = c,
+          gub = abs c,
           gsens = 0}
     ScaleNorm a e1 ->
       let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = ae e1
@@ -576,17 +637,21 @@ analyzeExpr row varStates = ae where
              gsens = 0}
     L p is ->
       let xs = map (row !!) is
+          x_ubs = map (getGubFromVs . (varStates !!)) is
           y = lpnorm p xs
       in aR {fx = y,
              subf = SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
              sdsf = SUB (const (Q 1)) 0,
+             gub = B.lpnorm p x_ubs,
              gsens = 1}
     LInf is ->
       let xs = map (row !!) is
+          x_ubs = map (getGubFromVs . (varStates !!)) is
           y = linfnorm xs
       in aR {fx = y,
              subf = SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
              sdsf = SUB (const (Q 1)) 0,
+             gub = B.linfnorm x_ubs,
              gsens = 1}
     Prod es -> combineArsProd $ map ae es
     Prod2 es -> combineArsProd2 $ map ae es
@@ -626,13 +691,18 @@ combineArsProd2 ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
+      gsenss = map gsens ars
       n = length ars
       divByn :: Double -> Double
       divByn x = x / (fromIntegral n :: Double)
       c i beta = ((sdsgs !! i) (divByn beta)) * product (map ($ (divByn beta)) $ skipith i subgs)
+      gc i = let s = (gsenss !! i) in if s == 0 then 0 else s * product (skipith i gubs)
   in aR {fx = product fxs,
          subf = SUB (\ beta -> product (map ($ (divByn beta)) subgs)) (sum subfBetas),
-         sdsf = SUB (\ beta -> sum (map (\ i -> c i beta) [round 0..n P.- round 1])) (sum subfBetas + maximum (zipWith (-) sdsfBetas subfBetas))}
+         sdsf = SUB (\ beta -> sum (map (\ i -> c i beta) [round 0..n P.- round 1])) (sum subfBetas + maximum (zipWith (-) sdsfBetas subfBetas)),
+         gub = product gubs,
+         gsens = sum (map gc [round 0..n P.- round 1])}
 
 combineArsMin :: [AnalysisResult] -> AnalysisResult
 combineArsMin ars =
@@ -643,9 +713,13 @@ combineArsMin ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
+      gsenss = map gsens ars
   in aR {fx = minimum fxs,
          subf = SUB (\ beta -> minimum (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = minimum gubs, -- we assume that the arguments of min are nonnegative
+         gsens = maximum gsenss}
 
 combineArsMinT :: AnalysisResult -> AnalysisResult
 combineArsMinT ar =
@@ -662,9 +736,13 @@ combineArsMax ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
+      gsenss = map gsens ars
   in aR {fx = maximum fxs,
          subf = SUB (\ beta -> maximum (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = maximum gubs,
+         gsens = maximum gsenss}
 
 combineArsMaxT :: AnalysisResult -> AnalysisResult
 combineArsMaxT ar =
@@ -681,10 +759,12 @@ combineArsL p ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
       gsenss = map gsens ars
   in aR {fx = lpnorm p fxs,
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = B.lpnorm p gubs,
          gsens = maximum gsenss}
 
 combineArsLT :: Double -> AnalysisResult -> AnalysisResult
@@ -703,10 +783,12 @@ combineArsLpInf p ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
       gsenss = map gsens ars
   in aR {fx = lpnorm p fxs,
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = B.lpnorm p gubs,
          gsens = B.lpnorm 1 gsenss}
 
 combineArsLpInfT :: Double -> AnalysisResult -> AnalysisResult
@@ -724,10 +806,12 @@ combineArsSump p ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
       gsenss = map gsens ars
   in aR {fx = sum fxs,
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> lqnorm p (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = sum gubs,
          gsens = B.lqnorm p gsenss}
 
 combineArsSumpT :: Double -> AnalysisResult -> AnalysisResult
@@ -747,10 +831,12 @@ combineArsSumInf ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
       gsenss = map gsens ars
   in aR {fx = sum fxs,
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = sum gubs,
          gsens = B.lpnorm 1 gsenss}
 
 combineArsSumInfT :: AnalysisResult -> AnalysisResult
@@ -770,9 +856,13 @@ combineArsSum2 ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
+      gsenss = map gsens ars
   in aR {fx = sum fxs,
          subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = sum gubs,
+         gsens = sum gsenss}
 
 analyzeTableExpr :: [String] -> [VarState] -> String -> TableExpr -> AnalysisResult
 analyzeTableExpr cols varStates srt te =

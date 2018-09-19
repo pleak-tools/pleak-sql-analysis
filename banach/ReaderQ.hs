@@ -5,8 +5,15 @@ import Data.Bits
 import Data.Char
 import Data.List.Split
 import qualified Data.Map as M
+import Debug.Trace
 
 import ErrorMsg
+
+
+--
+splitBySeparator :: String -> String -> [String]
+splitBySeparator sep s =
+   if last s == last sep then trace (sep) $ endBy sep s else trace (s) splitOn sep s
 
 -- read the DB line by line -- no speacial parsing, assume that the delimiters are whitespaces
 readInput :: String -> IO String
@@ -50,14 +57,14 @@ readIntBoolString s =
                 Right x -> hash s
 
 readDoubles :: String -> String -> [[Double]]
-readDoubles s separator = fmap (map readIntBoolString . (splitOn separator)) (lines s)
+readDoubles s separator = fmap (map readIntBoolString . (splitBySeparator separator)) (lines s)
 
 -- read the database from the file as a matrix of doubles
 -- read is as a single table row
 readDB :: String -> String -> IO ([String], [[Double]])
 readDB dbFileName separator = do
     (firstLine:ls) <- fmap lines (readInput dbFileName)
-    let varNames = splitOn separator firstLine
+    let varNames = splitBySeparator separator firstLine
     let table    = readDoubles (foldr (\x y -> x ++ "\n" ++ y) "" ls) separator
     return (varNames, table)
 
@@ -87,7 +94,7 @@ readDBDifferentTypes dbFileName separator tableName typeMap = do
 
 --readDifferentTypes :: [String] -> String -> String -> [[Either Bool (Either Int (Either Double String))]]
 --readDifferentTypes varTypes s separator =
---    fmap (\xs -> zipWith readSomeType varTypes (splitOn separator xs)) (lines s)
+--    fmap (\xs -> zipWith readSomeType varTypes (splitBySeparator separator xs)) (lines s)
 
 --readSomeType :: String -> String -> Either Bool (Either Int (Either Double String))
 --readSomeType varType s =
@@ -107,8 +114,8 @@ readDBDifferentTypes dbFileName separator tableName typeMap = do
 readDBString :: String -> String -> IO ([String], [[String]])
 readDBString dbFileName separator = do
     (firstLine:ls) <- fmap lines (readInput dbFileName)
-    let varNames = splitOn separator firstLine
-    let table    = map (splitOn separator) ls
+    let varNames = splitBySeparator separator firstLine
+    let table    = map (splitBySeparator separator) ls
     return (varNames, table)
 
 filterByKey :: [Bool] -> [b] -> [b]

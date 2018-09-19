@@ -827,9 +827,11 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
   let policy = (policyAnalysis args)
-  ctss <- forM uniqueTableNames $ \ t -> do cts <- createTableSqlTyped policy dataPath separator t typeMap
-                                            when debug $ putStr (concatMap (++ ";\n") cts)
-                                            return cts
+  ctss <- if (not (dbCreateTables args)) then (do return []) else
+                  forM uniqueTableNames $ \ t -> do cts <- createTableSqlTyped policy dataPath separator t typeMap
+                                                    when debug $ putStr (concatMap (++ ";\n") cts)
+                                                    return cts
+
   when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Computing the initial query:"
@@ -875,7 +877,9 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
 performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr -> IO (Double,Double,String)
 performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te = do
     let debug = not (alternative args)
-    let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames varStates te
+    -- TODO this is a hack, we will do it in the other way, so that it will be no longer needed
+    let policy = (policyAnalysis args)
+    let ar = analyzeTableExprQ fromPart wherePart (sensRows (if policy then takeWhile (\x -> case x of {'#' -> False; _ -> True}) tableName else tableName)) colNames varStates te
     when debug $putStrLn "Analysis result:"
     when debug $print ar
     --let epsilon = getEpsilon args

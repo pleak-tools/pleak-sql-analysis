@@ -8,6 +8,7 @@ import ProgramOptions
 import CreateTablesQ
 import DatabaseQ
 import PolicyQ (VarState(..))
+import RangeUtils
 
 import qualified Prelude as P
 import qualified Data.List as L
@@ -20,6 +21,8 @@ import Control.Monad
 import System.Process
 import qualified System.IO.Strict as StrictIO
 
+sqlsaExecutablePathQuiet = "./sqlsa-quiet"
+sqlsaExecutablePathVerbose = "./sqlsa-verbose"
 combinedSensitivityTmpFileName = "_combined_sensitivity.tmp"
 
 readTableToSensitivityMap :: IO (M.Map String Double)
@@ -360,16 +363,14 @@ data AnalysisResult = AR {
   subf :: SmoothUpperBound, -- smooth upper bound of the absolute value of the analyzed function itself
   sdsf :: SmoothUpperBound, -- smooth upper bound of the derivative sensitivity of the analyzed function
   gub :: Double,            -- global (constant) upper bound on the absolute value of the analyzed function itself
-  gsens :: Double}          -- (upper bound on) global sensitivity of the analyzed function, may be infinity
+  gsens :: Double,          -- (upper bound on) global sensitivity of the analyzed function, may be infinity
+  arVarState :: VarState}   -- Range lb ub, if both lower and upper bound are known, otherwise Exact
   deriving Show
-
-infinity :: Double
-infinity = 1/0
 
 unknownSUB = SUB undefined (-1)
 
 aR :: AnalysisResult
-aR = AR {subf = unknownSUB, gub = infinity, gsens = infinity}
+aR = AR {subf = unknownSUB, gub = infinity, gsens = infinity, arVarState = Exact}
 
 chooseSUBBeta :: Double -> Maybe Double -> SmoothUpperBound -> Double
 chooseSUBBeta defaultBeta fixedBeta (SUB g beta0) =
@@ -400,6 +401,17 @@ linfnorm = maximumQ . map absQ
 linfnormT :: ExprQ -> ExprQ
 linfnormT = maximumT . absQ
 
+getUbFromAr :: AnalysisResult -> Double
+getUbFromAr ar = case arVarState ar of Range lb ub -> ub
+                                       _           -> gub ar
+
+getLbFromAr :: AnalysisResult -> Double
+getLbFromAr ar = case arVarState ar of Range lb ub -> lb
+                                       _           -> - gub ar
+
+getRangeFromAr :: AnalysisResult -> VarState
+getRangeFromAr ar = Range (getLbFromAr ar) (getUbFromAr ar)
+
 analyzeExprQ :: [String] -> [VarState] -> Expr -> AnalysisResult
 analyzeExprQ colNames = analyzeExpr (map VarQ colNames)
 
@@ -424,78 +436,139 @@ analyzeExpr row varStates = ae where
            then aR {fx = x,
                     subf = SUB (\ beta -> ifThenElse (abs x >= 1 / beta) (abs x) (exp (beta * abs x - 1) / beta)) 0,
                     sdsf = SUB (const (Q 1)) 0,
-                    gub = case vs of Range lb ub -> max (abs lb) ub; _ -> infinity,
-                    gsens = 1}
+                    gub = getGubFromVs vs,
+                    gsens = 1,
+                    arVarState = vs}
            else if r >= 1
-             then if x > 0
+             then
+               let x_ub = getUbFromVs vs
+                   x_lb = max 0 (getLbFromVs vs)
+                   ub = x_ub ** r
+               in if x > 0
                    then aR {fx = x ** r,
                             subf = SUB (\ beta -> ifThenElse (x >= r/beta) (x ** r) (exp (beta*x - r) * (r/beta)**r)) 0,
-                            sdsf = SUB (\ beta -> ifThenElse (x >= (r-1)/beta) (r * x**(r-1)) (r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1))) 0}
+                            sdsf = SUB (\ beta -> ifThenElse (x >= (r-1)/beta) (r * x**(r-1)) (r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1))) 0,
+                            gub = ub,
+                            gsens = r * x_ub**(r-1),
+                            arVarState = Range (x_lb ** r) ub}
                    else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
              else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
     ComposePower e1 r ->
-      let AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) gub _ = ae e1
+      let ar @ (AR gx (SUB subf1g beta1) (SUB sdsf1g beta2) _ gsens _) = ae e1
           beta3 = (r-1)*beta1 + beta2
           b1 = if beta3 > 0 then beta1 / beta3 else 1/r
           b2 = if beta3 > 0 then beta2 / beta3 else 1/r
+          gx_ub = getUbFromAr ar
+          gx_lb = max 0 (getLbFromAr ar)
+          ub = gx_ub ** r
       in if r >= 1
            then if gx > 0
                  then AR {fx = gx ** r,
                           subf = SUB (\ beta -> subf1g (beta / r) ** r) (r*beta1),
                           sdsf = SUB (\ beta -> r * (subf1g (b1 * beta))**(r-1) * sdsf1g (b2 * beta)) beta3,
-                          gub = gub ** r}
+                          gub = ub,
+                          gsens = r * gx_ub ** (r-1) * gsens,
+                          arVarState = Range (gx_lb ** r) ub}
                  else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
            else error "analyzeExpr/ComposePower: condition (r >= 1 && g(x) > 0) not satisfied"
     Exp r i ->
       let x = row !! i
+          x_ub = getUbFromVs (varStates !! i)
+          x_lb = getLbFromVs (varStates !! i)
+          f_x_ub = if r >= 0 then exp (r * x_ub) else exp (r * x_lb)
+          f_x_lb = if r >= 0 then exp (r * x_lb) else exp (r * x_ub)
       in aR {fx = exp (r * x),
              subf = SUB (const $ exp (r * x)) (abs r),
-             sdsf = SUB (const $ abs r * exp (r * x)) (abs r)}
+             sdsf = SUB (const $ abs r * exp (r * x)) (abs r),
+             gub = f_x_ub,
+             gsens = abs r * f_x_ub,
+             arVarState = Range f_x_lb f_x_ub}
     ComposeExp r e1 ->
-      let AR gx _ (SUB sdsf1g beta2) gub gsens = ae e1
+      let ar @ (AR gx _ (SUB sdsf1g beta2) _ gsens _) = ae e1
           b = gsens
+          gx_ub = getUbFromAr ar
+          gx_lb = getLbFromAr ar
           f_x = exp (r * gx)
-      in AR {fx = f_x,
+          f_x_ub = if r >= 0 then exp (r * gx_ub) else exp (r * gx_lb)
+          f_x_lb = if r >= 0 then exp (r * gx_lb) else exp (r * gx_ub)
+      in aR {fx = f_x,
              subf = SUB (const f_x) (abs r * b),
              sdsf = SUB (\ beta -> abs r * f_x * sdsf1g (beta - abs r * b)) (abs r * b + beta2),
-             gub = exp (abs r * gub)}
+             gub = f_x_ub,
+             gsens = abs r * f_x_ub * gsens,
+             arVarState = Range f_x_lb f_x_ub}
     Sigmoid a c i ->
       let x = row !! i
+          vs = varStates !! i
           y = exp (a * (x - c))
           z = y / (y + 1)
           a' = abs a
+          ub = case vs of Range lb ub -> let x = ub
+                                             y = exp (a * (x - c))
+                                             z = y / (y + 1)
+                                         in z
+                          _ -> infinity
       in aR {fx = z,
              subf = SUB (const z) a',
-             sdsf = SUB (const $ a' * y / (y+1)**2) a'}
+             sdsf = SUB (const $ a' * y / (y+1)**2) a',
+             gub = ub,
+             gsens = a'/4,
+             arVarState = Range 0 ub}
     ComposeSigmoid a c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
+      let ar @ (AR gx _ (SUB sdsf1g beta2) _ gsens _) = ae e1
           b = gsens
           y = exp (a * (gx - c))
           z = y / (y + 1)
           a' = abs a
+          gx_ub = getUbFromAr ar
+          ub = if isInfinite gx_ub then infinity else let gx = gx_ub
+                                                          y = exp (a * (gx - c))
+                                                          z = y / (y + 1)
+                                                      in z
       in aR {fx = z,
              subf = SUB (const z) (a' * b),
-             sdsf = SUB (\ beta -> a' * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> a' * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             gub = ub,
+             gsens = a'/4 * gsens,
+             arVarState = Range 0 ub}
     -- 'aa' is the actual sigmoid precision, 'ab' is the smoothness that we want
     SigmoidPrecise aa ab c i ->
       let x = row !! i
+          vs = varStates !! i
           y = exp (ab * (x - c))
           y' = exp (aa * (x - c))
           z  = y' / (y'+1)
           a' = abs ab
+          x_ub = getUbFromVs vs
+          ub = case vs of Range lb ub -> let x = x_ub
+                                             y' = exp (aa * (x - c))
+                                             z  = y' / (y'+1)
+                                         in z
+                          _ -> infinity
       in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (const $ aa * y / (y+1)**2) a'}
+             sdsf = SUB (const $ aa * y / (y+1)**2) a',
+             gub = ub,
+             gsens = abs aa / 4,
+             arVarState = Range 0 ub}
     ComposeSigmoidPrecise aa ab c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
+      let ar @ (AR gx _ (SUB sdsf1g beta2) _ gsens _) = ae e1
           b = gsens
           y = exp (ab * (gx - c))
           y' = exp (aa * (gx - c))
           z = y' / (y' + 1)
           a' = abs ab
+          gx_ub = getUbFromAr ar
+          ub = if isInfinite gx_ub then infinity else let gx = gx_ub
+                                                          y' = exp (aa * (gx - c))
+                                                          z = y' / (y' + 1)
+                                                      in z
       in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (\ beta -> aa * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> aa * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             gub = ub,
+             gsens = abs aa / 4 * gsens,
+             arVarState = Range 0 ub}
     Tauoid a c i ->
       let x = row !! i
           y1 = exp ((-a) * (x - c))
@@ -504,9 +577,12 @@ analyzeExpr row varStates = ae where
           a' = abs a
       in aR {fx = z,
              subf = SUB (const z) a',
-             sdsf = SUB (const $ a' * z) a'}
+             sdsf = SUB (const $ a' * z) a',
+             gub = 1,
+             gsens = a',
+             arVarState = Range 0 1}
     ComposeTauoid a c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
+      let AR gx _ (SUB sdsf1g beta2) _ gsens _ = ae e1
           b = gsens
           y1 = exp ((-a) * (gx - c))
           y2 = exp (a * (gx - c))
@@ -514,7 +590,10 @@ analyzeExpr row varStates = ae where
           a' = abs a
       in aR {fx = z,
              subf = SUB (const z) (a' * b),
-             sdsf = SUB (\ beta -> a' * z * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> a' * z * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             gub = 1,
+             gsens = a' * gsens,
+             arVarState = Range 0 1}
 
     TauoidPrecise aa ab c i ->
       let x = row !! i
@@ -524,11 +603,14 @@ analyzeExpr row varStates = ae where
           y2' = exp (aa * (x - c))
           z = 2 / (y1' + y2')
           a' = abs ab
-      in AR {fx = z,
+      in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (const $ aa * 2 / (y1 + y2)) a'}
+             sdsf = SUB (const $ aa * 2 / (y1 + y2)) a',
+             gub = 1,
+             gsens = abs aa,
+             arVarState = Range 0 1}
     ComposeTauoidPrecise aa ab c e1 ->
-      let AR gx _ (SUB sdsf1g beta2) _ gsens = ae e1
+      let AR gx _ (SUB sdsf1g beta2) _ gsens _ = ae e1
           b = gsens
           y1 = exp ((-ab) * (gx - c))
           y2 = exp (ab * (gx - c))
@@ -536,9 +618,12 @@ analyzeExpr row varStates = ae where
           y2' = exp (aa * (gx - c))
           z = 2 / (y1' + y2')
           a' = abs ab
-      in AR {fx = z,
+      in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (\ beta -> aa * 2 / (y1 + y2) * sdsf1g (beta - a' * b)) (a' * b + beta2)}
+             sdsf = SUB (\ beta -> aa * 2 / (y1 + y2) * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             gub = 1,
+             gsens = abs aa * gsens,
+             arVarState = Range 0 1}
 
     L0Predicate i p ->
       let VarQ x = row !! i
@@ -546,48 +631,65 @@ analyzeExpr row varStates = ae where
              subf = SUB (\ beta -> if BoolExprQ (p x) then Q 1 else Q (exp (-beta))) 0,
              sdsf = SUB (const (Q 1)) 0,
              gub = 1,
-             gsens = 1}
+             gsens = 1,
+             arVarState = Range 0 1}
     PowerLN i r ->
       let x = row !! i
+          x_ub = getUbFromVs (varStates !! i)
+          x_lb = getLbFromVs (varStates !! i)
+          y_ub = if r >= 0 then x_ub ** r else if x_lb > 0 then x_lb ** r else infinity
+          y_lb = if r >= 0 then (if x_lb > 0 then x_lb ** r else 0) else x_ub ** r
       in if x > 0
            then aR {fx = x ** r,
                     subf = SUB (const $ x ** r) (abs r),
-                    sdsf = SUB (const $ abs r * x ** r) (abs r)}
+                    sdsf = SUB (const $ abs r * x ** r) (abs r),
+                    gub = y_ub,
+                    gsens = if r >= 0 then r * x_ub ** r else if x_lb > 0 then abs r * x_lb ** r else infinity,
+                    arVarState = Range y_lb y_ub}
            else error "analyzeExpr/PowerLN: condition (x > 0) not satisfied"
     Const c ->
       aR {fx = Q c,
           subf = SUB (const (Q $ abs c)) 0,
           sdsf = SUB (const (Q 0)) 0,
-          gub = c,
-          gsens = 0}
+          gub = abs c,
+          gsens = 0,
+          arVarState = Range c c}
     ScaleNorm a e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = ae e1
+      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = ae e1
       in aR {fx = fx1,
              subf = SUB (\ beta -> subf1g (beta*a)) (subf1beta/a),
              sdsf = SUB (\ beta -> sdsf1g (beta*a) / a) (sdsf1beta/a),
              gub = gub,
-             gsens = gsens/a}
+             gsens = gsens/a,
+             arVarState = vs}
     ZeroSens e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub _ = ae e1
+      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub _ vs = ae e1
       in aR {fx = fx1,
              subf = SUB (const fx1) 0,
              sdsf = SUB (const (Q 0)) 0,
              gub = gub,
-             gsens = 0}
+             gsens = 0,
+             arVarState = vs}
     L p is ->
       let xs = map (row !!) is
           y = lpnorm p xs
+          vs = rangeLpNorm p $ map (getRangeFromVs . (varStates !!)) is
       in aR {fx = y,
              subf = SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
              sdsf = SUB (const (Q 1)) 0,
-             gsens = 1}
+             gub = getGubFromVs vs,
+             gsens = 1,
+             arVarState = vs}
     LInf is ->
       let xs = map (row !!) is
           y = linfnorm xs
+          vs = rangeLInfNorm $ map (getRangeFromVs . (varStates !!)) is
       in aR {fx = y,
              subf = SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
              sdsf = SUB (const (Q 1)) 0,
-             gsens = 1}
+             gub = getGubFromVs vs,
+             gsens = 1,
+             arVarState = vs}
     Prod es -> combineArsProd $ map ae es
     Prod2 es -> combineArsProd2 $ map ae es
     Min es -> combineArsMin $ map ae es
@@ -608,6 +710,7 @@ combineArsProd ars =
       sdsgs = map subg sdsfs
       gubs = map gub ars
       gsenss = map gsens ars
+      rs = map getRangeFromAr ars
       n = length ars
       c i beta = let s = ((sdsgs !! i) beta) in if s == 0 then Q 0 else s * product (map ($ beta) $ skipith i subgs)
       gc i = let s = (gsenss !! i) in if s == 0 then 0 else s * product (skipith i gubs)
@@ -615,7 +718,8 @@ combineArsProd ars =
          subf = SUB (\ beta -> product (map ($ beta) subgs)) (maximum subfBetas),
          sdsf = SUB (\ beta -> linfnorm (map (\ i -> c i beta) [round 0..n P.- round 1])) (maximum (subfBetas ++ sdsfBetas)),
          gub = product gubs,
-         gsens = B.linfnorm (map gc [round 0..n P.- round 1])}
+         gsens = B.linfnorm (map gc [round 0..n P.- round 1]),
+         arVarState = rangeProduct rs}
 
 combineArsProd2 :: [AnalysisResult] -> AnalysisResult
 combineArsProd2 ars =
@@ -626,13 +730,20 @@ combineArsProd2 ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
+      gsenss = map gsens ars
+      rs = map getRangeFromAr ars
       n = length ars
       divByn :: Double -> Double
       divByn x = x / (fromIntegral n :: Double)
       c i beta = ((sdsgs !! i) (divByn beta)) * product (map ($ (divByn beta)) $ skipith i subgs)
+      gc i = let s = (gsenss !! i) in if s == 0 then 0 else s * product (skipith i gubs)
   in aR {fx = product fxs,
          subf = SUB (\ beta -> product (map ($ (divByn beta)) subgs)) (sum subfBetas),
-         sdsf = SUB (\ beta -> sum (map (\ i -> c i beta) [round 0..n P.- round 1])) (sum subfBetas + maximum (zipWith (-) sdsfBetas subfBetas))}
+         sdsf = SUB (\ beta -> sum (map (\ i -> c i beta) [round 0..n P.- round 1])) (sum subfBetas + maximum (zipWith (-) sdsfBetas subfBetas)),
+         gub = product gubs,
+         gsens = sum (map gc [round 0..n P.- round 1]),
+         arVarState = rangeProduct rs}
 
 combineArsMin :: [AnalysisResult] -> AnalysisResult
 combineArsMin ars =
@@ -643,9 +754,16 @@ combineArsMin ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gsenss = map gsens ars
+      lbs = map getLbFromAr ars
+      ubs = map getUbFromAr ars
+      vs = Range (minimum lbs) (minimum ubs)
   in aR {fx = minimum fxs,
          subf = SUB (\ beta -> minimum (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = getGubFromVs vs,
+         gsens = maximum gsenss,
+         arVarState = vs}
 
 combineArsMinT :: AnalysisResult -> AnalysisResult
 combineArsMinT ar =
@@ -662,9 +780,17 @@ combineArsMax ars =
       sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
       sdsgs = map subg sdsfs
+      gubs = map gub ars
+      gsenss = map gsens ars
+      lbs = map getLbFromAr ars
+      ubs = map getUbFromAr ars
+      vs = Range (maximum lbs) (maximum ubs)
   in aR {fx = maximum fxs,
          subf = SUB (\ beta -> maximum (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+         sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gub = getGubFromVs vs,
+         gsens = maximum gsenss,
+         arVarState = vs}
 
 combineArsMaxT :: AnalysisResult -> AnalysisResult
 combineArsMaxT ar =
@@ -672,107 +798,111 @@ combineArsMaxT ar =
       subf = SUB (\ beta -> maximumT (subg (subf ar) beta)) (subBeta (subf ar)),
       sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
-combineArsL :: Double -> [AnalysisResult] -> AnalysisResult
-combineArsL p ars =
+combineArsLp :: Double -> [AnalysisResult] -> AnalysisResult
+combineArsLp p ars =
   let fxs = map fx ars
       subfs = map subf ars
-      sdsfs = map sdsf ars
       subfBetas = map subBeta subfs
-      sdsfBetas = map subBeta sdsfs
       subgs = map subg subfs
-      sdsgs = map subg sdsfs
-      gsenss = map gsens ars
+      vs = rangeLpNorm p $ map getRangeFromAr ars
   in aR {fx = lpnorm p fxs,
          subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
+         gub = getUbFromVs vs,
+         arVarState = vs}
+
+combineArsL :: Double -> [AnalysisResult] -> AnalysisResult
+combineArsL p ars =
+  let sdsfs = map sdsf ars
+      sdsfBetas = map subBeta sdsfs
+      sdsgs = map subg sdsfs
+      gsenss = map gsens ars
+  in (combineArsLp p ars) {
          sdsf = SUB (\ beta -> maximum (map ($ beta) sdsgs)) (maximum sdsfBetas),
          gsens = maximum gsenss}
-
-combineArsLT :: Double -> AnalysisResult -> AnalysisResult
-combineArsLT p ar =
-  aR {fx = lpnormT p (fx ar),
-      subf = SUB (\ beta -> lpnormT p (subg (subf ar) beta)) (subBeta (subf ar)),
-      sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
 -- the computed function is l_p-norm but the norm is l_infinity
 combineArsLpInf :: Double -> [AnalysisResult] -> AnalysisResult
 combineArsLpInf p ars =
-  let fxs = map fx ars
-      subfs = map subf ars
-      sdsfs = map sdsf ars
-      subfBetas = map subBeta subfs
+  let sdsfs = map sdsf ars
       sdsfBetas = map subBeta sdsfs
-      subgs = map subg subfs
       sdsgs = map subg sdsfs
       gsenss = map gsens ars
-  in aR {fx = lpnorm p fxs,
-         subf = SUB (\ beta -> lpnorm p (map ($ beta) subgs)) (maximum subfBetas),
+  in (combineArsLp p ars) {
          sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas),
          gsens = B.lpnorm 1 gsenss}
 
-combineArsLpInfT :: Double -> AnalysisResult -> AnalysisResult
-combineArsLpInfT p ar =
+combineArsLpT :: Double -> AnalysisResult -> AnalysisResult
+combineArsLpT p ar =
   aR {fx = lpnormT p (fx ar),
       subf = SUB (\ beta -> lpnormT p (subg (subf ar) beta)) (subBeta (subf ar)),
-      sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+      gub = if p == 1 then gub ar else infinity,
+      gsens = if p == 1 then gsens ar else infinity}
+
+combineArsLT :: Double -> AnalysisResult -> AnalysisResult
+combineArsLT p ar = (combineArsLpT p ar) {sdsf = SUB (\ beta -> maximumT (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+
+combineArsLpInfT :: Double -> AnalysisResult -> AnalysisResult
+combineArsLpInfT p ar = (combineArsLpT p ar) {sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+
+combineArsSum :: [AnalysisResult] -> AnalysisResult
+combineArsSum ars =
+  let fxs = map fx ars
+      subfs = map subf ars
+      subfBetas = map subBeta subfs
+      subgs = map subg subfs
+      gubs = map gub ars
+      lbs = map getLbFromAr ars
+      ubs = map getUbFromAr ars
+      vs = Range (sum lbs) (sum ubs)
+  in aR {fx = sum fxs,
+         subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
+         gub = getGubFromVs vs,
+         arVarState = vs}
 
 combineArsSump :: Double -> [AnalysisResult] -> AnalysisResult
 combineArsSump p ars =
-  let fxs = map fx ars
-      subfs = map subf ars
-      sdsfs = map sdsf ars
-      subfBetas = map subBeta subfs
+  let sdsfs = map sdsf ars
       sdsfBetas = map subBeta sdsfs
-      subgs = map subg subfs
       sdsgs = map subg sdsfs
       gsenss = map gsens ars
-  in aR {fx = sum fxs,
-         subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
+  in (combineArsSum ars) {
          sdsf = SUB (\ beta -> lqnorm p (map ($ beta) sdsgs)) (maximum sdsfBetas),
          gsens = B.lqnorm p gsenss}
 
-combineArsSumpT :: Double -> AnalysisResult -> AnalysisResult
-combineArsSumpT p ar =
-  aR {fx = sumT (fx ar),
-      subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
-      sdsf = SUB (\ beta -> lqnormT p (subg (sdsf ar) beta)) (subBeta (sdsf ar)),
-      gub = gub ar,
-      gsens = gsens ar}
-
 combineArsSumInf :: [AnalysisResult] -> AnalysisResult
 combineArsSumInf ars =
-  let fxs = map fx ars
-      subfs = map subf ars
-      sdsfs = map sdsf ars
-      subfBetas = map subBeta subfs
+  let sdsfs = map sdsf ars
       sdsfBetas = map subBeta sdsfs
-      subgs = map subg subfs
       sdsgs = map subg sdsfs
       gsenss = map gsens ars
-  in aR {fx = sum fxs,
-         subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
+  in (combineArsSum ars) {
          sdsf = SUB (\ beta -> lpnorm 1 (map ($ beta) sdsgs)) (maximum sdsfBetas),
          gsens = B.lpnorm 1 gsenss}
 
-combineArsSumInfT :: AnalysisResult -> AnalysisResult
-combineArsSumInfT ar =
+combineArsSum2 :: [AnalysisResult] -> AnalysisResult
+combineArsSum2 ars =
+  let sdsfs = map sdsf ars
+      sdsfBetas = map subBeta sdsfs
+      sdsgs = map subg sdsfs
+      gsenss = map gsens ars
+  in (combineArsSum ars) {
+         sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas),
+         gsens = sum gsenss}
+
+combineArsSumT :: AnalysisResult -> AnalysisResult
+combineArsSumT ar =
   aR {fx = sumT (fx ar),
       subf = SUB (\ beta -> sumT (subg (subf ar) beta)) (subBeta (subf ar)),
-      sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar)),
       gub = gub ar,
       gsens = gsens ar}
 
-combineArsSum2 :: [AnalysisResult] -> AnalysisResult
-combineArsSum2 ars =
-  let fxs = map fx ars
-      subfs = map subf ars
-      sdsfs = map sdsf ars
-      subfBetas = map subBeta subfs
-      sdsfBetas = map subBeta sdsfs
-      subgs = map subg subfs
-      sdsgs = map subg sdsfs
-  in aR {fx = sum fxs,
-         subf = SUB (\ beta -> sum (map ($ beta) subgs)) (maximum subfBetas),
-         sdsf = SUB (\ beta -> sum (map ($ beta) sdsgs)) (maximum sdsfBetas)}
+combineArsSumpT :: Double -> AnalysisResult -> AnalysisResult
+combineArsSumpT p ar =
+  (combineArsSumT ar) {sdsf = SUB (\ beta -> lqnormT p (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
+
+combineArsSumInfT :: AnalysisResult -> AnalysisResult
+combineArsSumInfT ar =
+  (combineArsSumT ar) {sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
 analyzeTableExpr :: [String] -> [VarState] -> String -> TableExpr -> AnalysisResult
 analyzeTableExpr cols varStates srt te =
@@ -786,7 +916,7 @@ analyzeTableExpr cols varStates srt te =
     fixedArg arg expr arg' | arg' P.== arg = expr
     oneStepCombine combine expr =
       let
-        AR fx _ (SUB sdsg subBeta) gub gsens = combine (analyzeExprQ cols varStates expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine (analyzeExprQ cols varStates expr)
       in
         aR {fx = fx,
             sdsf = SUB (\ beta -> sdsg beta `Where` (srt ++ ".sensitive")) subBeta,
@@ -794,13 +924,13 @@ analyzeTableExpr cols varStates srt te =
             gsens = gsens}
     twoStepCombine combine_p combine_inf expr =
       let
-        AR fx _ (SUB sdsg subBeta) gub gsens = combine_inf (analyzeExprQ cols varStates expr)
-        AR _ _ (SUB _ subBeta2) _ _ = combine_p $ AR {sdsf = SUB undefined subBeta}
+        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine_inf (analyzeExprQ cols varStates expr)
+        AR _ _ (SUB _ subBeta2) _ _ _ = combine_p $ AR {sdsf = SUB undefined subBeta}
       in aR {fx = fx,
              sdsf = SUB (\ beta ->
                            let
                              subquery = GroupBy ((sdsg beta `As` "sdsg") `Where` (srt ++ ".sensitive")) (srt ++ ".ID") ""
-                             AR _ _ (SUB sdsg2 _) _ _ = combine_p $ AR {sdsf = SUB (fixedArg beta $ VarQ "sdsg") subBeta}
+                             AR _ _ (SUB sdsg2 _) _ _ _ = combine_p $ AR {sdsf = SUB (fixedArg beta $ VarQ "sdsg") subBeta}
                              mainquery = sdsg2 beta
                            in
                              Subquery mainquery subquery)
@@ -815,8 +945,8 @@ analyzeTableExpr cols varStates srt te =
 -- srt is the name of the sensitive rows table
 analyzeTableExprQ :: String -> String -> String -> [String] -> [VarState] -> TableExpr -> AnalysisResult
 analyzeTableExprQ fr wh srt colNames varStates te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens = analyzeTableExpr colNames varStates srt te
-  in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames varStates srt te
+  in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
 performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> IO (Double,[(String, [(String, (Double, Double))])])
 performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap = do
@@ -856,9 +986,9 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
     result <- performAnalysis args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te
     return (tableName, result)
 
-  when (combinedSens args) $ putStrLn "\n-----------------\nCombined sensitivities:"
+  when (combinedSens args) $ when debug $ putStrLn "\n-----------------\nCombined sensitivities:"
   res0 <- forM res00 $ \ (tableName, (b,sds,combinedRes)) -> do
-    when (combinedSens args) $ putStr combinedRes
+    when (combinedSens args) $ when debug $ putStr combinedRes
     return (tableName,(b,sds))
 
   let taskAggr0 = map (\(taskName,is,b) -> (taskName, B.sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0)) $ map (res0 !!) is, b)) taskMap
@@ -900,18 +1030,20 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
     when debug $ putStrLn (show sds ++ ";")
     sds_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show sds) else (do return 0)
     when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" sds_value
-    combinedRes <- if combinedSens args
+    (combinedSens_value,combinedRes) <- if combinedSens args
       then do
-        printf "./sqlsa --combined-sens%s -B %f -S %f %s %s\n" (if null sensitiveVarList then "" else " -f " ++ intercalate "," sensitiveVarList) beta (gub ar) (inputFp1 args) (inputFp2 args)
+        --let sqlsaExecutablePath = if debug then sqlsaExecutablePathQuiet else sqlsaExecutablePathVerbose
+        let sqlsaExecutablePath = sqlsaExecutablePathQuiet
+        when debug $ printf "%s --combined-sens%s -B %f -S %f %s %s\n" sqlsaExecutablePath (if null sensitiveVarList then "" else " -f " ++ intercalate "," sensitiveVarList) beta (gub ar) (inputFp1 args) (inputFp2 args)
         let sqlsaArgs = ("--combined-sens" :
                          (if null sensitiveVarList then id else ("-f" :) . (intercalate "," sensitiveVarList :))
                          ["-B", show beta, "-S", show (gub ar), inputFp1 args, inputFp2 args])
-        callProcess "./sqlsa" sqlsaArgs
+        callProcess sqlsaExecutablePath sqlsaArgs
         localSensMap <- readTableToSensitivityMap
-        callProcess "./sqlsa" ("--count-query" : sqlsaArgs)
+        callProcess sqlsaExecutablePath ("--count-query" : sqlsaArgs)
         localCountSensMap <- readTableToSensitivityMap
-        printf "localSensMap = %s\n" (show localSensMap)
-        printf "localCountSensMap = %s\n" (show localCountSensMap)
+        when debug $ printf "localSensMap = %s\n" (show localSensMap)
+        when debug $ printf "localCountSensMap = %s\n" (show localCountSensMap)
         let localSens = localSensMap M.! tableName
         let localCountSens = localCountSensMap M.! tableName
         let Just distanceG = getG args
@@ -920,9 +1052,10 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
         let combinedSens = maximum [ls, sds_value, gsb]
         let res = printf "table=%s gub=%0.6f gsens=%0.6f localSens=%0.6f localCountSens=%0.6f ls=%0.6f sds=%0.6f gsb=%0.6f combinedSens=%0.6f\n"
                          tableName (gub ar) (gsens ar) localSens localCountSens ls sds_value gsb combinedSens
-        putStr res
-        return res
+        when debug $ putStr res
+        return (combinedSens,res)
       else
-        return ""
-    return (b,sds_value,combinedRes)
+        return (sds_value,"")
+    return (b,combinedSens_value,combinedRes)
+    --return (b,sds_value,combinedRes)
 

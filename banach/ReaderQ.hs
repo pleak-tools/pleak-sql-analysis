@@ -13,7 +13,7 @@ import ErrorMsg
 --
 splitBySeparator :: String -> String -> [String]
 splitBySeparator sep s =
-   if last s == last sep then trace (sep) $ endBy sep s else trace (s) splitOn sep s
+   if last s == last sep then endBy sep s else splitOn sep s
 
 -- read the DB line by line -- no speacial parsing, assume that the delimiters are whitespaces
 readInput :: String -> IO String

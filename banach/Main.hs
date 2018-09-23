@@ -14,10 +14,10 @@ main = do
     then do
       if policyAnalysis args
         then do
-          (plcMap,attMap,dataPath,initialQuery,colNames,typeMap,taskMap,_,tableExprData) <- PQ.getBanachAnalyserInput debug True (inputFp1 args) (inputFp2 args) (inputFp3 args)
-          performPolicyAnalysis args dataPath (delimiter args) initialQuery colNames typeMap taskMap tableExprData plcMap attMap
+          ((plcMap,plcCost),attMap,dataPath,initialQuery,colNames,typeMap,taskMap,_,tableExprData) <- PQ.getBanachAnalyserInput debug True (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
+          performPolicyAnalysis args dataPath (delimiter args) initialQuery colNames typeMap taskMap tableExprData plcCost plcMap attMap
         else do
-          (_,attMap,dataPath,initialQuery,colNames,typeMap,taskMap,sensitiveVarList,tableExprData) <- PQ.getBanachAnalyserInput debug False (inputFp1 args) (inputFp2 args) (inputFp3 args)
+          (_,attMap,dataPath,initialQuery,colNames,typeMap,taskMap,sensitiveVarList,tableExprData) <- PQ.getBanachAnalyserInput debug False (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
           performDPAnalysis args dataPath (delimiter args) initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap
 
     else do

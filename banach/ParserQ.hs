@@ -717,5 +717,8 @@ parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
 parsePolicyFromFile fileName = parseFromFile policy error_parsePolicy fileName
 parseAttackerFromFile fileName = parseFromFile attacker error_parseAttacker fileName
 parseNormFromFile fileName = parseFromFile norm error_parseNorm fileName
+parseNormsFromFile fileName = do
+    r <- parseFromFile norm error_parseNorm fileName
+    return [r]
 parseSqlQueryFromFile fileName = parseFromFile sqlQueries error_parseSqlQuery fileName
 

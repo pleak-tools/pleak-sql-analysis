@@ -13,7 +13,7 @@ at1 xs x = if x < length xs then xs !! x else error $ error_arrElem x xs
 
 -- otherwise, let us just say that "something is wrong"
 at2 :: [a] -> Int -> a
-at2 xs x = if x < length xs then xs !! x else error $ error_arrElem "" "the array."
+at2 xs x = if x < length xs then xs !! x else error $ error_arrElem "(an unshowable element)" "(an unshowable array)"
 
 --------------------------------------------------------
 -- some hardcoded error message
@@ -70,6 +70,7 @@ error_badAggrNorm t p q  = "ERROR: can compute sensitivity for " ++ show t ++ " 
 error_verifyNorm t  = "INTERNAL ERROR: Could not prove that the database norm is at least as large as the query norm for sensitivity w.r.t. table " ++ show t
 
 -- policy analysis error messages
-error_attackerBreaksEverything t = "ERROR: impossible to enforce policy for " ++ t ++ " against current attacker definition."
+error_attackerBreaksEverything = "ERROR: impossible to enforce policy against current attacker definition."
 error_badAttackerPolicyCombination attState plcState = "INTERNAL ERROR: no implementation for attacker state " ++ show attState ++ " and policy state " ++ show plcState ++ "."
 error_unboundedDataType t = "ERROR: data type " ++ t ++ " cannot be included into policy yet."
+error_badPolicyFormat preficedVar = "ERROR: policy format error, \"" ++ preficedVar ++ "\" is expected to be of the form \"tableName.varName\""

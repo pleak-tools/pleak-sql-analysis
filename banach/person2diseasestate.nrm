@@ -1,0 +1,4 @@
+all
+diseasestate;
+z = l0 diseasestate;
+return lp 1.0 z;

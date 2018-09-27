@@ -1,0 +1,9 @@
+person2diseasestate.person_id exact;
+-- from 01-01-2000 to 01-01-2020
+person2diseasestate.transitiondate range 36524 43829;
+person2diseasestate.diseasestate approx 4;
+
+person2diseaseriskfactor.person_id exact;
+person2diseaseriskfactor.riskfactor_id approx 7;
+
+person.residence approx 15;

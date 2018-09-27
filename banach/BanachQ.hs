@@ -955,7 +955,7 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
   let (tableNames,_,_) = unzip3 tableExprData
   -- TODO this is related to the # hack, fix it later
   -- let uniqueTableNames = nub tableNames
-  let uniqueTableNames = nub (filter (\x -> not (elem '#' x)) tableNames)
+  let uniqueTableNames = nub (map (\x -> if elem '#' x then head (splitOn "#" x) else x) tableNames)
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
   let policy = (policyAnalysis args)

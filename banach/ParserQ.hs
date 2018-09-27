@@ -714,8 +714,8 @@ parseFromFile p err s = fmap (parseData p (err s)) (readInput s)
 parseTestFromFile :: (Show a, ShowErrorComponent e) => Parsec e String a -> FilePath -> IO ()
 parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
 
-parsePolicyFromFile fileName = parseFromFile policy error_parsePolicy fileName
-parseAttackerFromFile fileName = parseFromFile attacker error_parseAttacker fileName
+parsePolicyFromFile fileName   = if fileName == "" then do return (M.empty,0) else parseFromFile policy error_parsePolicy fileName
+parseAttackerFromFile fileName = if fileName == "" then do return M.empty     else parseFromFile attacker error_parseAttacker fileName
 parseNormFromFile fileName = parseFromFile norm error_parseNorm fileName
 parseNormsFromFile fileName = do
     r <- parseFromFile norm error_parseNorm fileName

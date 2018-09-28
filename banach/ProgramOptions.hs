@@ -11,6 +11,7 @@ data ProgramOptions
     inputFp2         :: FilePath,
     inputFp3         :: FilePath,
     inputFp4         :: FilePath,
+    inputFp5         :: FilePath,
     alternative      :: Bool,
     combinedSens     :: Bool,
     policyAnalysis   :: Bool,
@@ -30,6 +31,7 @@ programArgs = ProgramOptions
   <*> strArgument (metavar "QUERY INPUT" <> help "query input file")
   <*> strArgument (metavar "ATTACKER INPUT" <> help "attacker description input file")
   <*> strOption (long "policy" <> value "" <> help "policy description input file (used only by policy analyser)")
+  <*> strOption (long "localsenspath" <> value "" <> help "path to the local sensitivity analyser (used only with -c parameter)")
   <*> switch (short 'a' <> long "alternative" <> hidden <> help "Use alternative input and output format")
   <*> switch (short 'c' <> long "combined-sens" <> hidden <> help "Call local sensitivity analyzer (must be at ./sqlsa) and combine the results of the two analyzers")
   <*> switch (short 'p' <> long "policy-analysis" <> hidden <> help "Analyse privacy treating epsilon in [0,1] as attacker's guessing probability")

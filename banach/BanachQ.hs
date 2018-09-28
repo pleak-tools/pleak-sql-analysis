@@ -985,7 +985,7 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
     when debug $ print te
-    result <- performAnalysis args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te
+    result <- performAnalysis dataPath args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te
     return (tableName, result)
 
   when (combinedSens args) $ when debug $ putStrLn "\n-----------------\nCombined sensitivities:"
@@ -1006,8 +1006,8 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
   return (qr,taskAggr)
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr -> IO (Double,Double,String)
-performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te = do
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr -> IO (Double,Double,String)
+performAnalysis args epsilon fixedBeta dataPath fromPart wherePart tableName colNames varStates sensitiveVarList te = do
     let debug = not (alternative args)
     -- TODO this is a hack, we will do it in the other way, so that it will be no longer needed
     let policy = (policyAnalysis args)
@@ -1035,7 +1035,7 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
     (combinedSens_value,combinedRes) <- if combinedSens args
       then do
         --let sqlsaExecutablePath = if debug then sqlsaExecutablePathQuiet else sqlsaExecutablePathVerbose
-        let sqlsaExecutablePath = sqlsaExecutablePathQuiet
+        let sqlsaExecutablePath = dataPath ++ sqlsaExecutablePathQuiet
         when debug $ printf "%s --combined-sens%s -B %f -S %f %s %s\n" sqlsaExecutablePath (if null sensitiveVarList then "" else " -f " ++ intercalate "," sensitiveVarList) beta (gub ar) (inputFp1 args) (inputFp2 args)
         let sqlsaArgs = ("--combined-sens" :
                          (if null sensitiveVarList then id else ("-f" :) . (intercalate "," sensitiveVarList :))

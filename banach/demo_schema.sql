@@ -1,6 +1,30 @@
-CREATE TABLE parameters (  param_id INT8 PRIMARY KEY, deadline INT8, shipname TEXT);
-create table ship (  ship_id INT8 primary key,  name TEXT,  cargo INT8,  latitude INT8,  longitude INT8,  length INT8,  draft INT8,  max_speed INT8);
-create table port (  port_id INT8 primary key,  name TEXT,  latitude INT8,  longitude INT8,  offloadcapacity INT8,   offloadtime INT8,  harbordepth INT8,  available Bool);
-create table berth (  port_id INT8,  berth_id INT8,  berthlength INT8);
-CREATE TABLE slot (  port_id INT8, berth_id INT8, slot_id INT8, ship_id INT8, slotstart INT8, slotend INT8);
+CREATE TABLE nation (
+  nation_id int8 PRIMARY KEY,
+  nation_name text NOT NULL
+);
 
+CREATE TABLE community (
+  community_id int8 PRIMARY KEY,
+  community_name text NOT NULL,
+  latitude float8,
+  longitude float8,
+  nation_id int8 REFERENCES nation NOT NULL
+);
+
+CREATE TABLE person (
+  person_id int8 PRIMARY KEY,
+  lastname text NOT NULL,
+  firstname text,
+  birthdate int8,
+  deceased float8 DEFAULT NULL,
+  gender text,
+  residence int8 REFERENCES community NOT NULL,
+  citizenship int8 REFERENCES nation NOT NULL
+);
+
+CREATE TABLE person2diseasestate(
+  diseasestate text NOT NULL,
+  person_id int8 REFERENCES person NOT NULL,
+  transitiondate int8 NOT NULL,
+  PRIMARY KEY (diseasestate, person_id)
+);

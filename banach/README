@@ -70,7 +70,7 @@ The parameter --db-create-tables reads data from .db files and stores it to Post
 
  * Guessing advantage analysis:
 
-     dist/build/banach/banach -QDp --db-create-tables demo_schema.sql demo_query.sql demo_attacker.att --policy=demo_policy.plc --epsilon 1.0 --beta 0.1
+     dist/build/banach/banach -QDp --db-create-tables demo_schema.sql demo_query.sql demo_attacker.att --policy=demo_policy.plc --epsilon 0.3 --beta 0.0
 
    where
    - demo_policy.plc contains the attributes that the attacker tries to guess, and the corresponding precision

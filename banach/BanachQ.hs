@@ -1035,11 +1035,13 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
     (combinedSens_value,combinedRes) <- if combinedSens args
       then do
         --let sqlsaExecutablePath = if debug then sqlsaExecutablePathQuiet else sqlsaExecutablePathVerbose
-        let sqlsaExecutablePath = case inputFp5 args of {"" -> sqlsaExecutablePathQuiet; _ -> inputFp5 args ++ "./sqlsa-quiet"}
+        let sqlsaExecutablePath = case inputFp5 args of {"" -> sqlsaExecutablePathQuiet; _ -> inputFp5 args ++ sqlsaExecutablePathQuiet}
         when debug $ printf "%s --combined-sens%s -B %f -S %f %s %s\n" sqlsaExecutablePath (if null sensitiveVarList then "" else " -f " ++ intercalate "," sensitiveVarList) beta (gub ar) (inputFp1 args) (inputFp2 args)
         let sqlsaArgs = ("--combined-sens" :
                          (if null sensitiveVarList then id else ("-f" :) . (intercalate "," sensitiveVarList :))
                          ["-B", show beta, "-S", show (gub ar), inputFp1 args, inputFp2 args])
+        --print sqlsaExecutablePath
+        --print sqlsaArgs
         callProcess sqlsaExecutablePath sqlsaArgs
         localSensMap <- readTableToSensitivityMap
         callProcess sqlsaExecutablePath ("--count-query" : sqlsaArgs)

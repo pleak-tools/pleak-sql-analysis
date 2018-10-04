@@ -16,6 +16,7 @@ import Prelude hiding (fromInteger,fromRational,(!!),(+),(-),(*),(/),(**),(==),(
 import Data.List hiding ((!!),sum,product,minimum,maximum)
 import Data.List.Split
 import qualified Data.Map as M
+import Data.IORef
 import Text.Printf
 import Control.Monad
 import System.Process
@@ -948,10 +949,10 @@ analyzeTableExprQ fr wh srt colNames varStates te =
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames varStates srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
-performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> IO (Double,[(String, [(String, (Double, Double))])])
-performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap = do
-
+performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> IO (Double,[(String, [(String, (Double, Double))])])
+performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs = do
   let debug = not (alternative args)
+  let tableGmap = M.fromList tableGs
   let (tableNames,_,_) = unzip3 tableExprData
   -- TODO this is related to the # hack, fix it later
   -- let uniqueTableNames = nub tableNames
@@ -980,13 +981,23 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
   let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
   when debug $ printf "colNames = %s\n" (show colNames)
   when debug $ printf "varStates = %s\n" (show varStates)
+  sqlsaCache <- newIORef M.empty :: IO (IORef (M.Map [String] (M.Map String Double, M.Map String Double)))
   res00 <- forM tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
     when debug $ print te
-    result <- performAnalysis args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te
-    return (tableName, result)
+    let pa = performAnalysis args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache
+    case M.lookup tableName tableGmap of
+      Nothing -> do
+        result <- pa (getG args)
+        return (tableName, result)
+      Just Nothing ->
+        -- this table is considered insensitive, so computing its sensitivity is skipped
+        return (tableName, (0, 0, printf "Table %s skipped" tableName))
+      Just tableG -> do
+        result <- pa tableG
+        return (tableName, result)
 
   when (combinedSens args) $ when debug $ putStrLn "\n-----------------\nCombined sensitivities:"
   res0 <- forM res00 $ \ (tableName, (b,sds,combinedRes)) -> do
@@ -1006,8 +1017,9 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
   return (qr,taskAggr)
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr -> IO (Double,Double,String)
-performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te = do
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr ->
+                   IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> Maybe Double -> IO (Double,Double,String)
+performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableG = do
     let debug = not (alternative args)
     -- TODO this is a hack, we will do it in the other way, so that it will be no longer needed
     let policy = (policyAnalysis args)
@@ -1032,7 +1044,8 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
     when debug $ putStrLn (show sds ++ ";")
     sds_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show sds) else (do return 0)
     when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" sds_value
-    (combinedSens_value,combinedRes) <- if combinedSens args
+    let tableGJustInf = case tableG of Just g | isInfinite g -> True; _ -> False
+    (combinedSens_value,combinedRes) <- if combinedSens args && not tableGJustInf
       then do
         --let sqlsaExecutablePath = if debug then sqlsaExecutablePathQuiet else sqlsaExecutablePathVerbose
         let sqlsaExecutablePath = case inputFp5 args of {"" -> sqlsaExecutablePathQuiet; _ -> inputFp5 args ++ sqlsaExecutablePathQuiet}
@@ -1042,15 +1055,23 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
                          ["-B", show beta, "-S", show (gub ar), inputFp1 args, inputFp2 args])
         --print sqlsaExecutablePath
         --print sqlsaArgs
-        callProcess sqlsaExecutablePath sqlsaArgs
-        localSensMap <- readTableToSensitivityMap
-        callProcess sqlsaExecutablePath ("--count-query" : sqlsaArgs)
-        localCountSensMap <- readTableToSensitivityMap
+        cache <- readIORef sqlsaCache
+        (localSensMap,localCountSensMap) <- case M.lookup sqlsaArgs cache of
+          Nothing -> do
+            callProcess sqlsaExecutablePath sqlsaArgs
+            localSensMap <- readTableToSensitivityMap
+            callProcess sqlsaExecutablePath ("--count-query" : sqlsaArgs)
+            localCountSensMap <- readTableToSensitivityMap
+            writeIORef sqlsaCache $ M.insert sqlsaArgs (localSensMap,localCountSensMap) cache
+            return (localSensMap,localCountSensMap)
+          Just maps -> return maps
         when debug $ printf "localSensMap = %s\n" (show localSensMap)
         when debug $ printf "localCountSensMap = %s\n" (show localCountSensMap)
         let localSens = localSensMap M.! tableName
         let localCountSens = localCountSensMap M.! tableName
-        let Just distanceG = getG args
+        --let Just distanceG = getG args
+        let Just distanceG = tableG
+        when debug $ printf "G = %0.3f\n" distanceG
         let ls = localSens / distanceG -- local sensitivity scaled to the combined distance
         let gsb = localCountSens * gsens ar / exp (beta * distanceG)
         let combinedSens = maximum [ls, sds_value, gsb]

@@ -135,23 +135,29 @@ constructNormData tableNames attMap plcMap =
     -- aggregate the variables for each table separately
     let dataMap = M.fromListWith (\(n1,x1s,y1s,z1s) (n2,x2s,y2s,z2s) -> (n1 + n2, x1s ++ x2s, y1s ++ y2s, z1s ++ z2s)) $ map (verifyVarSecrecy attMap plcMap) vars in
     --trace (show dataMap) $
-    map (constructTableNormData dataMap) tableNames
+    let (res0,res) = unzip $ map (constructTableNormData dataMap) tableNames in
+    let (allNumOfVars, allLeakedVars) = unzip res0 in
 
-constructTableNormData :: M.Map String (Int, [Bool],[String],[Expr]) -> String -> (([Int], [VarName]), NormFunction)
+    let numOfVars  = sum allNumOfVars in
+    let leakedVars = concat allLeakedVars in
+
+    -- find out which variables in the policy are already guessed by the attacker
+    let badAttacker = foldr (&&) True leakedVars in
+    if (numOfVars > 0 && badAttacker) then error $ error_attackerBreaksEverything else res
+
+-- the attacker badness should be checked for all tables together, not one by one
+constructTableNormData :: M.Map String (Int, [Bool],[String],[Expr]) -> String -> ((Int, [Bool]), (([Int], [VarName]), NormFunction))
 constructTableNormData dataMap tableName =
 
     if M.member tableName dataMap then
 
         let (numOfVars, leakedVars,sensVars,normVars) = dataMap ! tableName in
-        -- find out which variables in the policy are already guessed by the attacker
-        let badAttacker = foldr (&&) True leakedVars in
-        if (numOfVars > 0 && badAttacker) then error $ error_attackerBreaksEverything else
         let normVarNames = (map (\x -> "_nv" ++ show x) [0..(length normVars - 1)]) in
         let tempVarMap = M.fromList $ zip normVarNames normVars in
         let nf = NF (M.insert "_nv" (L 1.0 normVarNames) tempVarMap) (SelectL 1.0 "_nv") in 
         -- let all rows be sensitive by default, we will need additional input from policy otherwise
-        (([0..],sensVars),nf)
+        ((numOfVars, leakedVars), (([0..],sensVars),nf))
     else
         -- if the policy is not related to the given table, it is treated as public
-        (([0..],[]),NF (M.fromList [("_nv", L 1.0 [])]) (SelectL 1.0 "_nv"))
+        ((0, []), (([0..],[]),NF (M.fromList [("_nv", L 1.0 [])]) (SelectL 1.0 "_nv")))
 

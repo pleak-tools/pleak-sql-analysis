@@ -577,8 +577,8 @@ varStateApprox = do
 
 varStateRange = do
   keyWord "range"
-  lb <- float
-  ub <- float
+  lb <- signedFloat
+  ub <- signedFloat
   return (Range lb ub)
 
 varStateNone = do

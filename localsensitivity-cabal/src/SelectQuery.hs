@@ -38,13 +38,23 @@ import Logging
 --  where
 --    parseFlags = defaultParseFlags { pfDialect = dialect }
 
+
+extractQueryExpr :: Statement -> QueryExpr
+extractQueryExpr (Insert _ _ _ query _)   = query
+extractQueryExpr (QueryStatement _ query) = query
+
 parseSelectQuery :: Dialect -> FilePath -> T.Text -> IO (QueryExpr, [QueryExpr])
 parseSelectQuery dialect fp src =
-  case parseQueryExpr parseFlags fp Nothing src of
+--This is a small modification that allows to ignore INSERT TO embedding (that we used for better integration with pleak)
+--case parseQueryExpr parseFlags fp Nothing src of
+  case parseStatements parseFlags fp Nothing src of
     Left err -> fatal (show err)
-    Right query -> do
+    --Right query -> do
+    Right stmts -> do
+      let query = extractQueryExpr (head stmts)
       qs <- extractQueries query
       return (query, qs)
+
   where
     parseFlags = defaultParseFlags { pfDialect = dialect }
     extractQueries query@Select{} = return [query]

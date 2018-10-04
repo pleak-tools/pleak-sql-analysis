@@ -36,6 +36,9 @@ verifyVarSecrecy attMap plcMap preficedVar =
     let leakedVar = case (attState, plcState) of
             (Exact,_)                -> [True]
             (Approx r1, Approx r2)   -> [r1 <= r2]
+            -- here we assume that the actual data belongs to (lb,ub) -- i.e. the attacker knowledge is correct
+            -- while (ub - lb) / 2 <= r2 would already be sufficient in the case when the actual data is in the middle,
+            -- we only claim immediate leakage if it leaks for sure
             (Range lb ub, Approx r2) -> [(ub - lb) <= r2]
             _                        -> [False]
     in
@@ -47,12 +50,13 @@ verifyVarSecrecy attMap plcMap preficedVar =
             _         -> [var]
     in
 
-    -- constuct the norm, which is NormZero for insensitive vars, L0 for exact guesses, and is scaled L1-norm for approximated guesses
+    -- constuct the norm, which is NormZero for insensitive vars, L0 for exact guesses, and is abs.value for approximated guesses
+    -- TODO if we scale norm  by 1/r here, we will always have r = 1, but need to rescale R
     let normVar = case (attState, plcState) of
             (Exact,_)    -> [ZeroSens var]
             (_, None)    -> [ZeroSens var]
             (_,Exact)    -> [LZero var]
-            (_,Approx r) -> [ScaleNorm (1 / r) var]
+            (_,Approx r) -> [ScaleNorm 1.0 var]
             _ -> error $ error_badAttackerPolicyCombination attState plcState
     in
 
@@ -84,8 +88,8 @@ extract_r attMap plcMap var =
     let plcState = plcMap ! var in
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (_,None)     -> 1.0
-            (_,Exact)    -> 1.0
+            (_,None)     -> 1.0 -- the dimensionality reduces, and multiplication by 1 does not change the result
+            (_,Exact)    -> 1.0 -- 1 is compatible with L0-norm, and it assumes that R will be the number of possible choices
             (_,Approx r) -> r
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
@@ -115,7 +119,7 @@ extract_R attMap plcMap typeMap var =
     --trace "---------" $
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (Exact,_)       -> 1.0
+            (Exact,_)       -> 1.0 -- if the attacker already knows the value exactly, there is 1 possible choice
             (None, _)       -> let dataType = typeMap ! var in
                                    case dataType of
                                        "int8"   -> 2^32
@@ -123,7 +127,7 @@ extract_R attMap plcMap typeMap var =
                                        "bool"   -> 1.0
                                        _       -> error $ error_unboundedDataType dataType
             (Approx r,_)    -> r
-            (Range lb ub,_) -> (ub - lb) / 2.0
+            (Range lb ub,_) -> (ub - lb) / 2.0 -- best-case distance when the actual data point is in the middle,  we choose to overestimate the attacker
 
 constructNormData :: [TableName] -> M.Map String VarState -> M.Map String VarState -> [(([Int], [VarName]), NormFunction)]
 constructNormData tableNames attMap plcMap =

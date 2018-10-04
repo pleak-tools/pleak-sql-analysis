@@ -90,7 +90,7 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
 
   -- TODO we will actually use list es to find more precise bounds, and epsilon itself is only needed since the interface requires it
   -- currently, we do it in the other way since we need to remember which epsilon corresponds to which output
-  -- we need to protect at least one variable in the policy, so take the largest epsilon for safety
+  -- we take the smallest epsilon for safety
   let epsilon = foldr min (1/0) es  
   let posts = zipWith3 (\a e r -> 1 / (1 + exp(- a * e) * (a / r - 1))) as es rs
 

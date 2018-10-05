@@ -129,7 +129,7 @@ extract_R attMap plcMap typeMap var =
             (Approx r,_)    -> r
             (Range lb ub,_) -> (ub - lb) / 2.0 -- best-case distance when the actual data point is in the middle,  we choose to overestimate the attacker
 
-constructNormData :: [TableName] -> M.Map String VarState -> M.Map String VarState -> [(([Int], [VarName]), NormFunction)]
+constructNormData :: [TableName] -> M.Map String VarState -> M.Map String VarState -> [(([Int], [VarName]), NormFunction, Maybe Double)]
 constructNormData tableNames attMap plcMap =
     let vars = M.keys plcMap in
     -- aggregate the variables for each table separately
@@ -146,7 +146,7 @@ constructNormData tableNames attMap plcMap =
     if (numOfVars > 0 && badAttacker) then error $ error_attackerBreaksEverything else res
 
 -- the attacker badness should be checked for all tables together, not one by one
-constructTableNormData :: M.Map String (Int, [Bool],[String],[Expr]) -> String -> ((Int, [Bool]), (([Int], [VarName]), NormFunction))
+constructTableNormData :: M.Map String (Int, [Bool],[String],[Expr]) -> String -> ((Int, [Bool]), (([Int], [VarName]), NormFunction, Maybe Double))
 constructTableNormData dataMap tableName =
 
     if M.member tableName dataMap then
@@ -156,8 +156,8 @@ constructTableNormData dataMap tableName =
         let tempVarMap = M.fromList $ zip normVarNames normVars in
         let nf = NF (M.insert "_nv" (L 1.0 normVarNames) tempVarMap) (SelectL 1.0 "_nv") in 
         -- let all rows be sensitive by default, we will need additional input from policy otherwise
-        ((numOfVars, leakedVars), (([0..],sensVars),nf))
+        ((numOfVars, leakedVars), (([0..],sensVars),nf, Nothing))
     else
         -- if the policy is not related to the given table, it is treated as public
-        ((0, []), (([0..],[]),NF (M.fromList [("_nv", L 1.0 [])]) (SelectL 1.0 "_nv")))
+        ((0, []), (([0..],[]),NF (M.fromList [("_nv", L 1.0 [])]) (SelectL 1.0 "_nv"), Nothing))
 

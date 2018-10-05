@@ -489,10 +489,18 @@ sqlQueryWithGroupBy = do
 ---- Parsing general input format ----
 --------------------------------------
 
+-- we change norm formatting, but we keep the old format as well for compatibility
+norm :: Parser (([Int], [VarName]), NormFunction, Maybe Double)
+norm = do
+    ((rxs, cxs), g) <- newNormHeader <|> oldNormHeader
+    f <- customNorm <|> defaultNorm cxs
+    return ((rxs, cxs), f, g)
+
+-- TODO think on default G case for both old and new norms
 -- the first row in the norm file is the list of sensitive rows
 -- the second row in the norm file is the list of sensitive columns
-norm :: Parser (([Int], [VarName]), NormFunction)
-norm = do
+oldNormHeader :: Parser (([Int], [VarName]), Maybe Double)
+oldNormHeader = do
   kw  <- readKeyWord "all" <|> readKeyWord "none" <|> return ""
   is' <- many integer
   let is = if kw == "all" then [0..]
@@ -500,14 +508,36 @@ norm = do
            else is'
   xs <- many varName
   void (delim)
-  f <- customNorm <|> defaultNorm xs
-  return ((is, xs), f)
+  return ((is, xs), Just (1/0))
+
+newNormHeader :: Parser (([Int], [VarName]), Maybe Double)
+newNormHeader = do
+  readKeyWord "rows:"
+  rkw  <- readKeyWord "all" <|> readKeyWord "none" <|> return ""
+  rxs' <- many integer
+  let rxs = if rkw == "all" then [0..]
+           else if rkw == "none" then []
+           else rxs'
+  readKeyWord "cols:"
+  ckw  <- readKeyWord "all" <|> readKeyWord "none" <|> return ""
+  cxs' <- many varName
+  -- TODO maybe, add also possiblity of "all"
+  let cxs = if ckw == "none" then []
+            else cxs'
+  mg <- (do
+           readKeyWord "&G:"
+           g <- float
+           return (Just g)
+        ) <|> return (Just (1/0))
+  return ((rxs, cxs), mg)
 
 customNorm = do
   f <- function
   return f
 
+-- TODO verify that the file has ended, so it is not an error, but indeed the default norm
 defaultNorm xs = do
+  -- if we succeed in reading the identifier, then something is wrong
   let f = NF (M.fromList [("z",LInf xs)]) (SelectL 1.0 "z")
   return f
 

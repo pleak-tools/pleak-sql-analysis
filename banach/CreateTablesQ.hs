@@ -23,7 +23,7 @@ createTableSql policy dataPath separator tableName = do
   sensRows <- if policy then do return ([0..])
               else do
                   let normFileName = dataPath ++ tableName ++ ".nrm"
-                  ((sR, _), _) <- parseNormFromFile normFileName
+                  ((sR, _), _, _) <- parseNormFromFile normFileName
                   return sR
 
   let sensRowsSet = S.fromList (take numRows sensRows)
@@ -58,7 +58,7 @@ createTableSqlTyped policy dataPath separator tableName types = do
   sensRows <- if policy then do return ([0..])
               else do
                   let normFileName = dataPath ++ tableName ++ ".nrm"
-                  ((sR, _), _) <- parseNormFromFile normFileName
+                  ((sR, _), _, _) <- parseNormFromFile normFileName
                   return sR
 
   let sensRowsSet = S.fromList (take numRows sensRows)

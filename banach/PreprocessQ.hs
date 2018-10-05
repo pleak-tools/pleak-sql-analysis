@@ -148,6 +148,10 @@ inputWrtEachTable debug policy inputMap (tableAlias : ts) filtQuery (sel,fr,wh) 
     let entries = zipWith3 (getTableExprDataWrtOneSensVarSet debug policy inputMap tableName tableAlias filtQuery (sel,fr,wh)) indices tableNorms tableSensCols in
     entries ++ inputWrtEachTable debug policy inputMap ts filtQuery (sel,fr,wh) tableMap
 
+getTableGs tableMap =
+    let tableAliases = M.keys tableMap in
+    let tableGsMap   = M.fromList (map (\tableAlias -> let tableData = tableMap ! tableAlias in (getTableName tableData, getGG tableData)) tableAliases) in
+    M.toList tableGsMap    
 
 processQuery :: TableName -> (M.Map TableName Query) -> TableName -> TableAlias -> TableName -> ([[TableName]], [TableAlias],[TableName], [Function], [AExpr VarName])
 processQuery outputTableName queryMap taskName tableAlias tableName =
@@ -208,7 +212,7 @@ readTableData policy queryPath attMap plcMap typeMap tableNames tableAliases = d
     when (length badNames > 0) $ error (error_schema (M.keys typeMap) badNames)
     let tableColNames = map (\t -> M.keys (typeMap ! t)) tableNames
 
-    (tableSensitives,tableNormFuns) <- fmap unzip dbNormData
+    (tableSensitives, tableNormFuns, tableGs) <- fmap unzip3 dbNormData
     let (_,tableSensitiveVars) = unzip tableSensitives
 
     -- we put table names in front of column names
@@ -217,13 +221,13 @@ readTableData policy queryPath attMap plcMap typeMap tableNames tableAliases = d
     let fullSensitiveVarNames = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableSensitiveVars
 
     -- put all table data together
-    let tableData = zipWith4 T tableNames fullTableColNames fullSensitiveVarNames tableNormFuns
+    let tableData = zipWith5 T tableNames fullTableColNames fullSensitiveVarNames tableGs tableNormFuns
     let tableMap  = M.fromList $ zip tableAliases tableData
     return tableMap
 
 
 -- putting everything together
-getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> String -> IO ((M.Map String VarState, Double), M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, B.TableExpr,(String,String,String))])
+getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> String -> IO ((M.Map String VarState, Double), M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, B.TableExpr,(String,String,String))],[(String, Maybe Double)])
 getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPolicy = do
 
     when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
@@ -330,8 +334,10 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
 
     --bring the input to the form [(TableName, TableExpr, QueryString)]
     let dataWrtEachTable = inputWrtEachTable debug policy inputMap orderedTableAliases finalTableExpr1 (sel,fr ++ minmaxQuery,wh) inputTableMap
+    let tableGs = getTableGs inputTableMap
     let (allTableNames, finalTableExpr, sqlQueries) = unzip3 dataWrtEachTable
 
+    traceIO (show tableGs)
     -- this is only for testing
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ show allTableNames
@@ -342,7 +348,7 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
     let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ whAll
-    let tableExprData = ((plcMap,plcCost),attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable)
+    let tableExprData = ((plcMap,plcCost),attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

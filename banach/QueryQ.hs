@@ -44,14 +44,15 @@ data Query
   deriving (Show)
 
 data TableData =
-    -- original name  usedCols     sensCols   norms
-    T  TableName      [VarName]    [VarName]  NormFunction
+    -- originalName  usedCols     sensCols   distanceG      norms
+    T  TableName     [VarName]    [VarName]  (Maybe Double) NormFunction
   deriving Show
 
-getTableName    (T x _ _ _) = x
-getUsedCols     (T _ x _ _) = x
-getSensCols     (T _ _ x _) = x
-getNorm         (T _ _ _ x) = x
+getTableName    (T x _ _ _ _) = x
+getUsedCols     (T _ x _ _ _) = x
+getSensCols     (T _ _ x _ _) = x
+getGG           (T _ _ _ x _) = x
+getNorm         (T _ _ _ _ x) = x
 
 getQueryGroupNames (P x _ _ _) = x
 getQueryFunctions  (P _ x _ _) = x

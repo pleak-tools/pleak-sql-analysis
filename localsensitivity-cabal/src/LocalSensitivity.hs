@@ -110,7 +110,8 @@ noise_GenCauchy noise_Cauchy_gamma =
     noise_Cauchy_C1 = 1 + noise_Cauchy_gamma
     noise_Cauchy_C2 = 1 + noise_Cauchy_gamma
 
-noise_distributions = [noise_GenCauchy 10.0, noise_GenCauchy 4.0, noise_GenCauchy 3.0, noise_Cauchy, noise_Laplace 1.0e-5, noise_Laplace 1.0e-10]
+--noise_distributions = [noise_GenCauchy 10.0, noise_GenCauchy 4.0, noise_GenCauchy 3.0, noise_Cauchy, noise_Laplace 1.0e-5, noise_Laplace 1.0e-10]
+noise_distributions = [noise_GenCauchy 4.0]
 
 --noise_epsilon = 1.0
 --noise_b2 = 0.5 -- must be in the interval (0,1)
@@ -341,11 +342,17 @@ performLocalSensitivityAnalysis args schema query = do
   return ()
 
 parseCommaSeparatedList :: String -> [String]
-parseCommaSeparatedList [] = [] where
+parseCommaSeparatedList [] = []
 parseCommaSeparatedList s = f [] s where
   f [] [] = []
   f a [] = [reverse a]
   f a (',':s) = reverse a : f [] s
+  f a (c:s) = f (c:a) s
+
+parseColonPair :: String -> (String,String)
+parseColonPair s = f [] s where
+  f a [] = (reverse a, "")
+  f a (':':s) = (reverse a, s)
   f a (c:s) = f (c:a) s
 
 performLocalSensitivityAnalysis' :: ProgramOptions -> (String -> IO ()) -> NoiseParameters -> Map String [String] -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [DerT])])])
@@ -358,6 +365,13 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
 
   let forbiddenCols = Set.fromList $ parseCommaSeparatedList (forbidden args)
   printf "forbiddenCols = %s\n" (show forbiddenCols)
+
+  let tableGlist = parseCommaSeparatedList (tableGs args)
+  let tableGmap = Map.fromList $ map (\ tg -> case parseColonPair tg of
+                                                (tbl,"") -> (tbl,(1::Double)/0)
+                                                (tbl,g)  -> (tbl,read g::Double))
+                                     tableGlist
+  printf "tableGmap = %s\n" (show tableGmap)
 
   putStrLn "Processing FROM clause"
   (hasSubQueries,allSubQueryDers,tableName,tableNames,colNamess,origTableNames,origTableIds,newTableIds,origTables,newTableCount,numCols,tblAddr,addrToTbl,addrToTblCol,addrToColType,nmcsToAddr,totalNumCols,colEq,numTables,forbiddenAddrs) <- do
@@ -531,7 +545,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
         let rms2 = map (\ (r,s) -> (r - r1, s)) (tail rms1)
         sms2 <- process rms2 sms1 Set.empty
         printf "smooth sensitivity (w.r.t. all tables combined): %s\n" (showNoiseLevelList sms2)
-        when canComputeSmoothNoiseLevel $ printf "smooth sensitivity (with gamma = 4) w.r.t. all tables combined: %0.3f\n" (sms2 !! 1)
+        when canComputeSmoothNoiseLevel $ printf "smooth sensitivity (with gamma = 4) w.r.t. all tables combined: %0.3f\n" (sms2 !! 0)
         let distr_smnlms = map (`distrSmNlm` np) noise_distributions
         let smnls = zipWith (*) sms2 distr_smnlms
         when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
@@ -599,7 +613,28 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
       print colEqComponents
 
       let
-        smootheRow d1 sds = do
+        smootheRow1 d1 rowcounts0 rowcounts prices beta = do
+          let missingSum = product rowcounts0 * aggrExprBound - d1
+          let
+            -- rowcount' * price * beta' = 1
+            rcs' beta' = [max rowcount rowcount' | (rowcount,price) <- zip rowcounts prices, let rowcount' = 1/(price*beta')]
+            f beta' = beta * (1 - missingSum / (product (rcs' beta') * aggrExprBound))
+            g x1 x2 | x2-x1 < beta * 1e-10 = x1
+                    | f x3 < x3            = g x1 x3
+                    | otherwise            = g x3 x2
+              where x3 = (x1+x2)*0.5
+          let beta' = g 0 beta
+          --let beta' = 0.5*beta
+          let rowcounts' = rcs' beta'
+          let cost = sum [(rc'-rc)*p | (rc,rc',p) <- zip3 rowcounts rowcounts' prices, not (isInfinite p)]
+          let smsens = (product rowcounts' * aggrExprBound - missingSum) * exp (-cost*beta)
+          --printf "rowcounts0=%s rowcounts=%s prices=%s d1=%0.6f beta=%0.6f beta'=%0.6f f(beta')=%0.6f cost=%0.6f smsens=%0.6f rowcounts'=%s\n" (show rowcounts0) (show rowcounts) (show prices) d1 beta beta' (f beta') cost smsens (show rowcounts') :: IO ()
+          return smsens
+
+        --smootheRow d1 sds prices = (smootheRowInt d1 sds >>= print) >> mapM (smootheRow1 d1 sds prices) distrBetas
+        smootheRow d1 sds0 sds prices = mapM (smootheRow1 d1 sds0 sds prices) distrBetas
+
+        smootheRowInt d1 sds = do
           -- TODO: allow xs to be floating-point numbers
           let
             satds k xs =
@@ -631,7 +666,8 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
           --let betas = map (`distrBeta` np) noise_distributions
           --printf "  beta = %s\n" (showNoiseLevelList betas)
           --printf "  1/beta = %s\n" (showNoiseLevelList (map (1/) betas))
-          --forM_ [0..100] $ \ i ->
+          --let beta = head distrBetas
+          --forM_ [0..10] $ \ i ->
           --  printf "  %2d: %20s %10.3f %10.3f\n" i (show (satds i xs)) (satd i xs) (smsens0 beta i xs)
           putStr ""
           let smss = map (`smsens` xs) distrBetas
@@ -721,6 +757,18 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
         findDerivativesQ :: [Int] -> IO [([[SqlValue]], [SqlValue], [DerT])]
         findDerivativesQ [dtable] = do
           q <- findBigQueryForDerivatives dtable
+          let dtableOrig = origTableIds !! dtable
+          let otherTableOrigs = [ot | (t,ot) <- zip [0..numTables-1] origTableIds, t /= dtable]
+          let localSensAddedRowCount = [if localSens args && ot == dtableOrig then 1 else 0 | (t,ot) <- zip [0..numTables-1] origTableIds, t /= dtable]
+          --print localSensAddedRowCount
+          let otherTableOrigNames = [ot | (t,ot) <- zip [0..numTables-1] origTableNames, t /= dtable]
+          --print otherTableOrigNames
+          let otherTableGs = map (Map.findWithDefault (getG args) `flip` tableGmap) otherTableOrigNames
+          --print otherTableGs
+          let tableUseCounts = map (\ ot -> length $ filter (== ot) otherTableOrigs) otherTableOrigs
+          let prices = zipWith (/) otherTableGs $ map (fromIntegral :: Int -> Double) tableUseCounts
+          --print tableUseCounts
+          --print prices
           res <- sendQueryToDb args q
           let nc = numCols dtable
           if null res
@@ -734,7 +782,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
               --                                                               Nothing -> 0
               let d = fromSql (head rs2) :: Double
               let ds = map fromSql (tail rs2) :: [Double]
-              smss <- smootheRow d ds
+              smss <- smootheRow d ds (zipWith (+) ds localSensAddedRowCount) prices
               printf "%s -> %f # %s # %s\n" (show els) d (show ds) (showNoiseLevelList smss)
               return ([els],[],d:smss)
 
@@ -820,7 +868,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
         when canComputeSmoothNoiseLevel $ printf "-> smooth noise level %s\n" (showNoiseLevelList smnls)
         when canComputeSmoothNoiseLevel $ do
           let table = fst (head dtncs)
-          let sens = maxsmss !! 1
+          let sens = maxsmss !! 0
           printf "smooth sensitivity (with gamma = 4) w.r.t. table %s: %0.3f\n" table sens
           writeCombinedOutput (table ++ " " ++ show sens)
         return $ if null smnls then replicate (length noise_distributions) 0 else smnls
@@ -835,13 +883,14 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
       --printf "query result = %0.3f\n" (fromIntegral (head (head queryResult)) :: Double)
       printf "query result = %s\n" (case fromSql (head (head queryResult)) :: Maybe Double of Just r -> show r; Nothing -> "NULL")
       printf "noise level to add = %s\n" (showNoiseLevelList2 nls2)
-      -- quantiles of the absolute value of added noise
-      let ps = 0 : 0.001 : 0.01 : 0.1 : 0.2 : 0.3 : 0.4 : map (\ i -> 1 - (2 :: Double)**(- 1.0 * i)) [1..20]
-      let nqss = transpose $ map (flip distrQuantiles ps) noise_distributions
-      forM_ (zip ps nqss) $ \ (p, nqs) -> do
-        let qs2 = zipWith (*) nls2 nqs
-        --printf "%9.5f%% quantile: %0.3f %0.3f | %0.3f | ratio = %0.3f\n" (100 * p) (noiseLevelC * nqGC) qC qL (qC / qL)
-        printf "%9.5f%% quantile: %s\n" (100 * p) (showNoiseLevelList2 qs2)
+      when (printQuantiles args) $ do
+        -- quantiles of the absolute value of added noise
+        let ps = 0 : 0.001 : 0.01 : 0.1 : 0.2 : 0.3 : 0.4 : map (\ i -> 1 - (2 :: Double)**(- 1.0 * i)) [1..20]
+        let nqss = transpose $ map (flip distrQuantiles ps) noise_distributions
+        forM_ (zip ps nqss) $ \ (p, nqs) -> do
+          let qs2 = zipWith (*) nls2 nqs
+          --printf "%9.5f%% quantile: %0.3f %0.3f | %0.3f | ratio = %0.3f\n" (100 * p) (noiseLevelC * nqGC) qC qL (qC / qL)
+          printf "%9.5f%% quantile: %s\n" (100 * p) (showNoiseLevelList2 qs2)
     else do
       putStrLn "query result:"
       mapM_ print queryResult

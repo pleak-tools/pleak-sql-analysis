@@ -953,6 +953,12 @@ performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String 
 performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs = do
   let debug = not (alternative args)
   let tableGmap = M.fromList tableGs
+  let tableGstr = intercalate "," $
+                    map (\ tg -> case tg of (tbl,Nothing)               -> tbl
+                                            (tbl,Just g) | isInfinite g -> tbl
+                                                         | otherwise    -> tbl ++ ':' : show g)
+                        tableGs
+  --when debug $ printf "tableGstr = %s\n" tableGstr
   let (tableNames,_,_) = unzip3 tableExprData
   -- TODO this is related to the # hack, fix it later
   -- let uniqueTableNames = nub tableNames
@@ -987,7 +993,7 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
     when debug $ print te
-    let pa = performAnalysis args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache
+    let pa = performAnalysis args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableGstr
     case M.lookup tableName tableGmap of
       Nothing -> do
         result <- pa (getG args)
@@ -1018,9 +1024,10 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
 
 
 performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr ->
-                   IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> Maybe Double -> IO (Double,Double,String)
-performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableG = do
+                   IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> Maybe Double -> IO (Double,Double,String)
+performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableGstr tableG = do
     let debug = not (alternative args)
+    --when debug $ printf "varStates = %s\n" (show varStates)
     -- TODO this is a hack, we will do it in the other way, so that it will be no longer needed
     let policy = (policyAnalysis args)
     let ar = analyzeTableExprQ fromPart wherePart (sensRows (if policy then takeWhile (\x -> case x of {'#' -> False; _ -> True}) tableName else tableName)) colNames varStates te
@@ -1049,18 +1056,21 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
       then do
         --let sqlsaExecutablePath = if debug then sqlsaExecutablePathQuiet else sqlsaExecutablePathVerbose
         let sqlsaExecutablePath = case inputFp5 args of {"" -> sqlsaExecutablePathQuiet; _ -> inputFp5 args ++ sqlsaExecutablePathQuiet}
-        when debug $ printf "%s --combined-sens%s -B %f -S %f %s %s\n" sqlsaExecutablePath (if null sensitiveVarList then "" else " -f " ++ intercalate "," sensitiveVarList) beta (gub ar) (inputFp1 args) (inputFp2 args)
+        --when debug $ printf "%s --combined-sens%s -B %f -S %f %s %s\n" sqlsaExecutablePath (if null sensitiveVarList then "" else " -f " ++ intercalate "," sensitiveVarList) beta (gub ar) (inputFp1 args) (inputFp2 args)
+        let Just defaultG = getG args
         let sqlsaArgs = ("--combined-sens" :
                          (if null sensitiveVarList then id else ("-f" :) . (intercalate "," sensitiveVarList :))
-                         ["-B", show beta, "-S", show (gub ar), inputFp1 args, inputFp2 args])
+                         ((if null tableGstr then id else ("--table-Gs" :) . (tableGstr :))
+                         ["-G", show defaultG, "-B", show beta, "-S", show (gub ar), inputFp1 args, inputFp2 args]))
         --print sqlsaExecutablePath
         --print sqlsaArgs
+        when debug $ putStrLn $ intercalate " " (sqlsaExecutablePath : sqlsaArgs)
         cache <- readIORef sqlsaCache
         (localSensMap,localCountSensMap) <- case M.lookup sqlsaArgs cache of
           Nothing -> do
             callProcess sqlsaExecutablePath sqlsaArgs
             localSensMap <- readTableToSensitivityMap
-            callProcess sqlsaExecutablePath ("--count-query" : sqlsaArgs)
+            callProcess sqlsaExecutablePath (["--count-query", "--localsens"] ++ sqlsaArgs)
             localCountSensMap <- readTableToSensitivityMap
             writeIORef sqlsaCache $ M.insert sqlsaArgs (localSensMap,localCountSensMap) cache
             return (localSensMap,localCountSensMap)

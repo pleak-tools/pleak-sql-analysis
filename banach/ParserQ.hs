@@ -515,18 +515,21 @@ newNormHeader = do
   readKeyWord "rows:"
   rkw  <- readKeyWord "all" <|> readKeyWord "none" <|> return ""
   rxs' <- many integer
+  void (delim)
   let rxs = if rkw == "all" then [0..]
            else if rkw == "none" then []
            else rxs'
   readKeyWord "cols:"
   ckw  <- readKeyWord "all" <|> readKeyWord "none" <|> return ""
   cxs' <- many varName
+  void (delim)
   -- TODO maybe, add also possiblity of "all"
   let cxs = if ckw == "none" then []
             else cxs'
   mg <- (do
-           readKeyWord "&G:"
+           readKeyWord "G:"
            g <- float
+           void (delim)
            return (Just g)
         ) <|> return (Just (1/0))
   return ((rxs, cxs), mg)

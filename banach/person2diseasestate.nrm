@@ -1,6 +1,6 @@
-rows: all
-cols: diseasestate
-&G: 1.0
+rows: all;
+cols: diseasestate;
+G: 1.0;
 
 z = l0 diseasestate;
 return lp 1.0 z;

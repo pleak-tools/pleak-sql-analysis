@@ -16,6 +16,7 @@ import Prelude hiding (fromInteger,fromRational,(!!),(+),(-),(*),(/),(**),(==),(
 import Data.List hiding ((!!),sum,product,minimum,maximum)
 import Data.List.Split
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Data.IORef
 import Text.Printf
 import Control.Monad
@@ -413,11 +414,46 @@ getLbFromAr ar = case arVarState ar of Range lb ub -> lb
 getRangeFromAr :: AnalysisResult -> VarState
 getRangeFromAr ar = Range (getLbFromAr ar) (getUbFromAr ar)
 
-analyzeExprQ :: [String] -> [VarState] -> Expr -> AnalysisResult
+findUsedVars :: Expr -> [Int]
+findUsedVars = fuv where
+  fuv expr =
+    case expr of
+      Prec _ ->                           []
+      StringCond _ ->                     []
+      Power i _ ->                        [i]
+      ComposePower e1 _ ->                fuv e1
+      Exp r i ->                          [i]
+      ComposeExp r e1 ->                  fuv e1
+      Sigmoid a c i ->                    [i]
+      ComposeSigmoid a c e1 ->            fuv e1
+      SigmoidPrecise aa ab c i ->         [i]
+      ComposeSigmoidPrecise aa ab c e1 -> fuv e1
+      Tauoid a c i ->                     [i]
+      ComposeTauoid a c e1 ->             fuv e1
+      TauoidPrecise aa ab c i ->          [i]
+      ComposeTauoidPrecise aa ab c e1 ->  fuv e1
+      L0Predicate i p ->                  [i]
+      PowerLN i r ->                      [i]
+      Const c ->                          []
+      ScaleNorm a e1 ->                   fuv e1
+      ZeroSens e1 ->                      fuv e1
+      L p is ->                           is
+      LInf is ->                          is
+      Prod es ->                          concatMap fuv es
+      Prod2 es ->                         concatMap fuv es
+      Min es ->                           concatMap fuv es
+      Max es ->                           concatMap fuv es
+      ComposeL p es ->                    concatMap fuv es
+      Sump p es ->                        concatMap fuv es
+      SumInf es ->                        concatMap fuv es
+      Sum2 es ->                          concatMap fuv es
+
+
+analyzeExprQ :: [String] -> S.Set Int -> [VarState] -> Expr -> AnalysisResult
 analyzeExprQ colNames = analyzeExpr (map VarQ colNames)
 
-analyzeExpr :: [ExprQ] -> [VarState] -> Expr -> AnalysisResult
-analyzeExpr row varStates = ae where
+analyzeExpr :: [ExprQ] -> S.Set Int -> [VarState] -> Expr -> AnalysisResult
+analyzeExpr row sensitiveVarSet varStates = ae where
  ae expr =
   case expr of
     Prec (B.AR fx (B.SUB subg subBeta) (B.SUB sdsg sdsBeta)) -> AR {fx = Q fx, subf = SUB (Q . subg) subBeta, sdsf = SUB (Q . subg) subBeta,
@@ -664,9 +700,9 @@ analyzeExpr row varStates = ae where
              gsens = gsens/a,
              arVarState = vs}
     ZeroSens e1 ->
-      let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub _ vs = ae e1
+      let AR fx1 subf@(SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub _ vs = ae e1
       in aR {fx = fx1,
-             subf = SUB (const fx1) 0,
+             subf = if any (`S.member` sensitiveVarSet) (findUsedVars e1) then subf else SUB (const fx1) 0,
              sdsf = SUB (const (Q 0)) 0,
              gub = gub,
              gsens = 0,
@@ -905,8 +941,8 @@ combineArsSumInfT :: AnalysisResult -> AnalysisResult
 combineArsSumInfT ar =
   (combineArsSumT ar) {sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
-analyzeTableExpr :: [String] -> [VarState] -> String -> TableExpr -> AnalysisResult
-analyzeTableExpr cols varStates srt te =
+analyzeTableExpr :: [String] -> S.Set Int -> [VarState] -> String -> TableExpr -> AnalysisResult
+analyzeTableExpr cols sensitiveVarSet varStates srt te =
   case te of
     SelectMin (expr : _) -> oneStepCombine combineArsMinT expr
     SelectMax (expr : _) -> oneStepCombine combineArsMaxT expr
@@ -917,7 +953,7 @@ analyzeTableExpr cols varStates srt te =
     fixedArg arg expr arg' | arg' P.== arg = expr
     oneStepCombine combine expr =
       let
-        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine (analyzeExprQ cols varStates expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine (analyzeExprQ cols sensitiveVarSet varStates expr)
       in
         aR {fx = fx,
             sdsf = SUB (\ beta -> sdsg beta `Where` (srt ++ ".sensitive")) subBeta,
@@ -925,7 +961,7 @@ analyzeTableExpr cols varStates srt te =
             gsens = gsens}
     twoStepCombine combine_p combine_inf expr =
       let
-        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine_inf (analyzeExprQ cols varStates expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine_inf (analyzeExprQ cols sensitiveVarSet varStates expr)
         AR _ _ (SUB _ subBeta2) _ _ _ = combine_p $ AR {sdsf = SUB undefined subBeta}
       in aR {fx = fx,
              sdsf = SUB (\ beta ->
@@ -944,9 +980,9 @@ analyzeTableExpr cols varStates srt te =
 -- fr may contain multiple tables and aliases, e.g. "t as t1, t as t2, t3"
 -- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
 -- srt is the name of the sensitive rows table
-analyzeTableExprQ :: String -> String -> String -> [String] -> [VarState] -> TableExpr -> AnalysisResult
-analyzeTableExprQ fr wh srt colNames varStates te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames varStates srt te
+analyzeTableExprQ :: String -> String -> String -> [String] -> S.Set Int -> [VarState] -> TableExpr -> AnalysisResult
+analyzeTableExprQ fr wh srt colNames sensitiveVarSet varStates te =
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
 performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> IO (Double,[(String, [(String, (Double, Double))])])
@@ -1010,12 +1046,16 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
     when (combinedSens args) $ when debug $ putStr combinedRes
     return (tableName,(b,sds))
 
-  let taskAggr0 = map (\(taskName,is,b) -> (taskName, B.sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0)) $ map (res0 !!) is, b)) taskMap
+  --let taskAggr0 = map (\(taskName,is,b) -> (taskName, B.sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0)) $ map (res0 !!) is, b)) taskMap
+  -- min x1 x2 should be correct as we need to take the minimal b
+  let taskAggr0 = map (\(taskName,is,b) -> (taskName, B.sumGroupsWith (foldr (\(x1,y1) (x2,y2) -> (min x1 x2, y1 + y2)) (infinity,0)) $ map (res0 !!) is, b)) taskMap
 
   -- add an aggregated result to the output, sum up the sensitivities and take time minimal b
   let taskAggr = map (\(taskName,vs,b) ->
                          if b then
-                             let v = foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0) (snd $ unzip vs) in
+                             --let v = foldr (\(x1,y1) (x2,y2) -> (max x1 x2, y1 + y2)) (0,0) (snd $ unzip vs) in
+                             -- Use L1-norm to combine tables, so take the maximum of sensitivities instead of sum
+                             let v = foldr (\(x1,y1) (x2,y2) -> (min x1 x2, max y1 y2)) (infinity,0) (snd $ unzip vs) in
                              (taskName, (B.resultForAllTables, v):vs)
                          else
                              (taskName,vs)
@@ -1028,9 +1068,13 @@ performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String 
 performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableGstr tableG = do
     let debug = not (alternative args)
     --when debug $ printf "varStates = %s\n" (show varStates)
+    let sensitiveVarSet = S.fromList sensitiveVarList
+    let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
+    let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
+    --when debug $ printf "sensitiveVarIndices = %s\n" (show sensitiveVarIndices)
     -- TODO this is a hack, we will do it in the other way, so that it will be no longer needed
     let policy = (policyAnalysis args)
-    let ar = analyzeTableExprQ fromPart wherePart (sensRows (if policy then takeWhile (\x -> case x of {'#' -> False; _ -> True}) tableName else tableName)) colNames varStates te
+    let ar = analyzeTableExprQ fromPart wherePart (sensRows (if policy then takeWhile (\x -> case x of {'#' -> False; _ -> True}) tableName else tableName)) colNames sensitiveVarIndicesSet varStates te
     when debug $putStrLn "Analysis result:"
     when debug $print ar
     --let epsilon = getEpsilon args

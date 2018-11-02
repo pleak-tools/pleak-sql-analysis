@@ -28,13 +28,12 @@ lambert x n =
     let an = lambert x (n - 1) in
     an - (an * exp(an) - x) / ((an + 1) * exp(an))
 
-performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> IO ()
-performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs = do
+performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
+performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   let epsilon = getEpsilon args
   let beta    = getBeta args
-  --(qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap [("t11",Just 7),("t12",Just (1/0))]
-  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs
+  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
   let taskStr = if alternative args then
           map (\(taskName,res) -> taskName ++ [B.unitSeparator] ++
                   (intercalate [B.unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show qr, show (sds/b), show ((sds/b) / qr * 100)]) res)) taskAggr
@@ -44,8 +43,8 @@ performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap 
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") taskStr
 
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> Double -> M.Map String VarState -> M.Map String VarState -> IO ()
-performPolicyAnalysis args dataPath separator initialQuery colNames typeMap taskMap tableExprData cost plcMap attMap = do
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> Double -> M.Map String VarState -> M.Map String VarState -> [Int] -> IO ()
+performPolicyAnalysis args dataPath separator initialQuery colNames typeMap taskMap tableExprData cost plcMap attMap colTableCounts = do
 
   -- the input epsilon now works as delta, the upper bound on attacker's advantage
   let debug = not (alternative args)
@@ -101,7 +100,7 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   --traceIO ("Pr_pre: " ++ (show ps) ++ "  -->  " ++ (show pr_pre))
   --traceIO ("Pr_post: " ++ (show posts) ++ "  -->  " ++ (show pr_post))
 
-  let step = performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon
+  let step = performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon colTableCounts
 
   let beta = case fixedBeta of {Nothing -> B.defaultBeta; Just beta -> beta}
   (qr,initialError) <- step (Just beta)
@@ -134,10 +133,10 @@ repeatUntilGetBestError step prevError betaMin betaMax = do
         else do
             return nextError
 
-performPolicyAnalysisStep :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> Double -> Maybe Double -> IO (Double,Double)
-performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon beta = do
+performPolicyAnalysisStep :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> Double -> [Int] -> Maybe Double -> IO (Double,Double)
+performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon colTableCounts beta = do
 
-  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap []
+  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
   --traceIO "######################################"
   --traceIO (show taskAggr)
   let resultMap = M.fromList $ snd (last taskAggr)

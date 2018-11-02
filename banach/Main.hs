@@ -14,11 +14,11 @@ main = do
     then do
       if policyAnalysis args
         then do
-          ((plcMap,plcCost),attMap,dataPath,initialQuery,colNames,typeMap,taskMap,_,tableExprData,_) <- PQ.getBanachAnalyserInput debug True (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
-          performPolicyAnalysis args dataPath (delimiter args) initialQuery colNames typeMap taskMap tableExprData plcCost plcMap attMap
+          ((plcMap,plcCost),attMap,dataPath,initialQuery,colNames,typeMap,taskMap,_,tableExprData,_,colTableCounts) <- PQ.getBanachAnalyserInput debug True (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
+          performPolicyAnalysis args dataPath (delimiter args) initialQuery colNames typeMap taskMap tableExprData plcCost plcMap attMap colTableCounts
         else do
-          (_,attMap,dataPath,initialQuery,colNames,typeMap,taskMap,sensitiveVarList,tableExprData,tableGs) <- PQ.getBanachAnalyserInput debug False (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
-          performDPAnalysis args dataPath (delimiter args) initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs
+          (_,attMap,dataPath,initialQuery,colNames,typeMap,taskMap,sensitiveVarList,tableExprData,tableGs,colTableCounts) <- PQ.getBanachAnalyserInput debug False (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
+          performDPAnalysis args dataPath (delimiter args) initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
 
     else do
       (outputTableName,qr,table,taskMap,tableExprData,colNames) <- P.getBanachAnalyserInput debug (inputFp2 args)

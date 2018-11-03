@@ -230,8 +230,19 @@ readTableData policy queryPath attMap plcMaps typeMap tableNames tableAliases = 
     return tableMap
 
 
+-- for each column, find the number of times the table of this column is used
+getColTableCounts colNames tableNames tableAliases =
+    let
+      -- the number of times each table is used
+      tableCounts = map (\ tn -> length (filter (== tn) tableNames)) tableNames
+      aliasToCountMap = M.fromList (zip tableAliases tableCounts)
+      -- the table (alias) of each column
+      colTableAliases = map (takeWhile (/= '.')) colNames
+    in
+      map (aliasToCountMap M.!) colTableAliases
+
 -- putting everything together
-getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> String -> IO ([(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, B.TableExpr,(String,String,String))],[(String, Maybe Double)])
+getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> String -> IO ([(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, B.TableExpr,(String,String,String))],[(String, Maybe Double)],[Int])
 getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPolicy = do
 
     when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
@@ -349,10 +360,14 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
     traceIOIfDebug debug $ show inputTableAliases
     traceIOIfDebug debug $ "----------------"
 
+    let colTableCounts = getColTableCounts colNames inputTableNames inputTableAliases
+    traceIOIfDebug debug $ "colTableCounts: " ++ show colTableCounts
+
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
     let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ whAll
-    let tableExprData = (plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs)
+    let tableExprData = (plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
+
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

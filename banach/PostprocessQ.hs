@@ -4,6 +4,7 @@ import Debug.Trace
 
 import Data.List
 import qualified Data.Map as M
+import qualified Data.Set as S
 import ProgramOptions
 import Text.Printf
 import ErrorMsg
@@ -28,6 +29,7 @@ lambert x n =
     let an = lambert x (n - 1) in
     an - (an * exp(an) - x) / ((an + 1) * exp(an))
 
+
 performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> IO ()
 performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs = do
 
@@ -44,8 +46,8 @@ performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap 
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") taskStr
 
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> Double -> M.Map String VarState -> M.Map String VarState -> IO ()
-performPolicyAnalysis args dataPath separator initialQuery colNames typeMap taskMap tableExprData cost plcMap attMap = do
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> IO ()
+performPolicyAnalysis args dataPath separator initialQuery colNames typeMap taskMap tableExprData plcMaps attMap = do
 
   -- the input epsilon now works as delta, the upper bound on attacker's advantage
   let debug = not (alternative args)
@@ -58,45 +60,77 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
 
   -- TODO probabily we find a way to analyse several different policies at once here?
   -- check the variables are agregated correctly 
-  let bs  = extract_bs attMap plcMap
+  let cost = sum $ map snd plcMaps
 
-  let rs  = filterWith bs (extract_rs attMap plcMap)
-  let rrs = filterWith bs (extract_Rs attMap plcMap plainTypeMap)
-  let ps  = zipWith (\r rr -> if rr == 0 then 1.0 else r / rr) rs rrs
-  let p = product ps
+  let bss  = map (extract_bs attMap . fst) plcMaps
+  let rss   = zipWith filterWith bss $ map (extract_rs attMap . fst) plcMaps
+  let rrss' = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap . fst) plcMaps
+  let crss' = zipWith filterWith bss $ map (extract_CRs attMap plainTypeMap . fst) plcMaps
 
-  --traceIO ("rs: " ++ (show rs))
-  --traceIO ("Rs: " ++ (show rrs))
-  --traceIO ("p: "  ++ (show p))
+  let rrss = zipWith (zipWith (/)) rrss' rss --rescaled bounds
+  let crss = zipWith (zipWith (/)) crss' rss --rescaled bounds
+
+  -- the weights of separate blocks in the sensitive area
+  let pss  = map (map (\cr -> if cr == 0 then 1.0 else 1 / cr)) crss
+
+  -- space dimensionality comes from the total number of sensitive variables
+  -- TODO check if there are any repeating variables!
+  let allSensVars = S.fromList $ concat (map (M.keys . fst) plcMaps) 
+  let m = fromIntegral $ length (concat rss)
+
+  -- we multiply the dimensions of variables belonging to one sensitive set
+  -- we add the weights of different sensitive sets, since the attacker may guess any of them
+  -- TODO do not include repeating vaariables into the intersection weight
+  let intersectionWeight = product $ map product pss
+  let total = 1 / intersectionWeight -- basically meant for discrete values, how much choices the are in total if we take X' as a unit
+  let p = (sum $ map product pss) - (fromIntegral (length pss - 1)) * intersectionWeight
+  let xWeight = p * total
+
+  -- TODO continue from here
+  let rrs = head rrss
 
   -- we know that the probability cannot grow above 100%
   let d = min (1 - p) delta
-  -- the upper bound for the multivariate case
-  let ub = (p + d)**(1 / fromIntegral (length ps))
+  -- we consider multidimensional space, where the radius is linf-norm
+  let ub = p + d
 
-  -- convert guessing probability to epsilon
-  let es' = map (\r -> (lambert (ub / (exp(1) * (1 - ub))) 10) / r) rs
+  -- convert guessing probability to epsilon (assuming that 'a' is optimal)
+  -- let es' = map (\r -> (lambert (ub / (exp(1) * (1 - ub))) 10) / r) rs
+  -- consider scaled dimensions, where r = 1 for all r
+  let epsilon' = if m == 1 then lambert (ub / (exp(1) * (1 - ub))) 10 else m / (exp(1) * (1 / ub - 1 + exp(-m)) ** (1 / m))
 
-  -- find the values of a that correspond to epsilons
-  let as' = zipWith (\e r -> r + 1 / e) es' rs
+  -- find the initial (optimal) value of a
+  -- we compute a = m / epsilon + 1 if m = 1, and m / epsilon for the multidimensional case
+  let a' = if m == 1 then m / epsilon' + 1 else m / epsilon'
 
-  -- in the case a > R, set a = R and recompute the corresponding epsilon
-  let es = zipWith3 (\e a rr -> if a > rr then (log (ub * (1 - p) / (p * (1 - ub)))) / rr else e) es' as' rrs
-  let as = zipWith (\a rr -> if a > rr then rr else a) as' rrs
+  traceIO (show plcMaps)
+  traceIO (show allSensVars)
+  traceIO ("m: " ++ (show m))
+  traceIO ("pss: " ++ (show pss))
+  traceIO ("p: " ++ (show p))
+  traceIO ("total: " ++ (show total))
+  traceIO ("d: " ++ (show d))
+  traceIO ("a': " ++ (show a'))
+  traceIO ("rrs: " ++ (show rrs))
+  traceIO ("crss: " ++ (show crss))
+  traceIO ("eps': " ++ (show epsilon'))
 
-  --traceIO ("as': " ++ (show as'))
-  --traceIO ("as: "  ++ (show as))
-  --traceIO ("es': " ++ (show es'))
-  --traceIO ("es: "  ++ (show es))
+  -- in the case a > rr for some rr, set a = rr
+  let ass = map (map (\rr -> min rr a')) rrss
+  let a = foldr max 0 (concat ass)
 
-  -- TODO we will actually use list es to find more precise bounds, and epsilon itself is only needed since the interface requires it
-  -- currently, we do it in the other way since we need to remember which epsilon corresponds to which output
-  -- we take the smallest epsilon for safety
-  let epsilon = foldr min (1/0) es  
-  let posts = zipWith3 (\a e r -> 1 / (1 + exp(- a * e) * (a / r - 1))) as es rs
+  -- TODO use some better detection of discrete choice than a = 1.0 here
+  let xbarWeight = if a == 1.0 then total - xWeight else (sum $ map product ass) - xWeight
+
+  -- recompute a and the epsilon
+  let epsilon = log ((xbarWeight / xWeight) / (ub**(-1) - 1)) / a
+  traceIO ("a: " ++ (show a))
+  traceIO ("x: " ++ (show xWeight))
+  traceIO ("xbar: " ++ (show xbarWeight))
+  traceIO ("eps: " ++ (show epsilon))
 
   let pr_pre  = p
-  let pr_post = product $ posts
+  let pr_post = 1 / (1 + exp(- a * epsilon) * (xbarWeight / xWeight))
 
   --traceIO ("Pr_pre: " ++ (show ps) ++ "  -->  " ++ (show pr_pre))
   --traceIO ("Pr_post: " ++ (show posts) ++ "  -->  " ++ (show pr_post))
@@ -109,9 +143,11 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   finalError <- repeatUntilGetBestError step initialError 0.0 beta
   let expectedCost = delta * cost
 
+  putStrLn $ intercalate ("\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
   -- for PRISMS we have modified the output, adjusting it to histograms
   -- putStrLn $ intercalate (if alternative args then ";" else "\n\n") [show delta, show qr, show finalError]
+
 
 repeatUntilGetBestError :: (Maybe Double -> IO (Double,Double)) -> Double -> Double -> Double -> IO Double
 repeatUntilGetBestError step prevError betaMin betaMax = do

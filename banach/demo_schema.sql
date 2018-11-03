@@ -25,6 +25,5 @@ CREATE TABLE person (
 CREATE TABLE person2diseasestate(
   diseasestate text NOT NULL,
   person_id int8 REFERENCES person NOT NULL,
-  transitiondate int8 NOT NULL,
-  PRIMARY KEY (diseasestate, person_id)
+  transitiondate int8 NOT NULL
 );

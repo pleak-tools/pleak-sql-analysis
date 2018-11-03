@@ -1,0 +1,3 @@
+cat.cat_id exact;
+cat.gender total 2;
+cat.color total 2;

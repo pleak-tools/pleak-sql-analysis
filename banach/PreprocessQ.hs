@@ -115,7 +115,8 @@ getTableExprDataWrtOneSensVarSet debug policy inputMap tableName tableAlias filt
     -- the query expressions defined over the large cross product table
     let adjTableExpr = deriveExprNorm debug inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
 
-    (tableName ++ if policy then "#" ++ show index else "", adjTableExpr, (sel, fr1, wh1))
+    --(tableName ++ if policy then "#" ++ show index else "", adjTableExpr, (sel, fr1, wh1))
+    (tableName, adjTableExpr, (sel, fr1, wh1))
 
 
 -- construct input for multitable Banach analyser
@@ -132,12 +133,14 @@ inputWrtEachTable debug policy inputMap (tableAlias : ts) filtQuery (sel,fr,wh) 
     let tableName     = getTableName     tableData in
     let tableSensVars = getSensCols      tableData in
 
-    let tableNorms1   = if policy then (let (NF as _) = tableNorm in
-                                        let L 1.0 varNames = as ! "_nv" in
-                                        let elems = filter (\x -> case x of {ZeroSens _ -> False ; _ -> True}) (map (as !) varNames) in
-                                        map (\x -> NF (M.fromList [("_nv",x)]) (SelectL 1.0 "_nv")) elems)
-                        else [tableNorm] in
-    let tableSensCols1 = if policy then map (\x -> S.singleton (inputMap ! x)) tableSensVars else [S.fromList $ map (inputMap ! ) tableSensVars] in
+    --let tableNorms1   = if policy then (let (NF as _) = tableNorm in
+    --                                    let L 1.0 varNames = as ! "_nv" in
+    --                                    let elems = filter (\x -> case x of {ZeroSens _ -> False ; _ -> True}) (map (as !) varNames) in
+    --                                    map (\x -> NF (M.fromList [("_nv",x)]) (SelectL 1.0 "_nv")) elems)
+    --                    else [tableNorm] in
+    --let tableSensCols1 = if policy then map (\x -> S.singleton (inputMap ! x)) tableSensVars else [S.fromList $ map (inputMap ! ) tableSensVars] in
+    let tableNorms1 = [tableNorm] in
+    let tableSensCols1 = [S.fromList $ map (inputMap ! ) tableSensVars] in
 
     -- if there are no sensitive vars at all, we still compute the "default" norm NormZero
     let (tableSensCols, tableNorms) = if (length tableNorms1 == 0) then ([S.empty],[tableNorm]) else (tableSensCols1, tableNorms1) in 
@@ -197,14 +200,14 @@ processQuery outputTableName queryMap taskName tableAlias tableName =
         (map (taskName :) taskNames, map (prefix ++) tableAliases, tableNames, outputQueryFuns, outputFilters)
 
 -- assume that the tables are located in the same place where the query is
-readTableData :: Bool -> String -> M.Map String VarState -> M.Map String VarState -> M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
-readTableData policy queryPath attMap plcMap typeMap tableNames tableAliases = do
+readTableData :: Bool -> String -> M.Map String VarState -> [(M.Map String VarState, Double)] -> M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
+readTableData policy queryPath attMap plcMaps typeMap tableNames tableAliases = do
 
     -- collect all norm-related table data
     -- read table sensitivities from corresponding files
     -- mapM is a standard function [IO a] -> IO [a]
     let dbNormData = if policy then
-            return (constructNormData tableNames attMap plcMap)
+            return (constructNormData tableNames attMap plcMaps)
         else
             mapM (\tableName -> parseNormFromFile $ queryPath ++ tableName ++ ".nrm") tableNames
 
@@ -214,6 +217,7 @@ readTableData policy queryPath attMap plcMap typeMap tableNames tableAliases = d
 
     (tableSensitives, tableNormFuns, tableGs) <- fmap unzip3 dbNormData
     let (_,tableSensitiveVars) = unzip tableSensitives
+    traceIO (show tableSensitiveVars)
 
     -- we put table names in front of column names
     let namePrefices = map (\tableAlias -> tableAlias ++ ".") tableAliases
@@ -227,7 +231,7 @@ readTableData policy queryPath attMap plcMap typeMap tableNames tableAliases = d
 
 
 -- putting everything together
-getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> String -> IO ((M.Map String VarState, Double), M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, B.TableExpr,(String,String,String))],[(String, Maybe Double)])
+getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> String -> IO ([(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, B.TableExpr,(String,String,String))],[(String, Maybe Double)])
 getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPolicy = do
 
     when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
@@ -262,9 +266,9 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
     traceIOIfDebug debug $ "Task map:            " ++ show taskMap
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
-    (plcMap, plcCost) <- parsePolicyFromFile inputPolicy
+    plcMaps <- parsePolicyFromFile inputPolicy
     attMap <- parseAttackerFromFile inputAttacker
-    inputTableMap <- readTableData policy dataPath attMap plcMap typeMap inputTableNames inputTableAliases
+    inputTableMap <- readTableData policy dataPath attMap plcMaps typeMap inputTableNames inputTableAliases
 
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
     let orderedTableAliases = M.keys inputTableMap
@@ -348,7 +352,7 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
     -- the first column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
     let initialQuery = queryAggrStr ++ " FROM " ++ fr ++ " WHERE " ++ whAll
-    let tableExprData = ((plcMap,plcCost),attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs)
+    let tableExprData = (plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "tableExprData:" ++ show tableExprData

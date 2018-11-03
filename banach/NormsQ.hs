@@ -342,6 +342,7 @@ normalizeAndVerify nx ny =
                M.fromList $ map (\(x,xa) -> (x,xa * a)) listMapLN,
                M.fromList $ map (\(x,xa) -> (x,xa * a)) listMapLZ)
 
+-- TODO outputting t may be confusing since it in general does contain the missing variable
 matchScalings :: (Show a, Ord a) => Norm a -> [(a,Double)] -> (M.Map a Double) -> [(a,Double)]
 matchScalings _ [] _ = []
 matchScalings t ((x,a):xs) mapColy =

@@ -1,5 +1,5 @@
 person2diseasestate.person_id exact;
 -- from 01-01-2000 to 01-01-2020
 person2diseasestate.transitiondate range 36524 43829;
-person2diseasestate.diseasestate approx 4;
+person2diseasestate.diseasestate total 4;
 

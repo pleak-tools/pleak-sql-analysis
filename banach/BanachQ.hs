@@ -1030,7 +1030,7 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
     --when debug $ printf "varStates = %s\n" (show varStates)
     -- TODO this is a hack, we will do it in the other way, so that it will be no longer needed
     let policy = (policyAnalysis args)
-    let ar = analyzeTableExprQ fromPart wherePart (sensRows (if policy then takeWhile (\x -> case x of {'#' -> False; _ -> True}) tableName else tableName)) colNames varStates te
+    let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames varStates te
     when debug $putStrLn "Analysis result:"
     when debug $print ar
     --let epsilon = getEpsilon args

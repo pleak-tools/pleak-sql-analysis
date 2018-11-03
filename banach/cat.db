@@ -1,0 +1,7 @@
+cat_id name gender color available
+1 marks male white False
+2 maria female black False
+3 lumina female white True
+4 lilian female white True
+5 mustik male black True
+6 pilveke female white True

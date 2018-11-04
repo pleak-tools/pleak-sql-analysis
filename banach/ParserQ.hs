@@ -162,6 +162,11 @@ lnAExpr = do
   keyWord "ln"
   return (AUnary ALn)
 
+floorAExpr :: Parser (AExpr a -> AExpr a)
+floorAExpr = do
+  keyWord "floor"
+  return (AUnary AFloor)
+
 expAExpr :: Parser (AExpr a -> AExpr a)
 expAExpr = do
   keyWord "exp"
@@ -235,7 +240,8 @@ aOperators =
     , Postfix absEndAExpr]
 
   , [ Prefix lnAExpr
-    , Prefix expAExpr]
+    , Prefix expAExpr
+    , Prefix floorAExpr]
 
   , [ Prefix sqrtAExpr
     , Prefix rootAExpr

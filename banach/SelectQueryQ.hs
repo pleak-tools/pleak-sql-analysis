@@ -30,6 +30,8 @@ import Data.Maybe
 import System.Exit
 import Text.Printf
 
+import Debug.Trace
+
 import qualified Data.Map as M
 import qualified Data.Text.Lazy as T
 
@@ -195,8 +197,8 @@ extractTableExpr (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) y =
         "max"   -> F arg (SelectMax y)
         _       -> error $ error_queryExpr_aggrFinal aggrOp
 
-extractTableExpr (SelectItem x1 (App x2 (Name x3 [Nmc x4]) [x5]) (Nmc asColName)) defaultColName =
-    extractTableExpr (SelExp x1 (App x2 (Name x3 [Nmc x4]) [x5])) asColName
+--extractTableExpr (SelectItem x1 (App x2 (Name x3 [Nmc x4]) [x5]) (Nmc asColName)) defaultColName =
+--    extractTableExpr (SelExp x1 (App x2 (Name x3 [Nmc x4]) [x5])) asColName
 
 extractTableExpr (SelectItem _ expr (Nmc colName)) _ =
     let arg = extractScalarExpr expr in
@@ -241,6 +243,7 @@ applyAexprNormalize bexpr =
 
 extractScalarExpr :: ScalarExpr -> AExpr String
 extractScalarExpr expr =
+    --trace (show expr) $
     case expr of
         Identifier _ (Name _ nmcs) -> AVar $ intercalate "." (map (\(Nmc x) -> x) nmcs)
         NumberLit _ s -> AConst (read s)
@@ -274,6 +277,7 @@ extractScalarExpr expr =
 
         App _ (Name _ [Nmc "abs"]) [x] -> AAbs (extractScalarExpr x)
         App _ (Name _ [Nmc "log"]) [x] -> AUnary ALn (extractScalarExpr x)
+        App _ (Name _ [Nmc "floor"]) [x] -> AUnary AFloor (extractScalarExpr x)
         App _ (Name _ [Nmc "exp"]) [x] -> AUnary (AExp 1.0) (extractScalarExpr x)
         App _ (Name _ [Nmc "least"])    xs -> AMins (map extractScalarExpr xs)
         App _ (Name _ [Nmc "greatest"]) xs -> AMaxs (map extractScalarExpr xs)

@@ -32,6 +32,7 @@ data AExpr a
 data AUnOp
   = AAbsBegin | AAbsEnd 
   | ALn
+  | AFloor
   | ANeg | ANot
   | AExp   Double
   | APower Double
@@ -233,6 +234,8 @@ aexprToExpr :: VarName -> AExpr VarName -> (M.Map VarName Expr)
 --aexprToExpr y (AVar "max~") = M.fromList [(y,ARMax)]
 
 --
+aexprToExpr y (AUnary AFloor x) = aexprToExpr y x
+
 aexprToExpr y (AText s) = M.fromList [(y, Text s)]
 
 aexprToExpr y (AUnary (AExp c) (AVar x)) = M.fromList [(y, Exp c x)]
@@ -492,6 +495,7 @@ aexprToString aexpr =
         AXors xs -> "(" ++ intercalate " OR " (map aexprToString xs) ++ ")"
 
         AUnary ALn x -> "log(" ++ aexprToString x ++ ")"
+        AUnary AFloor x -> "floor(" ++ aexprToString x ++ ")"
         AUnary ANeg x -> "( - " ++ aexprToString x ++ ")"
         AUnary ANot x -> "not(" ++ aexprToString x ++ ")"
         AUnary (AExp c) x -> "exp(" ++ show c ++ " * " ++ aexprToString x ++ ")"
@@ -539,6 +543,7 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
         AXors xs -> AXors (map processRec xs)
 
         AUnary ALn x -> AUnary ALn $ processRec x
+        AUnary AFloor x -> AUnary AFloor $ processRec x
         AUnary ANeg x -> AUnary ANeg $ processRec x
         AUnary ANot x -> AUnary ANot $ processRec x
         AUnary (AExp c) x -> AUnary (AExp c) $ processRec x
@@ -590,6 +595,7 @@ getAllAExprVars sensOnly aexpr =
         AXors xs -> foldr S.union S.empty $ map processRec xs
 
         AUnary ALn x -> processRec x
+        AUnary AFloor x -> processRec x
         AUnary ANeg x -> processRec x
         AUnary ANot x -> processRec x
         AUnary (AExp c) x -> processRec x
@@ -643,6 +649,7 @@ aexprSubstitute aexprMap aexpr =
         AXors xs -> AXors (map processRec xs)
 
         AUnary ALn x -> AUnary ALn $ processRec x
+        AUnary AFloor x -> AUnary AFloor $ processRec x
         AUnary ANeg x -> AUnary ANeg $ processRec x
         AUnary ANot x -> AUnary ANot $ processRec x
         AUnary (AExp c) x -> AUnary (AExp c) $ processRec x
@@ -692,6 +699,7 @@ applyAexprTypes typeMap aexpr =
         AXors xs -> let (t,ys)  = processRec xs  in (t, AXors ys)
 
         AUnary ALn x        -> let (_,[y]) = processRec [x] in (AFloat, AUnary ALn y)
+        AUnary AFloor x     -> let (_,[y]) = processRec [x] in (AInt, AUnary AFloor y)
         AUnary ANeg x       -> let (t,[y]) = processRec [x] in (t, AUnary ANeg y)
         AUnary ANot x       -> let (t,[y]) = processRec [x] in (t, AUnary ANot y)
         AUnary (AExp c) x   -> let (t,[y]) = processRec [x] in (AFloat, AUnary (AExp c) y)

@@ -56,36 +56,32 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (tname ++ "." ++ x,y)) tmap) typeMap
   let plainTypeMap  = M.fromList $ concat plainTypeMaps
 
-  -- TODO probabily we find a way to analyse several different policies at once here?
-  -- check the variables are agregated correctly 
   let cost = sum $ map snd plcMaps
 
   let bss  = map (extract_bs attMap . fst) plcMaps
   let rss   = zipWith filterWith bss $ map (extract_rs attMap . fst) plcMaps
+  let css   = zipWith filterWith bss $ map (extract_crs attMap . fst) plcMaps
   let rrss' = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap . fst) plcMaps
   let crss' = zipWith filterWith bss $ map (extract_CRs attMap plainTypeMap . fst) plcMaps
 
   let rrss = zipWith (zipWith (/)) rrss' rss --rescaled bounds
-  let crss = zipWith (zipWith (/)) crss' rss --rescaled bounds
+  let crss = zipWith (zipWith (/)) crss' css --rescaled counts
 
   -- the weights of separate blocks in the sensitive area
   let pss  = map (map (\cr -> if cr == 0 then 1.0 else 1 / cr)) crss
 
   -- space dimensionality comes from the total number of sensitive variables
-  -- TODO check if there are any repeating variables!
-  let allSensVars = S.fromList $ concat (map (M.keys . fst) plcMaps) 
-  let m = fromIntegral $ length (concat rss)
-
   -- we multiply the dimensions of variables belonging to one sensitive set
   -- we add the weights of different sensitive sets, since the attacker may guess any of them
-  -- TODO do not include repeating vaariables into the intersection weight
+  -- TODO do not include repeating variables muliple times into m and the intersection weight
+  let allSensVars = S.fromList $ concat (map (M.keys . fst) plcMaps) 
+
+  let m = fromIntegral $ length (concat rss)
   let intersectionWeight = product $ map product pss
-  let total = 1 / intersectionWeight -- basically meant for discrete values, how much choices the are in total if we take X' as a unit
+
+  let total = 1 / intersectionWeight -- how much choices the are in total if we take X' as a unit
   let p = (sum $ map product pss) - (fromIntegral (length pss - 1)) * intersectionWeight
   let xWeight = p * total
-
-  -- TODO continue from here
-  let rrs = head rrss
 
   -- we know that the probability cannot grow above 100%
   let d = min (1 - p) delta
@@ -101,17 +97,19 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   -- we compute a = m / epsilon + 1 if m = 1, and m / epsilon for the multidimensional case
   let a' = if m == 1 then m / epsilon' + 1 else m / epsilon'
 
-  traceIO (show plcMaps)
-  traceIO (show allSensVars)
-  traceIO ("m: " ++ (show m))
-  traceIO ("pss: " ++ (show pss))
-  traceIO ("p: " ++ (show p))
-  traceIO ("total: " ++ (show total))
-  traceIO ("d: " ++ (show d))
-  traceIO ("a': " ++ (show a'))
-  traceIO ("rrs: " ++ (show rrs))
-  traceIO ("crss: " ++ (show crss))
-  traceIO ("eps': " ++ (show epsilon'))
+  traceIOIfDebug debug ("plcMaps: " ++ show plcMaps)
+  traceIOIfDebug debug ("allSensVars: " ++ show allSensVars)
+  traceIOIfDebug debug ("m: " ++ (show m))
+  traceIOIfDebug debug ("pss: " ++ (show pss))
+  traceIOIfDebug debug ("p: " ++ (show p))
+  traceIOIfDebug debug ("total: " ++ (show total))
+  traceIOIfDebug debug ("d: " ++ (show d))
+  traceIOIfDebug debug ("a': " ++ (show a'))
+  traceIOIfDebug debug ("rss: " ++ (show rss))
+  traceIOIfDebug debug ("css: " ++ (show css))
+  traceIOIfDebug debug ("rrss: " ++ (show rrss))
+  traceIOIfDebug debug ("crss: " ++ (show crss))
+  traceIOIfDebug debug ("eps': " ++ (show epsilon'))
 
   -- in the case a > rr for some rr, set a = rr
   let ass = map (map (\rr -> min rr a')) rrss
@@ -122,10 +120,10 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
 
   -- recompute a and the epsilon
   let epsilon = log ((xbarWeight / xWeight) / (ub**(-1) - 1)) / a
-  traceIO ("a: " ++ (show a))
-  traceIO ("x: " ++ (show xWeight))
-  traceIO ("xbar: " ++ (show xbarWeight))
-  traceIO ("eps: " ++ (show epsilon))
+  traceIOIfDebug debug ("a: " ++ (show a))
+  traceIOIfDebug debug ("x: " ++ (show xWeight))
+  traceIOIfDebug debug ("xbar: " ++ (show xbarWeight))
+  traceIOIfDebug debug ("eps: " ++ (show epsilon))
 
   let pr_pre  = p
   let pr_post = 1 / (1 + exp(- a * epsilon) * (xbarWeight / xWeight))
@@ -141,9 +139,9 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   finalError <- repeatUntilGetBestError step initialError 0.0 beta
   let expectedCost = delta * cost
 
-  putStrLn $ intercalate ("\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
+  --putStrLn $ intercalate ("\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
-  -- for PRISMS we have modified the output, adjusting it to histograms
+  -- for PRISMS graphs, we have modified the output, adjusting it to histograms
   -- putStrLn $ intercalate (if alternative args then ";" else "\n\n") [show delta, show qr, show finalError]
 
 
@@ -172,24 +170,15 @@ performPolicyAnalysisStep :: ProgramOptions -> String -> String -> String -> [St
 performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon colTableCounts beta = do
 
   (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
-  --traceIO "######################################"
-  --traceIO (show taskAggr)
   let resultMap = M.fromList $ snd (last taskAggr)
-  -- since we aggregate in a different way, take all results except the one "for all tables"
-  -- each pair quantifies the noise that protects some variable in the policy
-  -- since the attacker wins if he guesses all of them, it suffices to hide at least one, which is the minimal noise
-  let b_sds_pairs = M.elems (M.filterWithKey (\k v -> k /= B.resultForAllTables) resultMap)
 
-  let relativeErrors = map (\(b,sds) -> (sds/b) / qr * 100) b_sds_pairs
-  -- for PRISMS we temporarily use absolute errors instead of relative errors here
-  -- let relativeErrors = map (\(b,sds) -> sds / b) b_sds_pairs
+  -- take the main results, which is "for all tables"
+  let (b, sds) = resultMap ! B.resultForAllTables
 
-  return (qr, foldr max 0 relativeErrors)
+  -- if we choose beta that is not compatible with epsilon during optimization, we get a negative b, so the combination is considered as bad
+  let relativeError = if b > 0 then (sds / b) / qr * 100 else 1/0
 
-  -- TODO this is used in the case where the bounds are computed in a different way
-  -- discard errors 0 since it means that these tables do not contain the sensitive variables
-  -- however, if all the errors are 0, then the result is indeed 0
-  --let relativeNonzeroErrors = filter (> 0) relativeErrors
-  --return (qr, if length relativeNonzeroErrors == 0 then 0 else foldr min (1/0) relativeNonzeroErrors)
-
+  -- for PRISMS graphs, we temporarily use absolute errors instead of relative errors here
+  -- let relativeError = if b > 0 then sds / b else 1/0
+  return (qr, relativeError)
 

@@ -217,7 +217,6 @@ readTableData policy queryPath attMap plcMaps typeMap tableNames tableAliases = 
 
     (tableSensitives, tableNormFuns, tableGs) <- fmap unzip3 dbNormData
     let (_,tableSensitiveVars) = unzip tableSensitives
-    traceIO (show tableSensitiveVars)
 
     -- we put table names in front of column names
     let namePrefices = map (\tableAlias -> tableAlias ++ ".") tableAliases
@@ -352,7 +351,7 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
     let tableGs = getTableGs inputTableMap
     let (allTableNames, finalTableExpr, sqlQueries) = unzip3 dataWrtEachTable
 
-    traceIO (show tableGs)
+    traceIOIfDebug debug $ (show tableGs)
     -- this is only for testing
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ show allTableNames

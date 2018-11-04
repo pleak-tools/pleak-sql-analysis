@@ -93,7 +93,22 @@ extract_r attMap plcMap var =
             (_,None)     -> 1.0 -- the dimensionality reduces, and multiplication by 1 does not change the result
             (_,Exact)    -> 1.0 -- 1 is compatible with L0-norm, and it assumes that R will be the number of possible choices
             (_,Approx r) -> r
-            (_,Total _)  -> 1.0 -- this is used only for discrete variables, and we have no means to conceal 'r out of R' choices yet
+            (_,Total _)  -> 1.0 -- this is used only for discrete variables, so the radius is always 1
+            _ -> error $ error_badAttackerPolicyCombination attState plcState
+
+extract_crs :: M.Map String VarState -> M.Map String VarState -> [Double]
+extract_crs attMap plcMap =
+    map (extract_cr attMap plcMap) (M.keys plcMap)
+
+extract_cr :: M.Map String VarState -> M.Map String VarState -> String -> Double
+extract_cr attMap plcMap var =
+    let plcState = plcMap ! var in
+    let attState = if M.member var attMap then attMap ! var else None in
+    case (attState, plcState) of
+            (_,None)     -> 1.0 -- the dimensionality reduces, and multiplication by 1 does not change the result
+            (_,Exact)    -> 1.0 -- 1 is compatible with L0-norm, and it assumes that CR will be the number of possible choices
+            (_,Approx r) -> r
+            (_,Total n)  -> fromIntegral n -- determines the size of X', and it assumes that CR will be the number of possible choices
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 extract_M :: M.Map String VarState -> M.Map String VarState -> Int
@@ -130,8 +145,7 @@ extract_R attMap plcMap typeMap var =
                                        "bool"   -> 1.0 -- we have 2 choices, but the radius is 1
                                        _       -> error $ error_unboundedDataType dataType
             (Approx r,_)    -> r
-            (Total _, _)    -> 1.0 -- this is used only for discrete variables, and we have no means to conceal 'r out of R' choices yet
-                                   -- TODO actually, it seems that we can do it
+            (Total _, _)    -> 1.0             -- this is used only for discrete variables, so radius is always 1
             (Range lb ub,_) -> (ub - lb) / 2.0 -- best-case distance when the actual data point is in the middle,  we choose to overestimate the attacker
 
 -- this is the same as R for continuous variables, but diffrent for ordinal
@@ -201,7 +215,7 @@ constructTableNormData dataMap tableName =
 
     if M.member tableName dataMap then
         let (numOfVars, leakedVars, sensVars, normVars) = dataMap ! tableName in
-        trace (show sensVars ++ show normVars) $
+        --trace (show sensVars ++ show normVars) $
         ((numOfVars, leakedVars), (tableName, M.fromList $ zip sensVars normVars))
     else
         -- if the policy is not related to the given table, it is treated as public

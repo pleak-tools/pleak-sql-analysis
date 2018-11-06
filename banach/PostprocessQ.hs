@@ -35,7 +35,7 @@ performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap 
 
   let epsilon = getEpsilon args
   let beta    = getBeta args
-  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  (qr,taskAggr) <- performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
   let taskStr = if alternative args then
           map (\(taskName,res) -> taskName ++ [B.unitSeparator] ++
                   (intercalate [B.unitSeparator] $ concat $ map (\ (tableName, (b,sds)) -> [tableName, show sds, show qr, show (sds/b), show ((sds/b) / qr * 100)]) res)) taskAggr
@@ -124,6 +124,7 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   traceIOIfDebug debug ("x: " ++ (show xWeight))
   traceIOIfDebug debug ("xbar: " ++ (show xbarWeight))
   traceIOIfDebug debug ("eps: " ++ (show epsilon))
+  traceIOIfDebug debug ("beta: " ++ (show fixedBeta))
 
   let pr_pre  = p
   let pr_post = 1 / (1 + exp(- a * epsilon) * (xbarWeight / xWeight))
@@ -131,24 +132,29 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   --traceIO ("Pr_pre: " ++ (show ps) ++ "  -->  " ++ (show pr_pre))
   --traceIO ("Pr_post: " ++ (show posts) ++ "  -->  " ++ (show pr_post))
 
-  let step = performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon colTableCounts
-
-  let beta = case fixedBeta of {Nothing -> B.defaultBeta; Just beta -> beta}
-  (qr,initialError) <- step (Just beta)
+  let step = performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
+  finalError <- case fixedBeta of
+                    Nothing -> do
+                        step Nothing
+                        -- TODO put the following back when bad beta will no longer cause immediate errors
+                        --let beta = epsilon / 10.0
+                        --initialError <- step (Just beta)
+                        --repeatUntilGetBestError step initialError 0.0 beta
+                    Just beta' -> do
+                        step (Just beta')
   
-  finalError <- repeatUntilGetBestError step initialError 0.0 beta
   let expectedCost = delta * cost
 
   --putStrLn $ intercalate ("\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
   -- for PRISMS graphs, we have modified the output, adjusting it to histograms
-  -- putStrLn $ intercalate (if alternative args then ";" else "\n\n") [show delta, show qr, show finalError]
+  -- putStrLn $ intercalate (if alternative args then ";" else "\n\n") [show delta, show finalError]
 
 
-repeatUntilGetBestError :: (Maybe Double -> IO (Double,Double)) -> Double -> Double -> Double -> IO Double
+repeatUntilGetBestError :: (Maybe Double -> IO Double) -> Double -> Double -> Double -> IO Double
 repeatUntilGetBestError step prevError betaMin betaMax = do
     let beta = (betaMax + betaMin) / 2.0
-    (_,nextError) <- step (Just beta)
+    nextError <- step (Just beta)
     --putStrLn $ show (beta, nextError)
     let curError = min prevError nextError
     if (betaMax - betaMin > 0.001) && (betaMax > 0.001)
@@ -159,26 +165,40 @@ repeatUntilGetBestError step prevError betaMin betaMax = do
         else do
             repeatUntilGetBestError step curError beta betaMax
       else do
-        -- if the error tends to decrease with beta, set beta=0.0
+        -- we cannot decrease beta infinitely, so if the error tends to decrease with beta, set beta=0.0
         if (prevError > nextError) then do
-            (_,finalError) <- step (Just 0.0)
+            finalError <- step (Just 0.0)
             return finalError
         else do
             return nextError
 
-performPolicyAnalysisStep :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> Double -> [Int] -> Maybe Double -> IO (Double,Double)
-performPolicyAnalysisStep args dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap epsilon colTableCounts beta = do
+performAnalysisBetaStep :: ProgramOptions -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO Double
+performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
 
-  (qr,taskAggr) <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
+  (qr,taskAggr) <- performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
   let resultMap = M.fromList $ snd (last taskAggr)
 
   -- take the main results, which is "for all tables"
   let (b, sds) = resultMap ! B.resultForAllTables
 
-  -- if we choose beta that is not compatible with epsilon during optimization, we get a negative b, so the combination is considered as bad
-  let relativeError = if b > 0 then (sds / b) / qr * 100 else 1/0
-
   -- for PRISMS graphs, we temporarily use absolute errors instead of relative errors here
-  -- let relativeError = if b > 0 then sds / b else 1/0
-  return (qr, relativeError)
+  -- return (sds / b)
+  return ((sds / b) / qr * 100)
+
+
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])
+performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
+
+  -- TODO: we want that, if BQ.performAnalyses returns Nothing, we treat it as a bad beta, allowing to continue
+  -- TODO: we need a special output in the case of bad bata where user choses a fixed beta himself (tell that we had to change beta)
+  (qr,taskAggr') <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+
+  -- if we choose beta that is not compatible with epsilon during optimization, we get a negative b, so we set it to 0 to get Infinity relative error
+  -- in policy analysis, this means that desired epsilon, and hence the guessing advantage bound, could not be achieved
+  let taskAggr = map (\(taskName,res) -> (taskName, map (\ (tableName, (b,sds)) -> (tableName, (max b 0, sds)) ) res)) taskAggr'
+  return (qr, taskAggr)
+
+
+
+
 

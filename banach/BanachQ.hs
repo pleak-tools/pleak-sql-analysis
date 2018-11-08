@@ -449,13 +449,19 @@ findUsedVars = fuv where
       Sum2 es ->                          concatMap fuv es
 
 
-analyzeExprQ :: [String] -> S.Set Int -> [VarState] -> [Int] -> Expr -> AnalysisResult
+analyzeExprQ :: [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> Expr -> AnalysisResult
 analyzeExprQ colNames = analyzeExpr (map VarQ colNames)
 
-analyzeExpr :: [ExprQ] -> S.Set Int -> [VarState] -> [Int] -> Expr -> AnalysisResult
-analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
+-- computeGsens specifies whether we want to compute gsens or the rest of the analysis results
+-- They must be computed separately because
+-- the rest of the analysis requires gsens w.r.t. a different norm
+-- (the one w.r.t. which we need smoothness instead of the one w.r.t. which we need the sensitivity)
+analyzeExpr :: [ExprQ] -> S.Set Int -> [VarState] -> [Int] -> Bool -> Expr -> AnalysisResult
+analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens = ae where
  -- require n times smaller beta in the subexpression
  scaleBeta n (SUB subg subBeta) = let c = fromIntegral n :: Double in SUB (\ beta -> subg (beta / c)) (subBeta * c) 
+ scaleGsens :: Int -> Double -> Double
+ scaleGsens n gsens = if computeGsens then gsens else let c = fromIntegral n :: Double in c * gsens
  ae expr =
   case expr of
     Prec (B.AR fx (B.SUB subg subBeta) (B.SUB sdsg sdsBeta)) -> AR {fx = Q fx, subf = SUB (Q . subg) subBeta, sdsf = SUB (Q . subg) subBeta,
@@ -471,13 +477,18 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
     Power i r ->
       let x = row !! i
           vs = varStates !! i
-          sb = scaleBeta (colTableCounts !! i)
+          sf = colTableCounts !! i
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in if r == 1
-           then aR {fx = x,
-                    subf = sb $ SUB (\ beta -> ifThenElse (abs x >= 1 / beta) (abs x) (exp (beta * abs x - 1) / beta)) 0,
+           then
+             let gub = getGubFromVs vs
+             in aR {fx = x,
+                    subf = sb $ SUB (\ beta -> if gub < 1/beta then exp (beta * (abs x - gub)) * gub
+                                                               else ifThenElse (abs x >= 1 / beta) (abs x) (exp (beta * abs x - 1) / beta)) 0,
                     sdsf = sb $ SUB (const (Q 1)) 0,
-                    gub = getGubFromVs vs,
-                    gsens = 1,
+                    gub = gub,
+                    gsens = sg 1,
                     arVarState = vs}
            else if r >= 1
              then
@@ -486,10 +497,14 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
                    ub = x_ub ** r
                in if x > 0
                    then aR {fx = x ** r,
-                            subf = sb $ SUB (\ beta -> ifThenElse (x >= r/beta) (x ** r) (exp (beta*x - r) * (r/beta)**r)) 0,
-                            sdsf = sb $ SUB (\ beta -> ifThenElse (x >= (r-1)/beta) (r * x**(r-1)) (r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1))) 0,
+                            subf = sb $ SUB (\ beta -> if x_ub < r/beta
+                                                         then exp (beta * (x - x_ub)) * ub
+                                                         else ifThenElse (x >= r/beta) (x ** r) (exp (beta*x - r) * (r/beta)**r)) 0,
+                            sdsf = sb $ SUB (\ beta -> if x_ub < (r-1)/beta
+                                                         then exp (beta * (x - x_ub)) * r * x_ub**(r-1)
+                                                         else ifThenElse (x >= (r-1)/beta) (r * x**(r-1)) (r * exp (beta*x - (r-1)) * ((r-1)/beta)**(r-1))) 0,
                             gub = ub,
-                            gsens = r * x_ub**(r-1),
+                            gsens = sg $ r * x_ub**(r-1),
                             arVarState = Range (x_lb ** r) ub}
                    else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
              else error "analyzeExpr/Power: condition (r >= 1 && x > 0 || r == 1) not satisfied"
@@ -517,12 +532,14 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
           x_lb = getLbFromVs (varStates !! i)
           f_x_ub = if r >= 0 then exp (r * x_ub) else exp (r * x_lb)
           f_x_lb = if r >= 0 then exp (r * x_lb) else exp (r * x_ub)
-          sb = scaleBeta (colTableCounts !! i)
+          sf = colTableCounts !! i
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in aR {fx = exp (r * x),
              subf = sb $ SUB (const $ exp (r * x)) (abs r),
              sdsf = sb $ SUB (const $ abs r * exp (r * x)) (abs r),
              gub = f_x_ub,
-             gsens = abs r * f_x_ub,
+             gsens = sg $ abs r * f_x_ub,
              arVarState = Range f_x_lb f_x_ub}
     ComposeExp r e1 ->
       let ar @ (AR gx _ (SUB sdsf1g beta2) _ gsens _) = ae e1
@@ -549,12 +566,14 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
                                              z = y / (y + 1)
                                          in z
                           _ -> infinity
-          sb = scaleBeta (colTableCounts !! i)
+          sf = colTableCounts !! i
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in aR {fx = z,
              subf = sb $ SUB (const z) a',
              sdsf = sb $ SUB (const $ a' * y / (y+1)**2) a',
              gub = ub,
-             gsens = a'/4,
+             gsens = sg $ a'/4,
              arVarState = Range 0 ub}
     ComposeSigmoid a c e1 ->
       let ar @ (AR gx _ (SUB sdsf1g beta2) _ gsens _) = ae e1
@@ -587,12 +606,14 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
                                              z  = y' / (y'+1)
                                          in z
                           _ -> infinity
-          sb = scaleBeta (colTableCounts !! i)
+          sf = colTableCounts !! i
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in aR {fx = z,
              subf = sb $ SUB (const (Q 1)) 0,
              sdsf = sb $ SUB (const $ aa * y / (y+1)**2) a',
              gub = ub,
-             gsens = abs aa / 4,
+             gsens = sg $ abs aa / 4,
              arVarState = Range 0 ub}
     ComposeSigmoidPrecise aa ab c e1 ->
       let ar @ (AR gx _ (SUB sdsf1g beta2) _ gsens _) = ae e1
@@ -618,12 +639,14 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
           y2 = exp (a * (x - c))
           z = 2 / (y1 + y2)
           a' = abs a
-          sb = scaleBeta (colTableCounts !! i)
+          sf = colTableCounts !! i
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in aR {fx = z,
              subf = sb $ SUB (const z) a',
              sdsf = sb $ SUB (const $ a' * z) a',
              gub = 1,
-             gsens = a',
+             gsens = sg a',
              arVarState = Range 0 1}
     ComposeTauoid a c e1 ->
       let AR gx _ (SUB sdsf1g beta2) _ gsens _ = ae e1
@@ -647,12 +670,14 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
           y2' = exp (aa * (x - c))
           z = 2 / (y1' + y2')
           a' = abs ab
-          sb = scaleBeta (colTableCounts !! i)
+          sf = colTableCounts !! i
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in aR {fx = z,
              subf = sb $ SUB (const (Q 1)) 0,
              sdsf = sb $ SUB (const $ aa * 2 / (y1 + y2)) a',
              gub = 1,
-             gsens = abs aa,
+             gsens = sg $ abs aa,
              arVarState = Range 0 1}
     ComposeTauoidPrecise aa ab c e1 ->
       let AR gx _ (SUB sdsf1g beta2) _ gsens _ = ae e1
@@ -672,12 +697,14 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
 
     L0Predicate i p ->
       let VarQ x = row !! i
-          sb = scaleBeta (colTableCounts !! i)
+          sf = colTableCounts !! i
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in aR {fx = if BoolExprQ (p x) then Q 1 else Q 0,
              subf = sb $ SUB (\ beta -> if BoolExprQ (p x) then Q 1 else Q (exp (-beta))) 0,
              sdsf = sb $ SUB (const (Q 1)) 0,
              gub = 1,
-             gsens = 1,
+             gsens = sg 1,
              arVarState = Range 0 1}
     PowerLN i r ->
       let x = row !! i
@@ -685,13 +712,15 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
           x_lb = getLbFromVs (varStates !! i)
           y_ub = if r >= 0 then x_ub ** r else if x_lb > 0 then x_lb ** r else infinity
           y_lb = if r >= 0 then (if x_lb > 0 then x_lb ** r else 0) else x_ub ** r
-          sb = scaleBeta (colTableCounts !! i)
+          sf = colTableCounts !! i
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in if x > 0
            then aR {fx = x ** r,
                     subf = sb $ SUB (const $ x ** r) (abs r),
                     sdsf = sb $ SUB (const $ abs r * x ** r) (abs r),
                     gub = y_ub,
-                    gsens = if r >= 0 then r * x_ub ** r else if x_lb > 0 then abs r * x_lb ** r else infinity,
+                    gsens = sg $ if r >= 0 then r * x_ub ** r else if x_lb > 0 then abs r * x_lb ** r else infinity,
                     arVarState = Range y_lb y_ub}
            else error "analyzeExpr/PowerLN: condition (x > 0) not satisfied"
     Const c ->
@@ -710,34 +739,45 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts = ae where
              gsens = gsens/a,
              arVarState = vs}
     ZeroSens e1 ->
-      let AR fx1 subf@(SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub _ vs = ae e1
+      let AR fx1 subf@(SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = ae e1
+          isSensitive = any (`S.member` sensitiveVarSet) (findUsedVars e1)
       in aR {fx = fx1,
-             subf = if any (`S.member` sensitiveVarSet) (findUsedVars e1) then subf else SUB (const fx1) 0,
+             subf = if isSensitive then subf else SUB (const fx1) 0,
              sdsf = SUB (const (Q 0)) 0,
              gub = gub,
-             gsens = 0,
+             gsens = if isSensitive && not computeGsens then gsens else 0,
              arVarState = vs}
     L p is ->
       let xs = map (row !!) is
           y = lpnorm p xs
           vs = rangeLpNorm p $ map (getRangeFromVs . (varStates !!)) is
-          sb = scaleBeta (P.maximum $ map (colTableCounts !!) is)
+          ub = getGubFromVs vs
+          sf = P.maximum $ map (colTableCounts !!) is
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in aR {fx = y,
-             subf = sb $ SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
+             subf = sb $ SUB (\ beta -> if ub < 1/beta
+                                          then exp (beta * (y - ub)) * ub
+                                          else if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
              sdsf = sb $ SUB (const (Q 1)) 0,
-             gub = getGubFromVs vs,
-             gsens = 1,
+             gub = ub,
+             gsens = sg 1,
              arVarState = vs}
     LInf is ->
       let xs = map (row !!) is
           y = linfnorm xs
           vs = rangeLInfNorm $ map (getRangeFromVs . (varStates !!)) is
-          sb = scaleBeta (P.maximum $ map (colTableCounts !!) is)
+          ub = getGubFromVs vs
+          sf = P.maximum $ map (colTableCounts !!) is
+          sb = scaleBeta sf
+          sg = scaleGsens sf
       in aR {fx = y,
-             subf = sb $ SUB (\ beta -> if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
+             subf = sb $ SUB (\ beta -> if ub < 1/beta
+                                          then exp (beta * (y - ub)) * ub
+                                          else if y >= 1/beta then y else exp (beta * y - 1) / beta) 0,
              sdsf = sb $ SUB (const (Q 1)) 0,
-             gub = getGubFromVs vs,
-             gsens = 1,
+             gub = ub,
+             gsens = sg 1,
              arVarState = vs}
     Prod es -> combineArsProd $ map ae es
     Prod2 es -> combineArsProd2 $ map ae es
@@ -953,8 +993,8 @@ combineArsSumInfT :: AnalysisResult -> AnalysisResult
 combineArsSumInfT ar =
   (combineArsSumT ar) {sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
-analyzeTableExpr :: [String] -> S.Set Int -> [VarState] -> [Int] -> String -> TableExpr -> AnalysisResult
-analyzeTableExpr cols sensitiveVarSet varStates colTableCounts srt te =
+analyzeTableExpr :: [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> String -> TableExpr -> AnalysisResult
+analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens srt te =
   case te of
     SelectMin (expr : _) -> oneStepCombine combineArsMinT expr
     SelectMax (expr : _) -> oneStepCombine combineArsMaxT expr
@@ -965,7 +1005,7 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts srt te =
     fixedArg arg expr arg' | arg' P.== arg = expr
     oneStepCombine combine expr =
       let
-        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine (analyzeExprQ cols sensitiveVarSet varStates colTableCounts expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine (analyzeExprQ cols sensitiveVarSet varStates colTableCounts computeGsens expr)
       in
         aR {fx = fx,
             sdsf = SUB (\ beta -> sdsg beta `Where` (srt ++ ".sensitive")) subBeta,
@@ -973,7 +1013,7 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts srt te =
             gsens = gsens}
     twoStepCombine combine_p combine_inf expr =
       let
-        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine_inf (analyzeExprQ cols sensitiveVarSet varStates colTableCounts expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine_inf (analyzeExprQ cols sensitiveVarSet varStates colTableCounts computeGsens expr)
         AR _ _ (SUB _ subBeta2) _ _ _ = combine_p $ AR {sdsf = SUB undefined subBeta}
       in aR {fx = fx,
              sdsf = SUB (\ beta ->
@@ -992,13 +1032,13 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts srt te =
 -- fr may contain multiple tables and aliases, e.g. "t as t1, t as t2, t3"
 -- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
 -- srt is the name of the sensitive rows table
-analyzeTableExprQ :: String -> String -> String -> [String] -> S.Set Int -> [VarState] -> [Int] -> TableExpr -> AnalysisResult
-analyzeTableExprQ fr wh srt colNames sensitiveVarSet varStates colTableCounts te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts srt te
+analyzeTableExprQ :: String -> String -> String -> [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> TableExpr -> AnalysisResult
+analyzeTableExprQ fr wh srt colNames sensitiveVarSet varStates colTableCounts computeGsens te =
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
 performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])
-performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
+performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
   let debug = not (alternative args)
   let tableGmap = M.fromList tableGs
   let tableGstr = intercalate "," $
@@ -1030,6 +1070,21 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
   --forM_ tableExprData $ \ (tableName, te, sqlQuery) -> do
   --  let [_, fromWhere] = splitOn " FROM " sqlQuery
   --  let [fromPart, wherePart] = splitOn " WHERE " fromWhere
+
+  when debug $ putStrLn "================================="
+  minBeta <- case fixedBeta of Nothing -> findMinimumBeta args epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+                               Just beta1 -> return beta1
+  when debug $ printf "epsilon = %0.6f\n" epsilon
+  when debug $ printf "gamma = %0.6f\n" gamma
+  let defaultBeta = epsilon / (2 * (gamma + 1))
+  let beta = chooseSUBBeta defaultBeta fixedBeta (SUB {subBeta = minBeta})
+  when debug $ case fixedBeta of Just beta1 -> printf "fixedBeta = %0.6f\n" beta1
+                                 Nothing    -> printf "minBeta = %0.6f\n" minBeta
+  when debug $ printf "defaultBeta = %0.6f\n" defaultBeta
+  when debug $ printf "beta = %0.6f\n" beta
+  let b = epsilon / (gamma + 1) - beta
+  when debug $ printf "b = %0.6f\n" b
+
   let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
   when debug $ printf "colNames = %s\n" (show colNames)
   when debug $ printf "varStates = %s\n" (show varStates)
@@ -1040,7 +1095,7 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
     when debug $ print te
-    let pa = performAnalysis args epsilon beta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts
+    let pa = performAnalysis args epsilon (Just beta) fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts
     case M.lookup tableName tableGmap of
       Nothing -> do
         result <- pa (getG args)
@@ -1120,6 +1175,26 @@ performAnalyses args epsilon beta dataPath separator initialQuery colNames typeM
   return (qr,taskAggr)
 
 
+-- find the minimum value of beta that is allowed for all tables
+findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
+findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
+    let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
+    minBetas <- forM tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) ->
+      findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveVarList te colTableCounts
+    return $ maximum minBetas
+
+-- find the minimum value of beta that is allowed for a given (copy of a) table
+findMinimumBeta1 :: ProgramOptions -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr -> [Int] -> IO Double
+findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveVarList te colTableCounts = do
+    let debug = not (alternative args)
+    let sensitiveVarSet = S.fromList sensitiveVarList
+    let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
+    let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
+    let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False te
+    let minBeta = subBeta (sdsf ar)
+    when debug $ printf "tableName=%s minBeta=%0.6f\n" tableName minBeta
+    return minBeta
+
 performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr ->
                    IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] -> Maybe Double ->
                    IO (Double,Double,String,(Double,Double,Double,Double,Double))
@@ -1130,17 +1205,18 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
     --when debug $ printf "sensitiveVarIndices = %s\n" (show sensitiveVarIndices)
+
     -- TODO this is a hack, we will do it in the other way, so that it will be no longer needed
     let policy = (policyAnalysis args)
-    let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts te
+
+    let ar_for_gsens = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True te
+    let ar = (analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False te) {gsens = gsens ar_for_gsens}
 
     when debug $putStrLn "Analysis result:"
     when debug $print ar
-    --let epsilon = getEpsilon args
     when debug $ printf "epsilon = %0.6f\n" epsilon
     when debug $ printf "gamma = %0.6f\n" gamma
     let defaultBeta = epsilon / (2 * (gamma + 1))
-    --let fixedBeta = getBeta args
     let beta = chooseSUBBeta defaultBeta fixedBeta (sdsf ar)
     when debug $ printf "beta = %0.6f\n" beta
     let b = epsilon / (gamma + 1) - beta

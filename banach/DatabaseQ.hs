@@ -20,4 +20,7 @@ sendQueryToDb args q = withDb args $ \ conn -> quickQuery' conn q []
 sendDoubleQueryToDb :: ProgramOptions -> String -> IO Double
 sendDoubleQueryToDb args q = do
   [[res]] <- sendQueryToDb args q
-  return (fromSql res)
+  -- DB may return NULL of there are no sensitive rows and minimum is computed over row sensitivity
+  -- TODO In general, need to verify if 0.0 is a valid substitute, if there will be more cases returning SqlNull.
+  -- maybe, some special message "the query does not depend on sensitive data" would be more reasonable
+  return (if res == SqlNull then 0.0 else fromSql res)

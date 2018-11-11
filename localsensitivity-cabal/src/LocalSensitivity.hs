@@ -297,6 +297,8 @@ scalarExprAddrs nta = nub . f where
   f (BinaryOp _ ns e1 e2) = f e1 ++ f e2
   f (App _ n es) = concatMap f es
   f (Cast _ e _) = f e
+  -- TODO alisa added Parens temporarily
+  f (Parens _ e) = f e
   f e = error $ "scalarExprAddrs: " ++ show e
 
 

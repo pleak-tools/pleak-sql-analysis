@@ -29,6 +29,17 @@ lambert x n =
     let an = lambert x (n - 1) in
     an - (an * exp(an) - x) / ((an + 1) * exp(an))
 
+optimal_a_epsilon :: Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> (Double,Double)
+optimal_a_epsilon _ _ _ _  a epsilon 0 _ _ = (a,epsilon)
+optimal_a_epsilon xWeight c r rr a epsilon k n m =
+
+    let a' = r + k * (rr - r) / n in
+    let xbarWeight = a'**m - xWeight in
+    let epsilon' = log ((xbarWeight / xWeight) / c) / a' in
+
+    let (a'',epsilon'') = if (epsilon' > epsilon) then (a',epsilon') else (a,epsilon) in
+    optimal_a_epsilon xWeight c r rr a'' epsilon'' (k-1) n m
+
 performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
 performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
@@ -56,13 +67,16 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (tname ++ "." ++ x,y)) tmap) typeMap
   let plainTypeMap  = M.fromList $ concat plainTypeMaps
 
+  -- TODO this is not the right way to compute cost for several sensitive sets
   let cost = sum $ map snd plcMaps
 
   let bss  = map (extract_bs attMap . fst) plcMaps
-  let rss   = zipWith filterWith bss $ map (extract_rs attMap . fst) plcMaps
-  let css   = zipWith filterWith bss $ map (extract_crs attMap . fst) plcMaps
-  let rrss' = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap . fst) plcMaps
-  let crss' = zipWith filterWith bss $ map (extract_CRs attMap plainTypeMap . fst) plcMaps
+  let rss    = zipWith filterWith bss $ map (extract_rs attMap . fst) plcMaps
+  let css    = zipWith filterWith bss $ map (extract_crs attMap . fst) plcMaps
+  let bounds = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap . fst) plcMaps
+
+  let rrss'  = map (map (\(lb,ub) -> (ub - lb) / 2.0)) bounds
+  let crss'  = zipWith filterWith bss $ map (extract_CRs attMap plainTypeMap . fst) plcMaps
 
   let rrss = zipWith (zipWith (/)) rrss' rss --rescaled bounds
   let crss = zipWith (zipWith (/)) crss' css --rescaled counts
@@ -88,14 +102,21 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   -- we consider multidimensional space, where the radius is linf-norm
   let ub = p + d
 
+  -- it seems that brute-forcing optimal epsilon and a works quite well
+  let c = (ub**(-1) - 1)
+  let rr = foldr max 0 (concat rrss)
+  let init_epsilon = log ((rr**m - 1**m) * (1 / xWeight) * c) / rr
+  let num_of_tries = 10000
+  let (a',epsilon') = optimal_a_epsilon xWeight c 1 rr rr init_epsilon num_of_tries num_of_tries m
+
   -- convert guessing probability to epsilon (assuming that 'a' is optimal)
   -- let es' = map (\r -> (lambert (ub / (exp(1) * (1 - ub))) 10) / r) rs
   -- consider scaled dimensions, where r = 1 for all r
-  let epsilon' = if m == 1 then lambert (ub / (exp(1) * (1 - ub))) 10 else m / (exp(1) * (1 / ub - 1 + exp(-m)) ** (1 / m))
+  --let epsilon' = if m == 1 then lambert (ub / (exp(1) * (1 - ub))) 10 else m / (exp(1) * (1 / ub - 1 + exp(-m)) ** (1 / m))
 
   -- find the initial (optimal) value of a
   -- we compute a = m / epsilon + 1 if m = 1, and m / epsilon for the multidimensional case
-  let a' = if m == 1 then m / epsilon' + 1 else m / epsilon'
+  --let a' = if m == 1 then m / epsilon' + 1 else m / epsilon'
 
   traceIOIfDebug debug ("plcMaps: " ++ show plcMaps)
   traceIOIfDebug debug ("allSensVars: " ++ show allSensVars)
@@ -107,8 +128,8 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   traceIOIfDebug debug ("a': " ++ (show a'))
   traceIOIfDebug debug ("rss: " ++ (show rss))
   traceIOIfDebug debug ("css: " ++ (show css))
-  traceIOIfDebug debug ("rrss: " ++ (show rrss))
-  traceIOIfDebug debug ("crss: " ++ (show crss))
+  traceIOIfDebug debug ("rrss: " ++ (show rrss'))
+  traceIOIfDebug debug ("crss: " ++ (show crss'))
   traceIOIfDebug debug ("eps': " ++ (show epsilon'))
 
   -- in the case a > rr for some rr, set a = rr
@@ -116,10 +137,10 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   let a = foldr max 0 (concat ass)
 
   -- TODO use some better detection of discrete choice than a = 1.0 here
-  let xbarWeight = if a == 1.0 then total - xWeight else (sum $ map product ass) - xWeight
+  let xbarWeight = if a == 1.0 then total - xWeight else (product $ map product ass) - xWeight
 
   -- recompute a and the epsilon
-  let epsilon = log ((xbarWeight / xWeight) / (ub**(-1) - 1)) / a
+  let epsilon = log ((xbarWeight / xWeight) / c) / a
   traceIOIfDebug debug ("a: " ++ (show a))
   traceIOIfDebug debug ("x: " ++ (show xWeight))
   traceIOIfDebug debug ("xbar: " ++ (show xbarWeight))
@@ -133,17 +154,17 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   --traceIO ("Pr_post: " ++ (show posts) ++ "  -->  " ++ (show pr_post))
 
   let step = performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
-  finalError <- case fixedBeta of
+  (finalBeta,finalError) <- case fixedBeta of
                     Nothing -> do
-                        step Nothing
-                        -- TODO put the following back when bad beta will no longer cause immediate errors
-                        --let beta = epsilon / 10.0
-                        --initialError <- step (Just beta)
-                        --repeatUntilGetBestError step initialError 0.0 beta
+                        initialBeta <- BQ.findMinimumBeta args epsilon Nothing dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
+                        initialError <- step (Just initialBeta)
+                        repeatUntilGetBestError step initialError initialBeta (epsilon / 5.0) initialBeta initialError
                     Just beta' -> do
-                        step (Just beta')
+                        err' <- step (Just beta')
+                        return (beta', err')
   
   let expectedCost = delta * cost
+  traceIOIfDebug debug ("params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
 
   --putStrLn $ intercalate ("\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
@@ -151,26 +172,20 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   -- putStrLn $ intercalate (if alternative args then ";" else "\n\n") [show delta, show finalError]
 
 
-repeatUntilGetBestError :: (Maybe Double -> IO Double) -> Double -> Double -> Double -> IO Double
-repeatUntilGetBestError step prevError betaMin betaMax = do
-    let beta = (betaMax + betaMin) / 2.0
-    nextError <- step (Just beta)
-    --putStrLn $ show (beta, nextError)
-    let curError = min prevError nextError
-    if (betaMax - betaMin > 0.001) && (betaMax > 0.001)
+repeatUntilGetBestError :: (Maybe Double -> IO Double) -> Double -> Double -> Double -> Double -> Double -> IO (Double,Double)
+repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestError = do
+    let nextBeta = (betaMax + betaMin) / 2.0
+    nextError <- step (Just nextBeta)
+    let (bestBeta', bestError') = if nextError < bestError then (nextBeta, nextError) else (bestBeta, bestError)
+    if (betaMax - betaMin > 0.01) && (betaMax > 0.01)
       then do
         --do binary search
-        if (prevError >= nextError) then do
-            repeatUntilGetBestError step curError betaMin beta
+        if (prevError <= nextError) then do
+            repeatUntilGetBestError step prevError betaMin nextBeta bestBeta' bestError'
         else do
-            repeatUntilGetBestError step curError beta betaMax
+            repeatUntilGetBestError step nextError nextBeta betaMax bestBeta' bestError'
       else do
-        -- we cannot decrease beta infinitely, so if the error tends to decrease with beta, set beta=0.0
-        if (prevError > nextError) then do
-            finalError <- step (Just 0.0)
-            return finalError
-        else do
-            return nextError
+        return (bestBeta', bestError')
 
 performAnalysisBetaStep :: ProgramOptions -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO Double
 performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do

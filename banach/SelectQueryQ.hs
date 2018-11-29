@@ -224,7 +224,10 @@ extractTrefsRec (TableAlias _ (Nmc tableName) (SubTref _ queryExpr):xs) ts qs  =
     let qs2 = constructSubQueries tableName queryExpr in
     (M.insert tableName tableName ts', M.union qs1 qs2)
 
---extractTrefsRec t = error $ error_queryExpr t
+extractTrefsRec (JoinTref _ x1 _ _ _ x2 _:xs) ts qs =
+    extractTrefsRec (x1:x2:xs) ts qs
+
+--extractTrefsRec t _ _ = error $ error_queryExpr t
 
 extractWhere :: QueryExpr -> [AExpr String]
 extractWhere query =

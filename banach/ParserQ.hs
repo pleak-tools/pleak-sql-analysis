@@ -605,6 +605,7 @@ varStateStmt = do
 varStateVal :: Parser VarState
 varStateVal = varStateExact
   <|> varStateApprox
+  <|> varStateApproxPrior
   <|> varStateTotal
   <|> varStateRange
   <|> varStateNone
@@ -617,6 +618,12 @@ varStateApprox = do
   keyWord "approx"
   r  <- float
   return (Approx r)
+
+varStateApproxPrior = do
+  keyWord "prior"
+  p  <- float
+  r  <- float
+  return (ApproxPrior p r)
 
 varStateTotal = do
   keyWord "total"

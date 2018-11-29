@@ -1,0 +1,8 @@
+rows: all;
+cols: c2 c3;
+G: 10.0;
+
+c3b = l0 c3;
+c3c = scaleNorm 9 c3b;
+z = lp 1.0 c2 c3c;
+return lp 1.0 z;

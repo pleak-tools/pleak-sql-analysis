@@ -1,0 +1,34 @@
+example a	Adding/removing rows sensitivity (c_1) dominates combined sensitivity w.r.t. t11
+example b	Derivative Banach sensitivity (c_0) dominates combined sensitivity w.r.t. t11
+example c	Global Banach sensitivity bound (gsb) dominates combined sensitivity w.r.t. t11
+
+\epsilon = 0.2
+\beta = 0.02
+S = 4000
+c_3 = 400
+G_1 = S/c_3 = 10
+1/(e*\beta) = 18.39
+1/\beta = 50
+
+Because 18.39 > 10, G_2 and G_3 exist and 10 < G_2 < 50 < G_3
+
+table t11:
+    D = 10
+
+diff a/t11.nrm b/t11.nrm
+3c3
+< G: 10.0;
+---
+> G: 50.0;
+
+In example a, c_1 dominates because G = 10 <= G_1.
+In examples b and c, we change G to 50 which is between G_2 and G_3 thus either gsb or c_0 can dominate.
+
+diff b/t11.db c/t11.db
+4d3
+< 101 2
+
+Table t12 contains 4 rows with join key 101 but at most one row with each of the other join keys.
+example c differs from example b by removing the row with join key 101.
+This makes c_0 much smaller in example c.
+

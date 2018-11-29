@@ -20,7 +20,7 @@ import NormsQ
 -------------------------------
 
 data VarState
-  = Exact | None | Approx Double | Total Int | Range Double Double 
+  = Exact | None | Approx Double | Total Int | Range Double Double | ApproxPrior Double Double
   deriving (Show)
 
 verifyVarSecrecy :: M.Map String VarState -> M.Map String VarState -> String -> (String, (Int, [Bool],[String],[Expr]))
@@ -36,6 +36,7 @@ verifyVarSecrecy attMap plcMap preficedVar =
     let leakedVar = case (attState, plcState) of
             (Exact,_)                -> [True]
             (Approx r1, Approx r2)   -> [r1 <= r2]
+            (ApproxPrior _ r1, Approx r2) -> [r1 <= r2]
             (Total  n1, Total  n2)   -> [n1 <= n2]
             -- here we assume that the actual data belongs to (lb,ub) -- i.e. the attacker knowledge is correct
             -- while (ub - lb) / 2 <= r2 would already be sufficient in the case when the actual data is in the middle,
@@ -52,7 +53,6 @@ verifyVarSecrecy attMap plcMap preficedVar =
     in
 
     -- constuct the norm, which is NormZero for insensitive vars, L0 for exact guesses, and is abs.value for approximated guesses
-    -- TODO if we scale norm  by 1/r here, we will always have r = 1, but need to rescale R
     let normVar = case (attState, plcState) of
             (Exact,_)    -> []
             (_, None)    -> []
@@ -90,10 +90,9 @@ extract_r attMap plcMap var =
     let plcState = plcMap ! var in
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (_,None)     -> 1.0 -- the dimensionality reduces, and multiplication by 1 does not change the result
-            (_,Exact)    -> 1.0 -- 1 is compatible with L0-norm, and it assumes that R will be the number of possible choices
+            (_,Exact)    -> 0.5 -- compatible with L0-norm
             (_,Approx r) -> r
-            (_,Total _)  -> 1.0 -- this is used only for discrete variables, so the radius is always 1
+            (_,Total _)  -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 extract_crs :: M.Map String VarState -> M.Map String VarState -> [Double]
@@ -105,9 +104,9 @@ extract_cr attMap plcMap var =
     let plcState = plcMap ! var in
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (_,None)     -> 1.0 -- the dimensionality reduces, and multiplication by 1 does not change the result
             (_,Exact)    -> 1.0 -- 1 is compatible with L0-norm, and it assumes that CR will be the number of possible choices
-            (_,Approx r) -> r
+            (ApproxPrior p r1, Approx r2) -> p * r2 / r1
+            (_,Approx r) -> 2*r -- since radius stretches to 2 directions, we get 2*r units out of this
             (_,Total n)  -> fromIntegral n -- determines the size of X', and it assumes that CR will be the number of possible choices
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
@@ -124,11 +123,11 @@ extract_m attMap plcMap var =
             (_, None) -> 0
             _ -> 1
 
-extract_Rs :: M.Map String VarState -> M.Map String String -> M.Map String VarState -> [Double]
+extract_Rs :: M.Map String VarState -> M.Map String String -> M.Map String VarState -> [(Double,Double)]
 extract_Rs attMap typeMap plcMap =
     map (extract_R attMap plcMap typeMap) (M.keys plcMap)
 
-extract_R :: M.Map String VarState -> M.Map String VarState -> M.Map String String -> String -> Double
+extract_R :: M.Map String VarState -> M.Map String VarState -> M.Map String String -> String -> (Double,Double)
 extract_R attMap plcMap typeMap var =
     let plcState = plcMap ! var in
     --trace (show attMap) $
@@ -137,16 +136,19 @@ extract_R attMap plcMap typeMap var =
     --trace "---------" $
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (Exact,_)       -> 1.0 -- if the attacker already knows the value exactly, there is 1 possible choice
+            (Exact,_)       -> (0.0,1.0) -- compatible with L0-norm
             (None, _)       -> let dataType = typeMap ! var in
                                    case dataType of
-                                       "int8"   -> 2^32
-                                       "float8" -> 2^32
-                                       "bool"   -> 1.0 -- we have 2 choices, but the radius is 1
+                                       "int8"   -> (-2^63,2^63)
+                                       "bool"   -> (0.0,1.0)
                                        _       -> error $ error_unboundedDataType dataType
-            (Approx r,_)    -> r
-            (Total _, _)    -> 1.0             -- this is used only for discrete variables, so radius is always 1
-            (Range lb ub,_) -> (ub - lb) / 2.0 -- best-case distance when the actual data point is in the middle,  we choose to overestimate the attacker
+
+            (Total _, _)    -> (0.0,1.0) -- compatible with L0-norm
+            (Range lb ub,_) -> (lb, ub)
+            -- TODO this currently gives correct results, but could be nicer
+            (ApproxPrior _ r1, _) -> (0, 2*r1)
+            --(Approx r,_)    -> r
+            _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 -- this is the same as R for continuous variables, but diffrent for ordinal
 extract_CRs :: M.Map String VarState -> M.Map String String -> M.Map String VarState -> [Double]
@@ -161,13 +163,15 @@ extract_CR attMap plcMap typeMap var =
             (Exact,_)       -> 1.0 -- if the attacker already knows the value exactly, there is 1 possible choice
             (None, _)       -> let dataType = typeMap ! var in
                                    case dataType of
-                                       "int8"   -> 2^32
-                                       "float8" -> 2^32
+                                       "int8"   -> 2^64
                                        "bool"   -> 2.0 -- we have 2 choices, although the radius is 1
                                        _       -> error $ error_unboundedDataType dataType
-            (Approx r,_)    -> r
+
             (Total n, _)    -> fromIntegral n
-            (Range lb ub,_) -> (ub - lb) / 2.0 -- best-case distance when the actual data point is in the middle,  we choose to overestimate the attacker
+            (Range lb ub,_) -> ub - lb
+            (ApproxPrior p _, _) -> p
+            --(Approx r,_)    -> 2*r
+            _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 -- TODO since we scale all repeating variables in the same way, we may take any of them (let it be the first one)
 combineSets :: M.Map String Expr -> M.Map String Expr -> M.Map String Expr

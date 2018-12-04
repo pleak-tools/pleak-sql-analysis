@@ -16,6 +16,10 @@ sendQueriesToDbAndCommit args qs = withDb args $ \ conn -> do mapM_ (quickQuery'
 sendQueryToDb :: ProgramOptions -> String -> IO [[SqlValue]]
 sendQueryToDb args q = withDb args $ \ conn -> quickQuery' conn q []
 
+-- execute a list of queries (e.g. SELECT) that do not change the database
+sendQueriesToDb :: ProgramOptions -> [String] -> IO ()
+sendQueriesToDb args qs = withDb args $ \ conn -> do mapM_ (quickQuery' conn `flip` []) qs
+
 -- execute a query that returns a single floating-point value
 sendDoubleQueryToDb :: ProgramOptions -> String -> IO Double
 sendDoubleQueryToDb args q = do

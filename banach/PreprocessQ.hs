@@ -16,11 +16,14 @@ import qualified Banach as B
 import qualified BanachQ as BQ
 import qualified DatabaseQ as DQ
 import AexprQ
+import CreateTablesQ
+import DatabaseQ
 import ErrorMsg
 import ExprQ
 import NormsQ
 import ParserQ
 import PolicyQ
+import ProgramOptions
 import QueryQ
 import ReaderQ
 import SchemaQ
@@ -91,10 +94,10 @@ deriveExprNorm debug inputMap sensitiveCols dbNormTableAliases dbNormFuns queryE
 
 
 getTableExprDataWrtOneSensVarSet :: Bool -> Bool -> (M.Map VarName B.Var) -> TableName -> TableAlias
-                                    -> B.TableExpr -> (String,String,String) ->
+                                    -> B.TableExpr -> (String,String,String) -> String ->
                                     Int -> NormFunction -> (S.Set B.Var) ->
-                                    (TableName, B.TableExpr, (String,String,String))
-getTableExprDataWrtOneSensVarSet debug policy inputMap tableName tableAlias filtQuery (sel,fr,wh) index tableNorm tableSensCols =
+                                    (TableName, TableName, B.TableExpr, (String,String,String))
+getTableExprDataWrtOneSensVarSet debug policy inputMap tableName tableAlias filtQuery (sel,fr,wh) queryName index tableNorm tableSensCols =
 
     -- now transform the main query to a banach expression, now it is fine to use only the current table's sensitive columns
     let (queryExpr,  queryAggr)  = insertZeroSens tableSensCols filtQuery in
@@ -114,18 +117,16 @@ getTableExprDataWrtOneSensVarSet debug policy inputMap tableName tableAlias filt
 
     -- the query expressions defined over the large cross product table
     let adjTableExpr = deriveExprNorm debug inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
-
-    --(tableName ++ if policy then "#" ++ show index else "", adjTableExpr, (sel, fr1, wh1))
-    (tableName, adjTableExpr, (sel, fr1, wh1))
+    (tableName, queryName, adjTableExpr, (sel, fr1, wh1))
 
 
 -- construct input for multitable Banach analyser
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
 inputWrtEachTable   :: Bool -> Bool -> (M.Map VarName B.Var) ->
-                       [TableAlias] -> B.TableExpr -> (String,String,String) -> (M.Map TableAlias TableData) ->
-                       [(TableName, B.TableExpr, (String,String,String))]
-inputWrtEachTable _ _ _ [] _ _ _ = []
-inputWrtEachTable debug policy inputMap (tableAlias : ts) filtQuery (sel,fr,wh) tableMap =
+                       [TableAlias] -> B.TableExpr -> (String,String,String) -> String -> (M.Map TableAlias TableData) ->
+                       [(TableName, TableName, B.TableExpr, (String,String,String))]
+inputWrtEachTable _ _ _ [] _ _ _ _ = []
+inputWrtEachTable debug policy inputMap (tableAlias : ts) filtQuery (sel,fr,wh) queryName tableMap =
 
     let tableData     = tableMap ! tableAlias in
 
@@ -148,8 +149,8 @@ inputWrtEachTable debug policy inputMap (tableAlias : ts) filtQuery (sel,fr,wh) 
     -- if we use policy settings, we need a separate query for each sensitive variable, even in the same table
     -- we index the table names to distinguish the queries
     let indices = [0..(length tableSensCols - 1)] in
-    let entries = zipWith3 (getTableExprDataWrtOneSensVarSet debug policy inputMap tableName tableAlias filtQuery (sel,fr,wh)) indices tableNorms tableSensCols in
-    entries ++ inputWrtEachTable debug policy inputMap ts filtQuery (sel,fr,wh) tableMap
+    let entries = zipWith3 (getTableExprDataWrtOneSensVarSet debug policy inputMap tableName tableAlias filtQuery (sel,fr,wh) queryName) indices tableNorms tableSensCols in
+    entries ++ inputWrtEachTable debug policy inputMap ts filtQuery (sel,fr,wh) queryName tableMap
 
 getTableGs tableMap =
     let tableAliases = M.keys tableMap in
@@ -241,8 +242,11 @@ getColTableCounts colNames tableNames tableAliases =
       map (aliasToCountMap M.!) colTableAliases
 
 -- putting everything together
-getBanachAnalyserInput :: Bool -> Bool -> String -> String -> String -> String -> IO ([(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, B.TableExpr,(String,String,String))],[(String, Maybe Double)],[Int])
-getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPolicy = do
+getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String -> IO ([(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, TableName, B.TableExpr,(String,String,String))],[(String, Maybe Double)],[Int])
+getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
+
+    let debug = not (alternative args)
+    let policy = policyAnalysis args
 
     when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
     let dataPath = reverse $ dropWhile (/= '/') (reverse inputSchema)
@@ -304,10 +308,14 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
     -- we assume that the output query table has only one column
     when (length outputQueryFuns > 1) $ error $ error_queryExpr_singleColumn
     let outputQueryFun  = head outputQueryFuns
+    let initQueries = concat $ map (\(F _ y) -> let x = getVarNameFromTableExpr y in initIntermediateAggrTableSql x) outputQueryFuns
+    sendQueriesToDbAndCommit args initQueries
+
     let queryStr = queryToString outputQueryFun
     let queryAggrStr = queryAggrToString outputQueryFun
 
     traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Init queries: " ++ show initQueries
     traceIOIfDebug debug $ "Query fun  (w/o filter) = " ++ show queryStr
     traceIOIfDebug debug $ "Number of Filters:" ++ show (length filterAexprs)
     traceIOIfDebug debug $ "Filters:" ++ show filterAexprs
@@ -317,7 +325,7 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
     let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap True x)) filterAexprs
     let (filtQueryFuns, pubFilterAexprs) = addFiltersToQueries [outputQueryFun] filterAexprs filterSensVars
     let filtQueryFun = head filtQueryFuns
-    let (queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet (applyQueryTypes fullTypeMap filtQueryFun)
+    let (queryName,queryExpr,queryAggr,filtQueryStr) = queryToExpr inputMap sensitiveColSet (applyQueryTypes fullTypeMap filtQueryFun)
     let pubFilter  = map aexprToString pubFilterAexprs
 
     traceIOIfDebug debug $ "----------------"
@@ -347,14 +355,15 @@ getBanachAnalyserInput debug policy inputSchema inputQuery inputAttacker inputPo
     let finalTableExpr1 = queryAggr
 
     --bring the input to the form [(TableName, TableExpr, QueryString)]
-    let dataWrtEachTable = inputWrtEachTable debug policy inputMap orderedTableAliases finalTableExpr1 (sel,fr ++ minmaxQuery,wh) inputTableMap
+    let dataWrtEachTable = inputWrtEachTable debug policy inputMap orderedTableAliases finalTableExpr1 (sel,fr ++ minmaxQuery,wh) queryName inputTableMap
     let tableGs = getTableGs inputTableMap
-    let (allTableNames, finalTableExpr, sqlQueries) = unzip3 dataWrtEachTable
+    let (allInputTableNames, allOutputTableNames, finalTableExpr, sqlQueries) = unzip4 dataWrtEachTable
 
     traceIOIfDebug debug $ (show tableGs)
     -- this is only for testing
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ show allTableNames
+    traceIOIfDebug debug $ show allInputTableNames
+    traceIOIfDebug debug $ show allOutputTableNames
     traceIOIfDebug debug $ show inputTableNames
     traceIOIfDebug debug $ show inputTableAliases
     traceIOIfDebug debug $ "----------------"

@@ -14,6 +14,35 @@ import qualified Data.Set as S
 sensRows :: String -> String
 sensRows tableName = tableName ++ "_sensRows"
 
+--TODO generalize to multiple row tables
+createIntermediateAggrTableSql :: String -> [[String]] -> IO [String]
+createIntermediateAggrTableSql tableName tbl = do
+  let numRows = length tbl
+  let sensTableName = sensRows tableName
+  let sensRows = [0..]
+  let sensRowsSet = S.fromList (take numRows sensRows)
+  return [
+    "INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (zipWith (\ r i -> '(' : intercalate ", " (r ++ [show i]) ++ ")") tbl [0..]),
+    "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
+
+initIntermediateAggrTableSql :: String -> [String]
+initIntermediateAggrTableSql tableName =
+  let sensTableName = sensRows tableName in
+  let colNamesTypes = [("inputTable","text"),
+                   ("fx","float8"),
+                   ("subf","float8"),
+                   ("sdsf","float8"),
+                   ("beta","float8"),
+                   ("gub","float8"),
+                   ("gsens","float8")] in
+  [
+    "DROP TABLE IF EXISTS " ++ tableName,
+    "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (colName,typeName) -> colName ++ " " ++ typeName ++ ", ") colNamesTypes ++ "ID int8)",
+    "DROP TABLE IF EXISTS " ++ sensTableName,
+    "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)"
+  ]
+
+
 createTableSql :: Bool -> String -> String -> String -> IO [String]
 createTableSql policy dataPath separator tableName = do
   let dbFileName = dataPath ++ tableName ++ ".db"

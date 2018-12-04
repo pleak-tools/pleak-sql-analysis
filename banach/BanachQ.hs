@@ -1037,7 +1037,7 @@ analyzeTableExprQ fr wh srt colNames sensitiveVarSet varStates colTableCounts co
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens srt te
   in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
-performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])
+performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])
 performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
   let debug = not (alternative args)
   let tableGmap = M.fromList tableGs
@@ -1047,7 +1047,7 @@ performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames 
                                                          | otherwise    -> tbl ++ ':' : show g)
                         tableGs
   --when debug $ printf "tableGstr = %s\n" tableGstr
-  let (tableNames,_,_) = unzip3 tableExprData
+  let (tableNames,_,_,_) = unzip4 tableExprData
   let uniqueTableNames = nub tableNames
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
@@ -1090,12 +1090,12 @@ performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames 
   when debug $ printf "varStates = %s\n" (show varStates)
   when debug $ printf "colTableCounts = %s\n" (show colTableCounts)
   sqlsaCache <- newIORef M.empty :: IO (IORef (M.Map [String] (M.Map String Double, M.Map String Double)))
-  res00 <- forM tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) -> do
+  res00 <- forM tableExprData $ \ (tableName, taskName, te, (_,fromPart,wherePart)) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
-    when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " ==="
+    when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " in task " ++ taskName ++ " ==="
     when debug $ print te
-    let pa = performAnalysis args epsilon (Just beta) fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts
+    let pa = performAnalysis args epsilon (Just beta) fromPart wherePart tableName taskName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts
     case M.lookup tableName tableGmap of
       Nothing -> do
         result <- pa (getG args)
@@ -1176,10 +1176,10 @@ performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames 
 
 
 -- find the minimum value of beta that is allowed for all tables
-findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
+findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
 findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
     let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
-    minBetas <- forM tableExprData $ \ (tableName, te, (_,fromPart,wherePart)) ->
+    minBetas <- forM tableExprData $ \ (tableName, _, te, (_,fromPart,wherePart)) ->
       findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveVarList te colTableCounts
     return $ maximum minBetas
 
@@ -1195,19 +1195,16 @@ findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveV
     when debug $ printf "tableName=%s minBeta=%0.6f\n" tableName minBeta
     return minBeta
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr ->
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr ->
                    IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] -> Maybe Double ->
                    IO (Double,Double,String,(Double,Double,Double,Double,Double))
-performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts tableG = do
+performAnalysis args epsilon fixedBeta fromPart wherePart tableName taskName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts tableG = do
     let debug = not (alternative args)
     --when debug $ printf "varStates = %s\n" (show varStates)
     let sensitiveVarSet = S.fromList sensitiveVarList
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
     --when debug $ printf "sensitiveVarIndices = %s\n" (show sensitiveVarIndices)
-
-    -- TODO this is a hack, we will do it in the other way, so that it will be no longer needed
-    let policy = (policyAnalysis args)
 
     let ar_for_gsens = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True te
     let ar = (analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False te) {gsens = gsens ar_for_gsens}
@@ -1224,12 +1221,31 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
     let qr = constProp $ fx ar
     when debug $ putStrLn "Query result:"
     when debug $ putStrLn (show qr ++ ";")
-    when (dbSensitivity args && debug) $ sendDoubleQueryToDb args (show qr) >>= printf "database returns %0.6f\n"
+    fx_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show qr) else (do return 0)
+    when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" fx_value
     let sds = constProp $ subg (sdsf ar) beta
     when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
     when debug $ putStrLn (show sds ++ ";")
     sds_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show sds) else (do return 0)
     when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" sds_value
+
+    -- TODO if we do it this way, we do not support combined sensitivity
+    -- we need at least to output an error message if combined sensitivity is used with subqueries
+    let gub_value = gub ar
+    let gsens_value = gsens ar
+    subf_value <- if (dbSensitivity args) then 
+                          case (show (subf ar)) of
+                              "unknown" -> (do return infinity)
+                              _         -> sendDoubleQueryToDb args (show (constProp $ subg (subf ar) beta))
+                  else (do return 0)
+
+    let tbl = [["\'" ++ tableName ++ "\'", showInf fx_value, showInf subf_value, showInf sds_value, showInf beta, showInf gub_value, showInf gsens_value]]
+    when debug $ putStrLn ("-- intermediate output information for " ++ taskName ++ " w.r.t " ++ tableName ++ ":")
+    when debug $ putStrLn (show tbl)
+    intermediateTableCreateStatement <- createIntermediateAggrTableSql taskName tbl
+    sendQueriesToDb args intermediateTableCreateStatement
+    ------
+
     let tableGJustInf = case tableG of Just g | isInfinite g -> True; _ -> False
     (combinedSens_value,combinedRes,smoothingData) <- if combinedSens args && not tableGJustInf
       then do
@@ -1274,3 +1290,5 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName colNames var
     return (b,combinedSens_value,combinedRes,smoothingData)
     --return (b,sds_value,combinedRes)
 
+showInf :: Double -> String
+showInf x = (if x == 1/0 then "99999.99" else show x)

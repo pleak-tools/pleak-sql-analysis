@@ -660,21 +660,21 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
                                    let e = inputMap ! x in
                                    (S.singleton e, g e)
 
-tableExprToBTableExpr :: S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> TableExpr -> B.TableExpr
+tableExprToBTableExpr :: S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> TableExpr -> (S.Set B.Var, B.TableExpr)
 tableExprToBTableExpr sensitiveCols inputMap asgnMap t = 
     case t of
-        SelectProd x   -> B.SelectProd $ processRec x
-        SelectMin x    -> B.SelectMin $ processRec x
-        SelectMax x    -> B.SelectMax $ processRec x
-        SelectL c x    -> B.SelectL c $ processRec x
+        SelectProd x   -> (fst $ processRec x, B.SelectProd [snd $ processRec x])
+        SelectMin x    -> (fst $ processRec x, B.SelectMin  [snd $ processRec x])
+        SelectMax x    -> (fst $ processRec x, B.SelectMax  [snd $ processRec x])
+        SelectL c x    -> (fst $ processRec x, B.SelectL c  [snd $ processRec x])
         -- let it be Sump 1.0 by default, we can take a finer norm later if necessary
-        SelectSum  x   -> B.SelectSump 1.0 $ processRec x
+        SelectSum  x   -> (fst $ processRec x, B.SelectSump 1.0 [snd $ processRec x])
         -- we get better bounds if we know that the inputs are non-negative
         -- TODO p = 0.0 serves as a marker for further optimization, we could do something better
-        SelectSumBin x -> B.SelectL 0.0 $ processRec x
+        SelectSumBin x -> (fst $ processRec x, B.SelectL 0.0 [snd $ processRec x])
         -- if it turns out that, if SelectCount is left as it is,
         -- then all filters are defined over non-sensitive variables, so they are all public
-        SelectCount x  -> B.SelectL 0.0 $ map (const (B.Const 1.0)) (processRec x)
+        SelectCount x  -> (fst $ processRec x, B.SelectL 0.0 $ map (const (B.Const 1.0)) [snd $ processRec x])
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
-        SelectPlain _       -> error $ error_queryExpr_syntax t
-    where processRec x = [snd $ exprToBExpr sensitiveCols inputMap asgnMap (asgnMap ! x)]
+        SelectPlain _      -> error $ error_queryExpr_syntax t
+    where processRec x = exprToBExpr sensitiveCols inputMap asgnMap (asgnMap ! x)

@@ -58,7 +58,7 @@ parseQueryMap defaultOutputName s = do
 constructSubQueries :: TableName -> QueryExpr -> (M.Map TableName QueryQ.Query)
 constructSubQueries tableName queryExpr =
     let (tableAliasMap, subQueries) = extractTrefs queryExpr in
-    let funs = extractSelect queryExpr in
+    let funs = extractSelect tableName queryExpr in
     let filters = extractWhere queryExpr in
     let subQuery = QueryQ.P [] funs tableAliasMap filters in
     M.insert tableName subQuery subQueries
@@ -179,15 +179,15 @@ nameToStr :: Name -> String
 nameToStr (Name _ ns) = intercalate "." (map ncStr ns)
 nameToStr AntiName{} = ice "Unexpected AntiName."
 
-extractSelect :: QueryExpr -> [Function]
-extractSelect query =
-    let y = "y~" in
-    let (SelectList _ xs) = selSelectList query in 
-    let ys = map (\i -> "y~" ++ show i) [0..length xs - 1] in
-    zipWith extractTableExpr xs ys
+extractSelect :: String -> QueryExpr -> [Function]
+extractSelect tableName query =
+    let y = tableName in
+    let (SelectList _ xs) = selSelectList query in
+    zipWith (extractTableExpr tableName) xs [0..length xs - 1]
 
-extractTableExpr :: SelectItem -> String -> Function
-extractTableExpr (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) y =
+extractTableExpr :: String -> SelectItem -> Int -> Function
+extractTableExpr prefix (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) i =
+    let y = prefix ++ "." ++ (show i) in
     let arg = extractScalarExpr expr in
     let aggrOp2 = map toLower aggrOp in
     case aggrOp2 of
@@ -197,14 +197,24 @@ extractTableExpr (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) y =
         "max"   -> F arg (SelectMax y)
         _       -> error $ error_queryExpr_aggrFinal aggrOp
 
---extractTableExpr (SelectItem x1 (App x2 (Name x3 [Nmc x4]) [x5]) (Nmc asColName)) defaultColName =
---    extractTableExpr (SelExp x1 (App x2 (Name x3 [Nmc x4]) [x5])) asColName
+extractTableExpr prefix (SelectItem _ (App _ (Name _ [Nmc aggrOp]) [expr]) (Nmc colName)) _ =
+    let y = prefix ++ "." ++ colName in
+    let arg = extractScalarExpr expr in
+    let aggrOp2 = map toLower aggrOp in
+    case aggrOp2 of
+        "count" -> F arg (SelectCount y)
+        "sum"   -> F arg (SelectSum y)
+        "min"   -> F arg (SelectMin y)
+        "max"   -> F arg (SelectMax y)
+        _       -> error $ error_queryExpr_aggrFinal aggrOp
 
-extractTableExpr (SelectItem _ expr (Nmc colName)) _ =
+-- TODO prefix would be needed if we treat all subqueries as subtables
+-- currently, we treat plain select statements in a different way
+extractTableExpr _ (SelectItem _ expr (Nmc colName)) _ =
     let arg = extractScalarExpr expr in
     F arg (SelectPlain colName)
 
-extractTableExpr q _ = error $ error_queryExpr q
+extractTableExpr _ q _ = error $ error_queryExpr q
 
 extractTrefs :: QueryExpr -> (M.Map TableName TableAlias, M.Map TableName QueryQ.Query)
 extractTrefs query = extractTrefsRec (selTref query) M.empty M.empty

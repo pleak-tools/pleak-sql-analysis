@@ -1,0 +1,4 @@
+#!/bin/bash
+cd    a; sh ./runtest 2>/dev/null | tail -18
+cd ../b; sh ./runtest 2>/dev/null | tail -18
+cd ../c; sh ./runtest 2>/dev/null | tail -18

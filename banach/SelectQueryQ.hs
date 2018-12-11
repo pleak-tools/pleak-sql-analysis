@@ -60,7 +60,8 @@ constructSubQueries tableName queryExpr =
     let (tableAliasMap, subQueries) = extractTrefs queryExpr in
     let funs = extractSelect tableName queryExpr in
     let filters = extractWhere queryExpr in
-    let subQuery = QueryQ.P [] funs tableAliasMap filters in
+    let groups = extractGroups queryExpr in
+    let subQuery = QueryQ.P groups funs tableAliasMap filters in
     M.insert tableName subQuery subQueries
 
 parseNamedQuery :: String -> String -> IO [(String, QueryExpr)]
@@ -186,8 +187,8 @@ extractSelect tableName query =
     zipWith (extractTableExpr tableName) xs [0..length xs - 1]
 
 extractTableExpr :: String -> SelectItem -> Int -> Function
-extractTableExpr prefix (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) i =
-    let y = prefix ++ "." ++ (show i) in
+extractTableExpr _ (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) i =
+    let y = "y" ++ (show i) in
     let arg = extractScalarExpr expr in
     let aggrOp2 = map toLower aggrOp in
     case aggrOp2 of
@@ -197,8 +198,8 @@ extractTableExpr prefix (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) i =
         "max"   -> F arg (SelectMax y)
         _       -> error $ error_queryExpr_aggrFinal aggrOp
 
-extractTableExpr prefix (SelectItem _ (App _ (Name _ [Nmc aggrOp]) [expr]) (Nmc colName)) _ =
-    let y = prefix ++ "." ++ colName in
+extractTableExpr _ (SelectItem _ (App _ (Name _ [Nmc aggrOp]) [expr]) (Nmc colName)) _ =
+    let y = colName in
     let arg = extractScalarExpr expr in
     let aggrOp2 = map toLower aggrOp in
     case aggrOp2 of
@@ -244,6 +245,11 @@ extractWhere query =
     let scalarExprs = extractWhereExpr query in
     let aexprs = map extractScalarExpr scalarExprs in
     concat $ map applyAexprNormalize aexprs
+
+extractGroups :: QueryExpr -> [String]
+extractGroups query =
+    let scalarExprList = selGroupBy query in
+    map (\ (Identifier _ (Name _ nmcs)) ->  intercalate "." (map (\(Nmc x) -> x) nmcs)) scalarExprList
 
 applyAexprNormalize :: AExpr String -> [AExpr String]
 applyAexprNormalize bexpr =

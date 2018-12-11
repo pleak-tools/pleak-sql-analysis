@@ -20,7 +20,7 @@ import NormsQ
 -------------------------------
 
 data VarState
-  = Exact | None | Approx Double | Total Int | Range Double Double | ApproxPrior Double Double
+  = Exact | None | Approx Double | Total Int | SubSet [String] | Range Double Double | ApproxPrior Double Double
   deriving (Show)
 
 verifyVarSecrecy :: M.Map String VarState -> M.Map String VarState -> String -> (String, (Int, [Bool],[String],[Expr]))
@@ -38,6 +38,7 @@ verifyVarSecrecy attMap plcMap preficedVar =
             (Approx r1, Approx r2)   -> [r1 <= r2]
             (ApproxPrior _ r1, Approx r2) -> [r1 <= r2]
             (Total  n1, Total  n2)   -> [n1 <= n2]
+            (SubSet xs1, SubSet xs2) -> [not $ S.isSubsetOf (S.fromList xs2) (S.fromList xs1)]
             -- here we assume that the actual data belongs to (lb,ub) -- i.e. the attacker knowledge is correct
             -- while (ub - lb) / 2 <= r2 would already be sufficient in the case when the actual data is in the middle,
             -- we only claim immediate leakage if it leaks for sure
@@ -59,6 +60,7 @@ verifyVarSecrecy attMap plcMap preficedVar =
             (_,Exact)    -> [LZero var]
             (_,Approx r) -> [ScaleNorm (1/r) var]
             (_,Total _)  -> [LZero var]
+            (_,SubSet _) -> [LZero var]
             _ -> error $ error_badAttackerPolicyCombination attState plcState
     in
 
@@ -93,6 +95,7 @@ extract_r attMap plcMap var =
             (_,Exact)    -> 0.5 -- compatible with L0-norm
             (_,Approx r) -> r
             (_,Total _)  -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
+            (_,SubSet _) -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 extract_crs :: M.Map String VarState -> M.Map String VarState -> [Double]
@@ -104,10 +107,11 @@ extract_cr attMap plcMap var =
     let plcState = plcMap ! var in
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (_,Exact)    -> 1.0 -- 1 is compatible with L0-norm, and it assumes that CR will be the number of possible choices
+            (_,Exact)     -> 1.0 -- 1 is compatible with L0-norm, and it assumes that CR will be the number of possible choices
             (ApproxPrior p r1, Approx r2) -> p * r2 / r1
-            (_,Approx r) -> 2*r -- since radius stretches to 2 directions, we get 2*r units out of this
-            (_,Total n)  -> fromIntegral n -- determines the size of X', and it assumes that CR will be the number of possible choices
+            (_,Approx r)  -> 2*r -- since radius stretches to 2 directions, we get 2*r units out of this
+            (_,Total n)   -> fromIntegral n -- determines the size of X', and it assumes that CR will be the number of possible choices
+            (_,SubSet xs) -> fromIntegral $ length xs
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 extract_M :: M.Map String VarState -> M.Map String VarState -> Int
@@ -144,6 +148,7 @@ extract_R attMap plcMap typeMap var =
                                        _       -> error $ error_unboundedDataType dataType
 
             (Total _, _)    -> (0.0,1.0) -- compatible with L0-norm
+            (SubSet _,_)   -> (0.0,1.0) -- compatible with L0-norm
             (Range lb ub,_) -> (lb, ub)
             -- TODO this currently gives correct results, but could be nicer
             (ApproxPrior _ r1, _) -> (0, 2*r1)
@@ -168,6 +173,7 @@ extract_CR attMap plcMap typeMap var =
                                        _       -> error $ error_unboundedDataType dataType
 
             (Total n, _)    -> fromIntegral n
+            (SubSet xs,_)   -> fromIntegral $ length xs
             (Range lb ub,_) -> ub - lb
             (ApproxPrior p _, _) -> p
             --(Approx r,_)    -> 2*r

@@ -7,7 +7,9 @@ import qualified Banach as B
 import ProgramOptions
 import CreateTablesQ
 import DatabaseQ
+import GroupQ
 import PolicyQ (VarState(..))
+import ErrorMsg
 import RangeUtils
 
 import qualified Prelude as P
@@ -449,17 +451,17 @@ findUsedVars = fuv where
       Sum2 es ->                          concatMap fuv es
 
 
-analyzeExprQ :: [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> Expr -> AnalysisResult
+analyzeExprQ :: [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> (M.Map String AnalysisResult) -> Expr -> AnalysisResult
 analyzeExprQ colNames = analyzeExpr (map VarQ colNames)
 
 -- computeGsens specifies whether we want to compute gsens or the rest of the analysis results
 -- They must be computed separately because
 -- the rest of the analysis requires gsens w.r.t. a different norm
 -- (the one w.r.t. which we need smoothness instead of the one w.r.t. which we need the sensitivity)
-analyzeExpr :: [ExprQ] -> S.Set Int -> [VarState] -> [Int] -> Bool -> Expr -> AnalysisResult
-analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens = ae where
+analyzeExpr :: [ExprQ] -> S.Set Int -> [VarState] -> [Int] -> Bool -> (M.Map String AnalysisResult) -> Expr -> AnalysisResult
+analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens subQueryMap = ae where
  -- require n times smaller beta in the subexpression
- scaleBeta n (SUB subg subBeta) = let c = fromIntegral n :: Double in SUB (\ beta -> subg (beta / c)) (subBeta * c) 
+ scaleBeta n (SUB subg subBeta) = let c = fromIntegral n :: Double in SUB (\ beta -> subg (beta / c)) (subBeta * c)
  scaleGsens :: Int -> Double -> Double
  scaleGsens n gsens = if computeGsens then gsens else let c = fromIntegral n :: Double in c * gsens
  ae expr =
@@ -480,7 +482,19 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens = ae where
           sf = colTableCounts !! i
           sb = scaleBeta sf
           sg = scaleGsens sf
-      in if r == 1
+      in
+         -- ######################
+         -- here we assume that 'Id x' functions are converted to 'Power x 1'
+         -- we read fx from the table to keep table cross product correct
+         -- we assign variable placeholders for SUBs, although we compute them later when final beta will be known
+         let xName = show x in
+         if r == 1 && M.member xName subQueryMap then
+            let ar = subQueryMap M.! xName in
+            let (SUB _ beta1) = subf ar in
+            let (SUB _ beta2) = sdsf ar in
+            ar {fx = VarQ xName, subf = SUB (const $ VarQ ("_sens_" ++ xName ++ "_subf")) beta1, sdsf = SUB (const $ VarQ ("_sens_" ++ xName ++ "_sdsf")) beta2}
+         -- ######################
+         else if r == 1
            then
              let gub = getGubFromVs vs
              in aR {fx = x,
@@ -993,8 +1007,8 @@ combineArsSumInfT :: AnalysisResult -> AnalysisResult
 combineArsSumInfT ar =
   (combineArsSumT ar) {sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
-analyzeTableExpr :: [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> String -> TableExpr -> AnalysisResult
-analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens srt te =
+analyzeTableExpr :: [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> String -> (M.Map String AnalysisResult) -> TableExpr-> AnalysisResult
+analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens srt subQueryMap te =
   case te of
     SelectMin (expr : _) -> oneStepCombine combineArsMinT expr
     SelectMax (expr : _) -> oneStepCombine combineArsMaxT expr
@@ -1005,7 +1019,7 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens srt 
     fixedArg arg expr arg' | arg' P.== arg = expr
     oneStepCombine combine expr =
       let
-        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine (analyzeExprQ cols sensitiveVarSet varStates colTableCounts computeGsens expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine (analyzeExprQ cols sensitiveVarSet varStates colTableCounts computeGsens subQueryMap expr)
       in
         aR {fx = fx,
             sdsf = SUB (\ beta -> sdsg beta `Where` (srt ++ ".sensitive")) subBeta,
@@ -1013,7 +1027,7 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens srt 
             gsens = gsens}
     twoStepCombine combine_p combine_inf expr =
       let
-        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine_inf (analyzeExprQ cols sensitiveVarSet varStates colTableCounts computeGsens expr)
+        AR fx _ (SUB sdsg subBeta) gub gsens _ = combine_inf (analyzeExprQ cols sensitiveVarSet varStates colTableCounts computeGsens subQueryMap expr)
         AR _ _ (SUB _ subBeta2) _ _ _ = combine_p $ AR {sdsf = SUB undefined subBeta}
       in aR {fx = fx,
              sdsf = SUB (\ beta ->
@@ -1032,12 +1046,12 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens srt 
 -- fr may contain multiple tables and aliases, e.g. "t as t1, t as t2, t3"
 -- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
 -- srt is the name of the sensitive rows table
-analyzeTableExprQ :: String -> String -> String -> [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> TableExpr -> AnalysisResult
-analyzeTableExprQ fr wh srt colNames sensitiveVarSet varStates colTableCounts computeGsens te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens srt te
-  in AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
+analyzeTableExprQ :: String -> String -> String -> [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> (M.Map String AnalysisResult) -> TableExpr -> AnalysisResult
+analyzeTableExprQ fr wh srt colNames sensitiveVarSet varStates colTableCounts computeGsens subQueryMap te =
+  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens srt subQueryMap te in
+  AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
-performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])
+performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])
 performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
   let debug = not (alternative args)
   let tableGmap = M.fromList tableGs
@@ -1047,21 +1061,11 @@ performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames 
                                                          | otherwise    -> tbl ++ ':' : show g)
                         tableGs
   --when debug $ printf "tableGstr = %s\n" tableGstr
-  let (tableNames,_,_,_) = unzip4 tableExprData
-  let uniqueTableNames = nub tableNames
-  when debug $ putStrLn "================================="
-  when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
-  let policy = (policyAnalysis args)
-  ctss <- if (not (dbCreateTables args)) then (do return []) else
-                  forM uniqueTableNames $ \ t -> do cts <- createTableSqlTyped policy dataPath separator t typeMap
-                                                    when debug $ putStr (concatMap (++ ";\n") cts)
-                                                    return cts
-
-  when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Computing the initial query:"
   when debug $ putStrLn initialQuery
   qr <- if (dbSensitivity args) then sendDoubleQueryToDb args initialQuery else (do return 0)
+
   when (dbSensitivity args && debug) $ putStrLn (show qr)
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Generating SQL queries for computing the analysis results:"
@@ -1090,22 +1094,34 @@ performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames 
   when debug $ printf "varStates = %s\n" (show varStates)
   when debug $ printf "colTableCounts = %s\n" (show colTableCounts)
   sqlsaCache <- newIORef M.empty :: IO (IORef (M.Map [String] (M.Map String Double, M.Map String Double)))
-  res00 <- forM tableExprData $ \ (tableName, taskName, te, (_,fromPart,wherePart)) -> do
+
+  -- ######################
+  -- here we converted forM to foldM to keep track of subexpression map that collects intermediate AR-s
+  -- res00 <- forM tableExprData $ \ (tableName, taskName, te, (_,fromPart,wherePart)) -> do
+  (_,res00) <- foldM (\ (subQueryMap',results') (tableName, taskName, group, te, (_,fromPart,wherePart)) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " in task " ++ taskName ++ " ==="
     when debug $ print te
-    let pa = performAnalysis args epsilon (Just beta) fromPart wherePart tableName taskName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts
+    --let pa = performSubExprAnalysis args epsilon (Just beta) fromPart wherePart tableName taskName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subQueryMap'
+
+    let f v x y z w = performAnalysis args epsilon (Just beta) x y tableName z taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts w v
+    let pa v = performSubExprAnalysis args fromPart wherePart tableName taskName group subQueryMap' (f v)
+
     case M.lookup tableName tableGmap of
       Nothing -> do
-        result <- pa (getG args)
-        return (tableName, result)
+        (newSubQueryMap,results) <- pa (getG args)
+        --return (tableName, result)
+        return (newSubQueryMap, results' ++ results)
       Just Nothing ->
         -- this table is considered insensitive, so computing its sensitivity is skipped
-        return (tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))
+        -- return (tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))
+        return (subQueryMap', results' ++ [(tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))])
       Just tableG -> do
-        result <- pa tableG
-        return (tableName, result)
+        (newSubQueryMap,results)  <- pa tableG
+        --return (tableName, result)
+        return (newSubQueryMap, results' ++ results)) (M.empty,[]) tableExprData
+  -- ######################
 
   when (combinedSens args) $ when debug $ putStrLn "\n-----------------\nCombined sensitivities with Banach sensitivity smoothed only w.r.t. the same table-copy for adding/removing rows:"
   res0 <- forM res00 $ \ (tableName, (b,sds,combinedRes,_)) -> do
@@ -1176,29 +1192,43 @@ performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames 
 
 
 -- find the minimum value of beta that is allowed for all tables
-findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
+findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
 findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
     let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
-    minBetas <- forM tableExprData $ \ (tableName, _, te, (_,fromPart,wherePart)) ->
-      findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveVarList te colTableCounts
+    -- ######################
+    -- subqueries are taken into account for computation of beta
+    --minBetas <- forM tableExprData $ \ (tableName, _, te, (_,fromPart,wherePart)) ->
+    --  findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveVarList M.empty te colTableCounts
+    (_,minBetas) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (_,fromPart,wherePart)) -> do
+        (newSubQueryMap,result) <- findMinimumBeta1 args fromPart wherePart tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
+        return (newSubQueryMap, results' ++ [result])) (M.empty,[]) tableExprData
+    -- ######################
     return $ maximum minBetas
 
 -- find the minimum value of beta that is allowed for a given (copy of a) table
-findMinimumBeta1 :: ProgramOptions -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr -> [Int] -> IO Double
-findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveVarList te colTableCounts = do
+findMinimumBeta1 :: ProgramOptions -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (M.Map String AnalysisResult) -> TableExpr -> [Int] -> IO (M.Map String (M.Map String AnalysisResult), Double)
+findMinimumBeta1 args fromPart wherePart tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
+
     let debug = not (alternative args)
+
     let sensitiveVarSet = S.fromList sensitiveVarList
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
-    let ar = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False te
-    let minBeta = subBeta (sdsf ar)
-    when debug $ printf "tableName=%s minBeta=%0.6f\n" tableName minBeta
-    return minBeta
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> String -> [String] -> [VarState] -> [String] -> TableExpr ->
-                   IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] -> Maybe Double ->
-                   IO (Double,Double,String,(Double,Double,Double,Double,Double))
-performAnalysis args epsilon fixedBeta fromPart wherePart tableName taskName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts tableG = do
+    let f x y _ w = let res = analyzeTableExprQ x y (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False w te in (do return (res,res))
+    (outputMap,results) <- performSubExprAnalysis args fromPart wherePart tableName taskName group subExprMap f
+
+    let (_,ars) = unzip results
+    let minBeta = foldr max 0 $ map (\ar -> subBeta (sdsf ar)) ars
+    when debug $ printf "tableName=%s minBeta=%0.6f\n" tableName minBeta
+    return (outputMap, minBeta)
+
+
+
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> String -> String -> OneGroupData -> [String] -> [VarState] -> [String] -> TableExpr ->
+                   IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] ->  M.Map String AnalysisResult -> Maybe Double ->
+                   IO (AnalysisResult, (Double,Double,String,(Double,Double,Double,Double,Double)))
+performAnalysis args epsilon fixedBeta fromPart wherePart tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG = do
     let debug = not (alternative args)
     --when debug $ printf "varStates = %s\n" (show varStates)
     let sensitiveVarSet = S.fromList sensitiveVarList
@@ -1206,8 +1236,8 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName taskName col
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
     --when debug $ printf "sensitiveVarIndices = %s\n" (show sensitiveVarIndices)
 
-    let ar_for_gsens = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True te
-    let ar = (analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False te) {gsens = gsens ar_for_gsens}
+    let ar_for_gsens = analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True subExprMap te
+    let ar = (analyzeTableExprQ fromPart wherePart (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False subExprMap te) {gsens = gsens ar_for_gsens}
 
     when debug $putStrLn "Analysis result:"
     when debug $print ar
@@ -1218,33 +1248,19 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName taskName col
     when debug $ printf "beta = %0.6f\n" beta
     let b = epsilon / (gamma + 1) - beta
     when debug $ printf "b = %0.6f\n" b
+
+    processIntermediateResults args beta taskName analyzedTable group ar subExprMap
+
     let qr = constProp $ fx ar
     when debug $ putStrLn "Query result:"
     when debug $ putStrLn (show qr ++ ";")
-    fx_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show qr) else (do return 0)
-    when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" fx_value
+    when (dbSensitivity args && debug) $ sendDoubleQueryToDb args (show qr) >>= printf "database returns %0.6f\n"
     let sds = constProp $ subg (sdsf ar) beta
     when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
+
     when debug $ putStrLn (show sds ++ ";")
     sds_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show sds) else (do return 0)
     when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" sds_value
-
-    -- TODO if we do it this way, we do not support combined sensitivity
-    -- we need at least to output an error message if combined sensitivity is used with subqueries
-    let gub_value = gub ar
-    let gsens_value = gsens ar
-    subf_value <- if (dbSensitivity args) then 
-                          case (show (subf ar)) of
-                              "unknown" -> (do return infinity)
-                              _         -> sendDoubleQueryToDb args (show (constProp $ subg (subf ar) beta))
-                  else (do return 0)
-
-    let tbl = [["\'" ++ tableName ++ "\'", showInf fx_value, showInf subf_value, showInf sds_value, showInf beta, showInf gub_value, showInf gsens_value]]
-    when debug $ putStrLn ("-- intermediate output information for " ++ taskName ++ " w.r.t " ++ tableName ++ ":")
-    when debug $ putStrLn (show tbl)
-    intermediateTableCreateStatement <- createIntermediateAggrTableSql taskName tbl
-    sendQueriesToDb args intermediateTableCreateStatement
-    ------
 
     let tableGJustInf = case tableG of Just g | isInfinite g -> True; _ -> False
     (combinedSens_value,combinedRes,smoothingData) <- if combinedSens args && not tableGJustInf
@@ -1287,8 +1303,116 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName taskName col
         return (combinedSens,res, (ls, embg, sds_value, gsens ar, localCountSens))
       else
         return (sds_value,"", (0, 0, sds_value, 0, 0))
-    return (b,combinedSens_value,combinedRes,smoothingData)
+
+    -- TODO think what to do with ar_gsens, do they actually need a separate map, or can we reuse the ar map
+    return (ar, (b,combinedSens_value,combinedRes,smoothingData))
+
+    --return (b,combinedSens_value,combinedRes,smoothingData)
     --return (b,sds_value,combinedRes)
 
-showInf :: Double -> String
-showInf x = (if x == 1/0 then "99999.99" else show x)
+
+processIntermediateResults :: ProgramOptions -> Double -> String -> String -> OneGroupData -> AnalysisResult -> M.Map String AnalysisResult -> IO ()
+processIntermediateResults args beta taskName analyzedTable group ar subExprMap = do
+
+  if (not (isIntermediateQueryName taskName)) then (do return ())
+  else do
+    let debug = not (alternative args)
+    let outputTableName = queryNameToTableName taskName
+
+    -- store the intermediate result into a database
+    let groupColumn = getOneGroupColName group
+    let groupName = getOneGroupValue group
+    let qr = constProp $ fx ar
+    fx_value <- sendDoubleQueryToDb args (show qr)
+
+    -- we choose beta that is good enough already, since we do not give too small betas as an input, so we can do queryDB immediately
+    let subf_expr = if equal (show $ subf ar) "unknown" then Q 0 else constProp $ subg (subf ar) beta
+    let sdsf_expr = if equal (show $ sdsf ar) "unknown" then Q 0 else constProp $ subg (sdsf ar) beta
+    subf_value <- if (dbSensitivity args && not (equal (show $ subf ar) "unknown")) then sendDoubleQueryToDb args (show subf_expr) else (do return 0)
+    sdsf_value <- if (dbSensitivity args && not (equal (show $ sdsf ar) "unknown")) then sendDoubleQueryToDb args (show sdsf_expr) else (do return 0)
+
+    -- for fx, we record the output only once even if several tables were analysed, it is not clear whether multiple records could be more useful
+    let recordedTable = "#"
+    -- if the actual group is not a text, we need to put addtional quotation around
+    let groupNameStr = case head groupName of {'\'' -> groupName ; _ -> "\'" ++ groupName ++ "\'"}
+    let tbl_fx = ["\'" ++ recordedTable ++ "\'", groupNameStr, show fx_value]
+
+    -- for sensitivities, we record the result separately for each table
+    let tbl_sens = [["\'" ++ analyzedTable ++ "\'", groupNameStr, show subf_value, show sdsf_value]]
+
+    when debug $ putStrLn ("-- intermediate output information for " ++ taskName ++ " w.r.t " ++ analyzedTable ++ ":")
+    when debug $ putStrLn (show qr)
+    when debug $ putStrLn (show tbl_fx)
+    when debug $ putStrLn (show tbl_sens)
+    when debug $ putStrLn ("------------------")
+    let intermediateTableCreateStatement1 = insertUniqueIntoIntermediateAggrTableSql outputTableName groupColumn (round 1 :: Int) tbl_fx
+    let intermediateTableCreateStatement2 = insertIntoIntermediateAggrTableSensSql ("_sens_" ++ outputTableName) tbl_sens
+    let intermediateTableCreateStatement = intermediateTableCreateStatement1 ++ intermediateTableCreateStatement2
+    when debug $ putStrLn (show intermediateTableCreateStatement)
+    sendQueriesToDb args intermediateTableCreateStatement
+
+
+performSubExprAnalysis :: ProgramOptions -> String -> String -> String -> String -> OneGroupData-> M.Map String (M.Map String AnalysisResult)
+                  -> (String -> String -> String -> M.Map String AnalysisResult -> IO (AnalysisResult,b))
+                  -> IO(M.Map String (M.Map String AnalysisResult), [(String,b)])
+performSubExprAnalysis args fromPart wherePart tableName taskName group subExprMap f = do
+
+    let debug = not (alternative args)
+
+    -- extract the variable names from the taskName and the tableName
+    let varName = queryNameToPreficedVarName taskName
+    let tableVarName = queryNameToPreficedVarName tableName
+
+    -- the query comes with "tableName = subQueryTable", and we want sensitivities w.r.t. all tables used by subQueryTable instead
+    -- we store the analysis results separately for each input table
+    let goodVarNames = filter (\x -> equal (varNameToTableName x) tableName) (M.keys subExprMap)
+    let temp = case goodVarNames of
+                   [] -> [([tableName],M.empty)]
+                   _  -> map (\goodVarName ->
+                       let m = (subExprMap M.! goodVarName) in
+                       let tableNames = M.keys m in
+                       (tableNames, M.fromList (map (\x -> (goodVarName, m M.! x)) tableNames))) goodVarNames
+
+    let (analyzedTables0,subExprAnalysisResults0) = unzip temp
+    let analyzedTables = concat analyzedTables0
+    let subExprAnalysisResults = foldr M.union M.empty subExprAnalysisResults0
+
+    putStrLn $ "initial table: " ++ show tableName
+    putStrLn $ "suitable tables: " ++ show goodVarNames
+    putStrLn $ "analyzed tables: " ++ show analyzedTables
+
+    let groupColName = getOneGroupColName group
+    let results00 = map (\analyzedTable ->
+            let extFromPart  = if equal analyzedTable tableName then fromPart else fromPart  ++ ", _sens_" ++ tableName in
+            let extWherePart = if equal analyzedTable tableName then wherePart else wherePart ++ " AND _sens_" ++ tableName ++ ".tableName = \'" ++ analyzedTable ++ "\'" ++ " AND _sens_" ++ tableName ++ "." ++ groupColName ++ " = " ++ tableName ++ "." ++ groupColName in
+            f extFromPart extWherePart analyzedTable subExprAnalysisResults) analyzedTables
+
+    results0 <- sequence results00
+    let (ars,results) = unzip results0
+
+    let mapKey = removeGroupFromQName varName
+    let outputMap = M.insertWith chooseSaferARs mapKey (M.fromList $ zip analyzedTables ars) subExprMap
+    putStrLn $ "outputMap: " ++ show outputMap
+    return (outputMap, if (isIntermediateQueryName taskName) then [] else zip analyzedTables results)
+
+-- if we have different analysis results for different groups, we take the one that works for all of them
+chooseSaferARs :: M.Map String AnalysisResult -> M.Map String AnalysisResult -> M.Map String AnalysisResult
+chooseSaferARs ars1 ars2 =
+   M.unionWith chooseSaferAR ars1 ars2
+
+chooseSaferAR :: AnalysisResult -> AnalysisResult -> AnalysisResult
+chooseSaferAR ar1 ar2 =
+   -- we do not use fx in the map anyway, so it can be arbitrary
+   let new_fx   = fx ar1 in
+   -- we do not use the SUB function in the map anyway, so it can be arbitrary
+   -- however, we do need the beta values
+   let (SUB y sub_beta1) = subf ar1 in
+   let (SUB _ sub_beta2) = subf ar2 in
+   let new_subf = (SUB y (max sub_beta1 sub_beta2)) in
+   let (SUB z sds_beta1) = sdsf ar1 in
+   let (SUB _ sds_beta2) = sdsf ar2 in
+   let new_sdsf = (SUB z (max sds_beta1 sds_beta2)) in
+
+   let new_gub = max (gub ar1) (gub ar2) in
+   let new_gsens = max (gsens ar1) (gsens ar2) in
+   aR {fx = new_fx, subf = new_subf, sdsf = new_sdsf, gub = new_gub, gsens = new_gsens}

@@ -6,6 +6,7 @@ import qualified Data.Set as S
 
 import ErrorMsg
 import ExprQ
+import GroupQ
 
 -- the default alpha value for Tauoids and Sigmoids
 a = 0.1
@@ -15,7 +16,7 @@ data AExpr a
   = AVar a
   | AConst Double
   | AText String
---  | ASubExpr Expr
+  | ASubExpr String a
   | AUnary  AUnOp (AExpr a)
   | ABinary ABinOp (AExpr a) (AExpr a)
   | AZeroSens (AExpr a) -- in some cases, we need to deliberately force ZeroSens (also around sensitive expressions), be careful with this construction!
@@ -255,7 +256,8 @@ aexprToExpr y (AUnary ANot x) =
 
 aexprToExpr y (AConst c)   = M.fromList [(y, Const c)]
 aexprToExpr y (AVar x)     = M.fromList [(y, Id x)]
---aexprToExpr y (ASubExpr e) = M.fromList [(y, e)]
+-- TODO see what we actually want here
+aexprToExpr y (ASubExpr t x) = M.fromList [(y, Id (t ++ [tsep] ++ x))]
 
 aexprToExpr y (ABinary ALike x1 x2) =
     let z1     = y ++ "~1" in
@@ -483,6 +485,7 @@ aexprToString aexpr =
         AConst c -> show c
         AText s -> s
 
+        ASubExpr t x -> t ++ [tsep] ++ x
         AZeroSens x -> aexprToString x
 
         AAbs x -> "abs(" ++ aexprToString x ++ ")"
@@ -531,6 +534,8 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
         AConst c -> AConst c
         AText c -> AText c
 
+        -- TODO check if it is the right thing
+        ASubExpr t x -> ASubExpr (processBase t) x
         AZeroSens x -> AZeroSens $ processRec x
 
         AAbs x -> AAbs $ processRec x
@@ -583,6 +588,8 @@ getAllAExprVars sensOnly aexpr =
         AConst c -> S.empty
         AText c -> S.empty
 
+        -- TODO check if we want treat subtable outputs as variables
+        ASubExpr _ _ -> S.empty
         AZeroSens x  -> if sensOnly then S.empty else processRec x
 
         AAbs x  -> processRec x
@@ -625,6 +632,58 @@ getAllAExprVars sensOnly aexpr =
     where processRec x = getAllAExprVars sensOnly x
           processBase x = S.singleton x
 
+--------------------------
+-- get all variables
+getAllSubExprVars :: (Ord a, Show a) => Bool -> AExpr a -> S.Set (String,a)
+getAllSubExprVars sensOnly aexpr =
+    case aexpr of
+        AVar x -> S.empty
+        AConst c -> S.empty
+        AText c -> S.empty
+
+        ASubExpr t x -> processBase (t,x)
+        AZeroSens x  -> if sensOnly then S.empty else processRec x
+
+        AAbs x  -> processRec x
+        ASum  xs -> foldr S.union S.empty $ map processRec xs
+        AProd xs -> foldr S.union S.empty $ map processRec xs
+        AMins xs -> foldr S.union S.empty $ map processRec xs
+        AMaxs xs -> foldr S.union S.empty $ map processRec xs
+        AAnds xs -> foldr S.union S.empty $ map processRec xs
+        AOrs  xs -> foldr S.union S.empty $ map processRec xs
+        AXors xs -> foldr S.union S.empty $ map processRec xs
+
+        AUnary ALn x -> processRec x
+        AUnary AFloor x -> processRec x
+        AUnary ANeg x -> processRec x
+        AUnary ANot x -> processRec x
+        AUnary (AExp c) x -> processRec x
+        AUnary (APower c) x -> processRec x
+
+        ABinary ADiv x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AMult x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AAdd x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ASub x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AMin x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AMax x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AAnd x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AOr  x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AXor x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ALT x1 x2  -> S.union (processRec x1) (processRec x2)
+        ABinary ALE x1 x2  -> S.union (processRec x1) (processRec x2)
+        ABinary AEQ  x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AGE x1 x2  -> S.union (processRec x1) (processRec x2)
+        ABinary AGT x1 x2  -> S.union (processRec x1) (processRec x2)
+        ABinary AEQstr x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ALTint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ALEint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AEQint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AGEint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary AGTint x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
+    where processRec x = getAllSubExprVars sensOnly x
+          processBase x = S.singleton x
+
 aexprToColSet :: (Show a, Ord a, Show b, Ord b) => M.Map a b -> Bool -> AExpr a -> S.Set b
 aexprToColSet inputMap sensOnly aexpr = S.map (inputMap ! ) $ getAllAExprVars sensOnly aexpr
 
@@ -637,6 +696,7 @@ aexprSubstitute aexprMap aexpr =
         AConst c -> AConst c
         AText c -> AText c
 
+        ASubExpr t x -> ASubExpr t x
         AZeroSens x -> AZeroSens $ processRec x
 
         AAbs x -> AAbs $ processRec x
@@ -687,7 +747,9 @@ applyAexprTypes typeMap aexpr =
         AConst c -> if isInteger c then (AInt, AConst c) else (AFloat, AConst c)
         AText c  -> (AString, AText c)
 
-        AZeroSens x -> let (t,[y]) = processRec [x] in (t, AZeroSens y)
+        -- TODO putting here float is safe, but actually we could use output table schema to decide if it could be something else
+        ASubExpr t x -> (AFloat, ASubExpr t x)
+        AZeroSens x  -> let (t,[y]) = processRec [x] in (t, AZeroSens y)
 
         AAbs x   -> let (t,[y]) = processRec [x] in (t, AAbs y)
         ASum xs  -> let (t,ys)  = processRec xs  in (t, ASum ys)

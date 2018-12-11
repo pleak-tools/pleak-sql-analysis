@@ -27,3 +27,8 @@ CREATE TABLE person2diseasestate(
   person_id int8 REFERENCES person NOT NULL,
   transitiondate int8 NOT NULL
 );
+
+CREATE TABLE person2diseaseriskfactor(
+  riskfactor_id int8 NOT NULL,
+  person_id int8 NOT NULL
+);

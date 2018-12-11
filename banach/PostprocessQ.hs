@@ -12,6 +12,7 @@ import ErrorMsg
 import qualified Banach as B
 import qualified BanachQ as BQ
 import PolicyQ
+import GroupQ
 
 traceIOIfDebug :: Bool -> String -> IO ()
 traceIOIfDebug debug msg = do
@@ -40,7 +41,7 @@ optimal_a_epsilon xWeight c r rr a epsilon k n m =
     let (a'',epsilon'') = if (epsilon' > epsilon) then (a',epsilon') else (a,epsilon) in
     optimal_a_epsilon xWeight c r rr a'' epsilon'' (k-1) n m
 
-performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
+performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
 performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
 
@@ -55,7 +56,7 @@ performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap 
                   (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f\t %0.6f\t %0.6f\t %0.3f" tableName sds qr (sds/b) ((sds/b) / qr * 100)) res)) taskAggr
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") taskStr
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, String, B.TableExpr, (String,String,String))] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
 performPolicyAnalysis args dataPath separator initialQuery colNames typeMap taskMap tableExprData plcMaps attMap colTableCounts = do
 
   -- the input epsilon now works as delta, the upper bound on attacker's advantage
@@ -187,7 +188,7 @@ repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestError = do
       else do
         return (bestBeta', bestError')
 
-performAnalysisBetaStep :: ProgramOptions -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO Double
+performAnalysisBetaStep :: ProgramOptions -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO Double
 performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
 
   (qr,taskAggr) <- performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
@@ -201,11 +202,9 @@ performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames ty
   return ((sds / b) / qr * 100)
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])
 performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
-  -- TODO: we want that, if BQ.performAnalyses returns Nothing, we treat it as a bad beta, allowing to continue
-  -- TODO: we need a special output in the case of bad bata where user choses a fixed beta himself (tell that we had to change beta)
   (qr,taskAggr') <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
 
   -- if we choose beta that is not compatible with epsilon during optimization, we get a negative b, so we set it to 0 to get Infinity relative error

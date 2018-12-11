@@ -53,6 +53,7 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
                | SelectPlain VarName       -- does not apply aggregation, is used only for intermediate representation
                | SelectDistinct VarName    -- TODO not supported yet, used only to generate nice error messages
+               | SelectGroup VarName       -- a special placeholder for group id-s, not treated as a sensitive query
   deriving Show
 
 --------------------------
@@ -81,7 +82,21 @@ getVarNameFromTableExpr t =
         SelectCount x  -> x
         SelectDistinct x -> x
         SelectPlain x    -> x
+        SelectGroup x    -> x
 
+setVarNameToTableExpr :: TableExpr -> VarName ->  TableExpr
+setVarNameToTableExpr t x =
+    case t of
+        SelectProd _   -> SelectProd x
+        SelectMin _    -> SelectMin x
+        SelectMax _    -> SelectMax x
+        SelectL p _    -> SelectL p x
+        SelectSum _    -> SelectSum x
+        SelectSumBin _ -> SelectSumBin x
+        SelectCount _  -> SelectCount x
+        SelectDistinct _ -> SelectDistinct x
+        SelectPlain _    -> SelectPlain x
+        SelectGroup _    -> SelectGroup x
 
 --------------------------
 -- puts zeroSens in front of all insensitive variables, remove zeroSens from sensitive variables
@@ -221,7 +236,8 @@ updatePreficesTableExpr fullTablePaths prefix expr =
         SelectSumBin x   -> SelectSumBin   (updatePrefices fullTablePaths prefix x)
         SelectCount x    -> SelectCount    (updatePrefices fullTablePaths prefix x)
         SelectDistinct x -> SelectDistinct (updatePrefices fullTablePaths prefix x)
-        SelectPlain x         -> SelectPlain         (updatePrefices fullTablePaths prefix x)
+        SelectPlain x    -> SelectPlain    (updatePrefices fullTablePaths prefix x)
+        SelectGroup x    -> SelectGroup    (updatePrefices fullTablePaths prefix x)
 
 -- puts preanalysed aggregated function results into correspoding placeholders
 applyPrecAggr :: Double -> Double -> B.Expr -> B.Expr
@@ -366,15 +382,16 @@ exprToString isPublic asgnMap expr =
 tableExprToString :: Bool -> M.Map VarName Expr -> TableExpr -> String
 tableExprToString isPublic asgnMap b =
     case b of
-        SelectProd x   -> "SELECT PRODUCT(" ++ processRec x ++ ")"
-        SelectMin x    -> "SELECT MIN(" ++ processRec x ++ ")"
-        SelectMax x    -> "SELECT MAX(" ++ processRec x ++ ")"
-        SelectL p x    -> "SELECT (SUM(" ++ processRec x ++ " ^ " ++ show p ++ ") ^ " ++ show (1/p) ++ ")"
-        SelectSum  x   -> "SELECT SUM(" ++ processRec x ++ ")"
-        SelectSumBin x -> "SELECT SUM(" ++ processRec x ++ ")"
-        SelectCount x  -> "SELECT COUNT(" ++ processRec x ++ ")"
-        SelectDistinct  x  -> "SELECT DISTINCT(" ++ processRec x ++ ")"
-        SelectPlain x       -> "SELECT " ++ processRec x
+        SelectProd x   -> "PRODUCT(" ++ processRec x ++ ")"
+        SelectMin x    -> "MIN(" ++ processRec x ++ ")"
+        SelectMax x    -> "MAX(" ++ processRec x ++ ")"
+        SelectL p x    -> "(SUM(" ++ processRec x ++ " ^ " ++ show p ++ ") ^ " ++ show (1/p) ++ ")"
+        SelectSum  x   -> "SUM(" ++ processRec x ++ ")"
+        SelectSumBin x -> "SUM(" ++ processRec x ++ ")"
+        SelectCount x  -> "COUNT(" ++ processRec x ++ ")"
+        SelectDistinct  x  -> "DISTINCT(" ++ processRec x ++ ")"
+        SelectPlain x       -> processRec x
+        SelectGroup x       -> processRec x
     where processRec x = takeAlteredIfExists x asgnMap (exprToString isPublic asgnMap) id
 
 takeAlteredIfExists :: (Show a, Show b, Ord a) => a -> M.Map a b -> (b -> c) -> (a -> c) -> c

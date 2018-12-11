@@ -96,14 +96,14 @@ updateAExprVariableNames fullTablePaths prefix aexpr = updatePreficesAexpr fullT
 --------------------------------------------------------------
 -- some query transformations
 
-queryToExpr :: (M.Map VarName B.Var) -> (S.Set B.Var) -> Function -> (String,B.Expr, B.TableExpr, String)
+queryToExpr :: (M.Map VarName B.Var) -> (S.Set B.Var) -> Function -> (B.Expr, B.TableExpr, String)
 queryToExpr inputMap allSensitiveCols (F aexpr y) =
     let x = getVarNameFromTableExpr y in
     let asgnMap = aexprToExpr x $ aexprNormalize aexpr in
     let queryAggr = snd $ tableExprToBTableExpr allSensitiveCols inputMap asgnMap y in
     let queryStr  = exprToString True asgnMap (asgnMap ! x) in
     let queryExpr = head (getExprFromTableExpr queryAggr) in
-    (x,queryExpr,queryAggr,queryStr)
+    (queryExpr,queryAggr,queryStr)
 
 queryToString :: Function -> String
 queryToString (F aexpr y) =
@@ -116,6 +116,12 @@ queryAggrToString (F aexpr y) =
     let x = getVarNameFromTableExpr y in
     let asgnMap = aexprToExpr x $ aexprNormalize aexpr in
     tableExprToString True asgnMap y
+
+queryToColSet :: (Show b, Ord b) => M.Map VarName b -> Bool -> Function -> S.Set b
+queryToColSet inputMap sensOnly (F aexpr _) = S.map (inputMap ! ) $ getAllAExprVars sensOnly aexpr
+
+getQueryName :: Function -> String
+getQueryName (F _ b) = getVarNameFromTableExpr b
 
 insertZeroSens :: (S.Set B.Var) -> B.TableExpr -> (B.Expr, B.TableExpr)
 insertZeroSens tableSensitiveCols tableExpr =

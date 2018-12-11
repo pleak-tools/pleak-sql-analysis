@@ -1,6 +1,8 @@
 module CreateTablesQ where
 
 import qualified Banach as B
+import AexprQ
+import GroupQ
 import ReaderQ (readDB, readDBString, readDBDifferentTypes)
 import ParserQ (parseNormFromFile)
 import ErrorMsg
@@ -14,32 +16,80 @@ import qualified Data.Set as S
 sensRows :: String -> String
 sensRows tableName = tableName ++ "_sensRows"
 
---TODO generalize to multiple row tables
-createIntermediateAggrTableSql :: String -> [[String]] -> IO [String]
-createIntermediateAggrTableSql tableName tbl = do
-  let numRows = length tbl
-  let sensTableName = sensRows tableName
-  let sensRows = [0..]
-  let sensRowsSet = S.fromList (take numRows sensRows)
-  return [
+-- TODO we get different separators from different sources,
+-- probably we could make them the same on some earlier step
+-- replace the '.' with '_'
+varNameToQueryName x = map (\c -> if c == tsep then csep else c) x
+varNameToTableName x = if isIntermediateQueryVar x then takeWhile (/= tsep) x else x
+varNameToSubVarName x = if isIntermediateQueryVar x then tail $ dropWhile (/= tsep) x else x
+
+queryNameToPreficedVarName x = if elem csep x then queryNameToTableName x ++ [tsep] ++ queryNameToVarName x else x
+
+isIntermediateQueryName x = elem csep x
+isIntermediateQueryVar x = elem tsep x
+
+isGroupQueryVar x = elem grsep x
+removeGroupFromQName x = takeWhile (/= grsep) x
+
+queryNameToTableName x     = reverse $ tail $ dropWhile (/= csep) (reverse x)
+queryNameToVarName x       = reverse $ takeWhile (/= csep) (reverse x)
+
+queryNameToGroupName x     = if elem grsep x then tail $ dropWhile (/= grsep) (queryNameToVarName x) else queryNameToVarName x
+queryNameToAggrName x      = takeWhile (/= grsep) (queryNameToVarName x)
+queryNameToGroupAggrName x = (queryNameToGroupName x, queryNameToAggrName x)
+
+preficedVarName t x = t ++ [tsep] ++ x
+connectedVarName t x = t ++ [csep] ++ x
+addGroupToQName t x = t ++ [grsep] ++ x
+
+-- TODO think how to write it for several rows
+insertUniqueIntoIntermediateAggrTableSql :: String -> String -> Int -> [String] -> [String]
+insertUniqueIntoIntermediateAggrTableSql tableName uniqueColName uniqueColIndex tbl =
+  let numRows = 1 in
+  let sensTableName = sensRows tableName in
+  let sensRows = [0..] in
+  let sensRowsSet = S.fromList (take numRows sensRows) in
+  [
+    "INSERT INTO " ++ tableName ++ " SELECT " ++ intercalate ", " (zipWith (\ r i -> intercalate ", " (r ++ [show i])) [tbl] [0..]) ++ " WHERE NOT EXISTS (SELECT 1 FROM " ++ tableName ++ " WHERE " ++ uniqueColName ++ " = " ++ tbl !! uniqueColIndex ++ ")",
+    "INSERT INTO " ++ sensTableName ++ " SELECT " ++ intercalate ", " (map (\ i -> show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false")) [0..numRows-1]) ++ " WHERE NOT EXISTS (SELECT 1 FROM " ++ sensTableName ++ " WHERE id = 0)"]
+
+insertIntoIntermediateAggrTableSql :: String -> [[String]] -> [String]
+insertIntoIntermediateAggrTableSql tableName tbl =
+  let numRows = length tbl in
+  let sensTableName = sensRows tableName in
+  let sensRows = [0..] in
+  let sensRowsSet = S.fromList (take numRows sensRows) in
+  [
     "INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (zipWith (\ r i -> '(' : intercalate ", " (r ++ [show i]) ++ ")") tbl [0..]),
     "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
 
+insertUniqueIntoIntermediateAggrTableSensSql :: String -> String -> Int -> [String] -> [String]
+insertUniqueIntoIntermediateAggrTableSensSql tableName uniqueColName uniqueColIndex tbl =
+  ["INSERT INTO " ++ tableName ++ " SELECT " ++ (intercalate ", " tbl) ++ " WHERE NOT EXISTS (SELECT 1 FROM " ++ tableName ++ " WHERE " ++ uniqueColName ++ " = " ++ tbl !! uniqueColIndex ++ ")"]
+
+insertIntoIntermediateAggrTableSensSql :: String -> [[String]] -> [String]
+insertIntoIntermediateAggrTableSensSql tableName tbl =
+  ["INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ r -> '(' : intercalate ", " r ++ ")") tbl)]
+
 initIntermediateAggrTableSql :: String -> [String]
-initIntermediateAggrTableSql tableName =
+initIntermediateAggrTableSql queryName =
+  let tableName = queryNameToTableName queryName in
+  let aggrCol = queryNameToVarName queryName in
+  -- TODO we currently assume that the group column name is fixed
+  let groupCol = defaultGroupColumn in
+
   let sensTableName = sensRows tableName in
-  let colNamesTypes = [("inputTable","text"),
-                   ("fx","float8"),
-                   ("subf","float8"),
-                   ("sdsf","float8"),
-                   ("beta","float8"),
-                   ("gub","float8"),
-                   ("gsens","float8")] in
+  let colNamesTypes = [("tableName", "text"),
+                       (groupCol,    "text"),
+                       (aggrCol,   "float8")] in
   [
     "DROP TABLE IF EXISTS " ++ tableName,
-    "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (colName,typeName) -> colName ++ " " ++ typeName ++ ", ") colNamesTypes ++ "ID int8)",
+    "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (aggrCol,typeName) -> aggrCol ++ " " ++ typeName ++ ", ") colNamesTypes ++ "ID int8)",
     "DROP TABLE IF EXISTS " ++ sensTableName,
-    "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)"
+    "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
+    "DROP TABLE IF EXISTS " ++ "_sens_" ++ tableName,
+    "CREATE TABLE _sens_" ++ tableName ++ " (" ++ concatMap (\ (aggrCol,typeName) -> aggrCol ++ " " ++ typeName ++ ", ") (init colNamesTypes) ++
+                          (let (aggrCol,typeName) = last colNamesTypes in aggrCol ++ "_subf " ++ typeName ++ ", " ++ aggrCol ++ "_sdsf " ++ typeName ++ ")")
   ]
 
 
@@ -66,41 +116,31 @@ createTableSql policy dataPath separator tableName = do
 
 createTableSqlTyped :: Bool -> String -> String -> String -> [(String,[(String, String)])] -> IO [String]
 createTableSqlTyped policy dataPath separator tableName types = do
-  let typeMap = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) types
-  let dbFileName = dataPath ++ tableName ++ ".db"
-  (colNames, tbl) <- readDBString dbFileName separator
 
-  -- TODO this piece is used only for testing, can be removed if does not work
-  --(_, boolCols, intCols, dblCols, strCols, boolIndices, intIndices, dblIndices, stringIndices) <- readDBDifferentTypes dbFileName tableName typeMap
-  --traceIO $ ("==== " ++ tableName ++ "====")
-  --traceIO $ ("--- boolCols ---")
-  --traceIO $ show boolCols ++ " " ++ show boolIndices
-  --traceIO $ ("--- intCols ---")
-  --traceIO $ show intCols ++ " " ++ show intIndices
-  --traceIO $ ("--- dblCols ---")
-  --traceIO $ show dblCols ++ " " ++ show dblIndices
-  --traceIO $ ("--- strCols ---")
-  --traceIO $ show strCols ++ " " ++ show stringIndices
+    let dbFileName = dataPath ++ tableName ++ ".db"
 
-  let numRows = length tbl
-  let sensTableName = sensRows tableName
-  sensRows <- if policy then do return ([0..])
-              else do
-                  let normFileName = dataPath ++ tableName ++ ".nrm"
-                  ((sR, _), _, _) <- parseNormFromFile normFileName
-                  return sR
+    let typeMap = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) types
+    (colNames, tbl) <- readDBString dbFileName separator
 
-  let sensRowsSet = S.fromList (take numRows sensRows)
-  let colTypes = map (\col -> typeMap ! tableName ! col) colNames
-  return [
-    "DROP TABLE IF EXISTS " ++ tableName,
-    "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (col,t) -> col ++ " " ++ t ++", ") (zip colNames colTypes) ++ "ID int8)",
-    "INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (zipWith (\ r i -> '(' : intercalate ", " (zipWith stringForm r colTypes ++ [show i]) ++ ")") tbl [0..]),
-    "DROP TABLE IF EXISTS " ++ sensTableName,
-    "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
-    "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
-  where
-      stringForm s t = 
+    let numRows = length tbl
+    let sensTableName = sensRows tableName
+    sensRows <- if policy then do return ([0..])
+                else do
+                    let normFileName = dataPath ++ tableName ++ ".nrm"
+                    ((sR, _), _, _) <- parseNormFromFile normFileName
+                    return sR
+
+    let sensRowsSet = S.fromList (take numRows sensRows)
+    let colTypes = map (\col -> typeMap ! tableName ! col) colNames
+    return [
+      "DROP TABLE IF EXISTS " ++ tableName,
+      "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (col,t) -> col ++ " " ++ t ++", ") (zip colNames colTypes) ++ "ID int8)",
+      "INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (zipWith (\ r i -> '(' : intercalate ", " (zipWith stringForm r colTypes ++ [show i]) ++ ")") tbl [0..]),
+      "DROP TABLE IF EXISTS " ++ sensTableName,
+      "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
+      "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
+    where
+        stringForm s t =
                        if map toLower (take 4 t) /= "text" then s
                        else if head s == '\'' then s
                        else if head s == '\"' then "\'" ++ tail (init s) ++ "\'"

@@ -430,7 +430,7 @@ sqlAggrQueryUnnamed outputTableName = do
   filters <- sqlQueryFilter
   groups  <- sqlQueryGroupBy
 
-  let ys = map (\i -> "y~" ++ show i) [0..length gs - 1]
+  let ys = map (\i -> defaultOutputTableName ++ ".c" ++ show i) [0..length gs - 1]
   let queryFuns = zipWith3 (\g aexpr y -> F (aexprFixAbs aexpr) (g y)) gs aexprs ys
   let tableAliasMap = M.fromList $ zip tableAliases tableNames
   let subquery = P groups queryFuns tableAliasMap filters
@@ -608,6 +608,7 @@ varStateVal = varStateExact
   <|> varStateApproxPrior
   <|> varStateTotal
   <|> varStateRange
+  <|> varStateSet
   <|> varStateNone
 
 varStateExact = do
@@ -635,6 +636,12 @@ varStateRange = do
   lb <- signedFloat
   ub <- signedFloat
   return (Range lb ub)
+
+-- TODO we want to have arbitrary strings, just delimited
+varStateSet = do
+  keyWord "set"
+  xs <- many varName
+  return (SubSet xs)
 
 varStateNone = do
   keyWord "none"

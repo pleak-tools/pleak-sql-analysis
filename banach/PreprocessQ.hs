@@ -29,6 +29,7 @@ import QueryQ
 import ReaderQ
 import SchemaQ
 import SelectQueryQ
+import System.IO.Unsafe
 
 
 -- this outputs a trace message only if the flag debug=True is set
@@ -240,7 +241,7 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
                                      let n = length groupVarValues in
                                      let q1 = (\(F as b) -> F as (let x = getVarNameFromTableExpr b in SelectGroup x)) (head queryFuns') in
                                      let q2 = (last queryFuns') in
-                                     let gs = GR groupColName groupVarName groupVarValues in
+                                     let gs = GR "" groupColName groupVarName groupVarValues in
                                      let fs = filterFuns' in
                                      ([q1,q2], [gs,gs], [fs,fs])
                                  else
@@ -260,15 +261,17 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
         let subQueryFuns   = concat subQueryFuns'   in
         let subFiltFuns    = concat subFiltFuns'    in
 
+        -- TODO we need to add prefices to group table name somehow
         -- add the current table alias as a prefix to all variables in all queries and filters
-        let prefix = if tableAlias == outputTableName then "" else tableAlias ++ "_" in
+        let prefix             = if tableAlias == outputTableName then "" else tableAlias ++ "_" in
+        let prefixNoSubscript  = if tableAlias == outputTableName then "" else tableAlias in
         let fullTablePaths = S.fromList (concat tableAliases) in
 
         let newQueryFuns   = map (updateQueryVariableNames fullTablePaths prefix) queryFuns in
         let newFilterFuns  = map (map (updateAExprVariableNames fullTablePaths prefix)) filterFuns in
-        let newQueryGroups = map (addPrefixToGroupVarName prefix) queryGroups in
+        let newQueryGroups = map ((\g -> if getGroupTableName g == "" then addPrefixToGroupTable prefixNoSubscript g else addPrefixToGroupTable prefix g) . addPrefixToGroupVar prefix) queryGroups in
 
-        let newSubQueryGroups = map (addPrefixToGroupVarName prefix) subQueryGroups in
+        let newSubQueryGroups = map ((\g -> if getGroupTableName g == "" then addPrefixToGroupTable prefixNoSubscript g else addPrefixToGroupTable prefix g) . addPrefixToGroupVar prefix) subQueryGroups in
         let newSubQueryFuns = map (updateQueryVariableNames fullTablePaths prefix) subQueryFuns in
         let newSubFiltFuns  = map (\fs -> map (updateAExprVariableNames fullTablePaths prefix) fs) subFiltFuns in
 
@@ -288,8 +291,10 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
         let outputNames      = (replicate n (concat plainSubTableNames))   ++ aggrSubTableNames in
         let outputGroupNames = newQueryGroups ++ aggrSubQueryGroups in
         let outputFilters    = (map (\x -> map (mergeQueryFuns newSubQueryFuns) x ++ concat plainSubFiltFuns) newFilterFuns) ++ aggrSubFiltFuns in
+        -- if there are several items in the query, all the taskNames are treated as subqueries of both
+        let outputTaskNames = (map (taskName :) taskNames) in
 
-        (map (taskName :) taskNames, outputAliases, outputNames, outputGroupNames, outputQueryFuns, outputFilters)
+        (outputTaskNames, outputAliases, outputNames, outputGroupNames, outputQueryFuns, outputFilters)
         where aggrQueryType ((F _ b),_,_,_,_) = case b of {SelectPlain _ -> False; _ -> True}
 
 -- assume that the tables are located in the same place where the query is
@@ -364,9 +369,9 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let (taskNames, inputTableAliases', inputTableNames', outputGroups, outputQueryFuns, filterAexprs') = processQuery outputTableName queryMap attMap "" outputTableName outputTableName
     -- by construction, the used table aliases may repeat, so we discard repetitions first
     let (inputTableAliases, inputTableNames) = unzip $ zipWith (\xs zs -> unzip $ S.toList $ S.fromList $ zip xs zs) inputTableAliases' inputTableNames' 
-    let allInputTableNames   = concat inputTableNames
-    let allInputTableAliases = concat inputTableAliases
+    let (allInputTableNames,allInputTableAliases) = unzip $ nub $ zip (concat inputTableNames) (concat inputTableAliases)
 
+    -- TODO something is wrong here
     let indexedTaskNames = zip taskNames [0..(length taskNames) - 1]
     let taskMaps = concat $ map (\(ts,i) -> (map (\t -> (t,[i]))) ts) indexedTaskNames
     let taskMap'  = M.toList $ M.fromListWith (++) $ filter (\(t,_) -> t /= "") taskMaps
@@ -387,20 +392,27 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
     let orderedTableAliases = M.keys inputTableMap
 
-    let intermediateColNameSets = map (\ (F aexpr _) -> getAllSubExprVars False aexpr) outputQueryFuns
+    let intermediateColNameSetsQ  = map (\ (F aexpr _) -> getAllSubExprVars False aexpr) outputQueryFuns
+    let intermediateColNameSetsF  = concat $ map (map (getAllSubExprVars False)) filterAexprs'
+    let intermediateColNameSets = intermediateColNameSetsQ ++ intermediateColNameSetsF
 
-    -- TODO we currenctly assume for simplicity that the alias defaultGroupColumn is used for all groups
-    let allIntermediateGroupColNameList = map (\(x,y) -> x ++ "." ++ defaultGroupColumn) $ concat $ map S.toList intermediateColNameSets
+    let allIntermediateGroupColNameList = map (\gr -> getGroupTableName gr ++ "." ++ getGroupColName gr) outputGroups
     let allIntermediateColNameList      = map (\(x,y) -> x ++ "." ++ y) $ concat $ map S.toList intermediateColNameSets
     let allIntermediateColNameSet  = S.fromList allIntermediateColNameList
-    when (length allIntermediateColNameList /= S.size allIntermediateColNameSet) $ error $ error_subQueries
+    let uniqueIntermediateColNameList = S.toList allIntermediateColNameSet
+    -- TODO this check does not work since repeating values may come for the same query e.g. used in a filter expression
+    -- but we still want to do an analogous check ...
+    --when (length allIntermediateColNameList /= S.size allIntermediateColNameSet) $ error $ error_subQueries
 
     let inputColNames    = concat $ map (getUsedCols . (inputTableMap ! ) ) orderedTableAliases
-    let colNames         = inputColNames ++ allIntermediateColNameList ++ allIntermediateGroupColNameList
+    let colNames         = inputColNames ++ uniqueIntermediateColNameList ++ allIntermediateGroupColNameList
     let sensitiveVarList = concat $ map (getSensCols . (inputTableMap ! ) ) orderedTableAliases
 
     let fullTypeMap = foldr M.union M.empty (zipWith (\tableAlias tableName -> M.mapKeys (\s -> tableAlias ++ "." ++ s) (typeMap ! tableName)) allInputTableAliases allInputTableNames)
 
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Intermediate Vars: " ++ show uniqueIntermediateColNameList
+    traceIOIfDebug debug $ "Group Vars: " ++ show allIntermediateGroupColNameList
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Types1: " ++ show typeMap
     traceIOIfDebug debug $ "Types2: " ++ show fullTypeMap
@@ -416,7 +428,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- we assume that the output query table has only one column
     let aggrIntermediateQueryFuns = filter (\(x,_) -> isAggrQuery x) $ zip (tail outputQueryFuns) (tail outputGroups)
 
-    let initQueries = concat $ map (\ ((F _ y),z) -> let x = getVarNameFromTableExpr y in initIntermediateAggrTableSql x) aggrIntermediateQueryFuns
+    let initQueries = concat $ map (\ ((F _ y),z) -> let x = getVarNameFromTableExpr y in initIntermediateAggrTableSql fullTypeMap x z) aggrIntermediateQueryFuns
     traceIOIfDebug debug $ "INIT queries : " ++ show initQueries
     sendQueriesToDbAndCommit args (initQueries)
 
@@ -430,25 +442,29 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
 
     -- process the query blocks one by one, concatenate and reverse, so that subqueries would be processed before superqueries
-    -- TODO we lose the groups here since the query names repeat
     let initialSubQueryDataMap = M.fromList $ zipWith4 (\t g q f -> let qn = getQueryName q in (qn,(t,g,q,f))) inputTableAliases outputGroups outputQueryFuns filterAexprs
-    let orderedQueryNames = map (getQueryName) outputQueryFuns
-    let subQueryDataMap   = constructQueryData initialSubQueryDataMap orderedQueryNames
+    let orderedQueryNames = map getQueryName outputQueryFuns
+    let subQueryDataMap'   = constructQueryData initialSubQueryDataMap orderedQueryNames
+
+    -- remove the auxiliary group-tables, as we do not need them anymore
+    let commonOrderedQueryNames = filter ((\(_,_,_,_,_,q,_) -> isCommonQuery q) . (subQueryDataMap' M.!)) orderedQueryNames
+    let subQueryDataMap         = M.filter (\(_,_,_,_,_,q,_) -> isCommonQuery q) $ foldl (\x y -> removeGroupFromSubQueryMap commonOrderedQueryNames x y) subQueryDataMap' orderedQueryNames
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "commonOrderedQueryNames: " ++ show commonOrderedQueryNames
+    traceIOIfDebug debug $ show (M.keys subQueryDataMap')
+    traceIOIfDebug debug $ show (M.keys subQueryDataMap)
     traceIOIfDebug debug $ "Subquery Map: " ++ show subQueryDataMap
     traceIOIfDebug debug $ "----------------"
 
     -- reconstruct the initial query
-    let initialQuery = constructInitialQuery subQueryDataMap inputTableMap (getQueryName $ head outputQueryFuns)
+    let initialQuery = constructInitialQuery subQueryDataMap' inputTableMap (getQueryName $ head outputQueryFuns)
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Initial query: " ++ initialQuery
     traceIOIfDebug debug $ "----------------"
 
 
-    -- remove the auxiliary group-tables, as we do not need them anymore
-    let commonOrderedQueryNames = filter ((\(_,_,_,_,_,q,_) -> isCommonQuery q) . (subQueryDataMap M.!)) orderedQueryNames
     let dataWrtEachTable = concat $ map (getQueryData debug policy inputMap inputTableMap fullTypeMap subQueryDataMap sensitiveVarList) (reverse commonOrderedQueryNames)
 
     -- additional parameters
@@ -471,6 +487,9 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "column names: " ++ show extColNames
+    traceIOIfDebug debug $ show (length commonOrderedQueryNames)
+    traceIOIfDebug debug $ show (M.size subQueryDataMap)
+    traceIOIfDebug debug $ show (length dataWrtEachTable)
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "----------------"
 
@@ -489,6 +508,12 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- return data to the banach space analyser
     return tableExprData
 
+removeGroupFromSubQueryMap :: [String] -> M.Map String ([TableAlias],[TableAlias],[TableAlias],[VarName],GroupData,Function, [AExpr VarName]) -> String
+                              -> M.Map String ([TableAlias],[TableAlias],[TableAlias],[VarName],GroupData,Function, [AExpr VarName])
+removeGroupFromSubQueryMap qs subQueryDataMap queryName =
+    let (directTableAliases,subqueryTableAliases',intermediateVarList,directColNames,groups,query,filterAexprs) = subQueryDataMap ! queryName in
+    let subqueryTableAliases = filter (\x -> elem x qs) subqueryTableAliases' in
+    M.insert queryName (directTableAliases,subqueryTableAliases,intermediateVarList,directColNames,groups,query,filterAexprs) subQueryDataMap
 
 constructQueryData :: M.Map String ([TableAlias],GroupData, Function, [AExpr VarName]) -> [String] -> 
                       M.Map String ([TableAlias],[TableAlias],[TableAlias],[VarName],GroupData,Function, [AExpr VarName])
@@ -538,7 +563,7 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     let mainWhere  = if length filtersStr == 0 then "true" else intercalate " AND " filtersStr in
 
     -- the groups themselves do not need to be processed, so discard them from the list of subtables
-    let subIntermediateVarList = filter (\x -> varNameToSubVarName x /= getGroupColName groups) intermediateVarList in
+    let subIntermediateVarList = filter (\x -> let (_,_,_,_,gr,q,_) = subQueryDataMap ! (varNameToQueryName x) in getGroupVarName gr /= queryAggrToString q) intermediateVarList in
     let subFroms = map (\x -> "(" ++ constructInitialQuery subQueryDataMap inputTableMap (varNameToQueryName x) ++ ") AS " ++ (varNameToTableName x)) subIntermediateVarList in
 
     -- add the subqueries to the FROM list
@@ -577,7 +602,13 @@ getQueryDataForGroup debug policy inputMap inputTableMap fullTypeMap queryDataMa
                 let x3 = queryName in
                 (x1,x2,x3)
             else
-                let x1 = (ABinary AEQstr (AVar groupVarName) (AText groupValue)) : filterAexprs' in
+                let x1 = if fullTypeMap ! groupVarName == "int" || fullTypeMap ! groupVarName == "double" then
+                             -- TODO it is better to do conversion the other way around and turn int to string only
+                             -- for this, we will need type information when reading attPlc file, and it is a larger change
+                             (ABinary AEQint (AVar groupVarName) (AConst $ unsafePerformIO (intToString groupValue))) : filterAexprs'
+                         else
+                             (ABinary AEQstr (AVar groupVarName) (AText groupValue)) : filterAexprs'
+                in
                 let x2 = OneGR groupColName groupValue in
                 let x3 = addGroupToQName queryName groupValue in
                 (x1,x2,x3)
@@ -589,9 +620,6 @@ getQueryDataForGroup debug policy inputMap inputTableMap fullTypeMap queryDataMa
     let sensitiveVarListQ = S.toList $ (\ (F aexpr _) -> getAllAExprVars False aexpr) query in
     let sensitiveVarListF = concat $ map (S.toList . (getAllAExprVars False)) filterAexprs in
     let sensitiveVarList = (S.toList (S.intersection (S.fromList globalSensitiveVarList) (S.fromList (sensitiveVarListQ ++ sensitiveVarListF)))) ++ intermediateVarList in
-
-    let intermediateColList = map (inputMap ! ) intermediateVarList in
-    let intermediateColSet  = S.fromList intermediateColList in
 
     let sensitiveColList = map (inputMap ! ) sensitiveVarList in
     let sensitiveColSet  = S.fromList sensitiveColList in
@@ -644,9 +672,13 @@ getQueryDataForGroup debug policy inputMap inputTableMap fullTypeMap queryDataMa
     --let finalTableExpr1 = applyPrecAggrTable arMin arMax queryAggr
     --let finalTableExpr1 = queryAggr in
 
-    -- TODO need real table names in place of temp, need to take into account all the subtables used by the aggregation
+    -- we remove the group-related intermediate varibles since we do not need them
+    -- TODO this assumes that the group column name is fixed, we need a better way to distinguish group variables
+    let commonIntermediateVarList = filter (\x -> varNameToSubVarName x /= defaultGroupColumn) intermediateVarList in
+    let commonIntermediateColList = map (inputMap ! ) commonIntermediateVarList in
+
     let dataWrtEachTable' = inputWrtEachTable debug policy inputMap directTableAliases queryAggr (sel,fr ++ minmaxQuery,wh) newQueryName inputTableMap
-           ++ zipWith (getTableExprDataWrtIntermTable debug policy inputMap queryAggr (sel,fr ++ minmaxQuery,wh) newQueryName) intermediateVarList intermediateColList in
+           ++ zipWith (getTableExprDataWrtIntermTable debug policy inputMap queryAggr (sel,fr ++ minmaxQuery,wh) newQueryName) commonIntermediateVarList commonIntermediateColList in
 
     let (allInputTableNames, allOutputTableNames, finalTableExpr, sqlQueries) = unzip4 dataWrtEachTable' in
     let dataWrtEachTable = zip5 allInputTableNames allOutputTableNames (replicate (length sqlQueries) group) finalTableExpr sqlQueries in

@@ -215,6 +215,12 @@ extractTableExpr _ (SelectItem _ expr (Nmc colName)) _ =
     let arg = extractScalarExpr expr in
     F arg (SelectPlain colName)
 
+extractTableExpr _ (SelExp _ (Identifier _ (Name _ [Nmc tableName, Nmc colName]))) _ = 
+    let varName = tableName ++ "." ++ colName in
+    F (AVar varName) (SelectPlain varName)
+
+extractTableExpr _ (SelExp _ (Identifier _ (Name _ [Nmc colName]))) _ = error $ error_queryExpr_unnamed colName
+
 extractTableExpr _ q _ = error $ error_queryExpr q
 
 extractTrefs :: QueryExpr -> (M.Map TableName TableAlias, M.Map TableName QueryQ.Query)

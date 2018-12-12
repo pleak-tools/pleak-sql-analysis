@@ -36,6 +36,7 @@ error_filterExpr ord b   = "ERROR: Unsupported filter for relation " ++ show ord
 error_filterExprConstr t = "ERROR: Unknown filter construction " ++ show t
 
 error_queryExpr t   = "ERROR: Unsupported term in the expression " ++ show t
+error_queryExpr_unnamed t          = "ERROR: Need to define an alias for intermediate query column " ++ show t
 error_queryExpr_syntax t           = "ERROR: Unsupported query syntax " ++ show t
 error_queryExpr_groupBy            = "ERROR: GROUP BY is allowed only for queries of the form SELECT x, y FROM t GROUP BY x"
 error_queryExpr_aggrInterm t       = "ERROR: Aggregator " ++ show t ++ " not supported in the intermediate tables."
@@ -84,4 +85,4 @@ error_badPolicyFormat preficedVar = "ERROR: policy format error, \"" ++ preficed
 
 -- group by related messages
 error_noAttMapBounds x = "ERROR: no set of possible values is specified for " ++ x ++ ", which is essential for GROUP BY queries. Specify \'set x1 ... xn\' or \'range x y\' in the attacker file."
-error_badAttMapBounds x t = "ERROR: bad set of possible values " ++ show t ++ " for " ++ x ++ ", which is essential for GROUP BY queries. Use \'set x1 ... xn\' or \'range x y\' in the attacker file."
+error_badAttMapBounds x t = "ERROR: bad set of possible values " ++ show t ++ " for " ++ x ++ ", which is essential for GROUP BY queries. Use \'set x1 ... xn\' or \'range x y\' in the attacker file. Note that GROUP BY variables need to have table name prefices."

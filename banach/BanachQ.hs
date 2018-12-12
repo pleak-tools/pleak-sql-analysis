@@ -1333,12 +1333,10 @@ processIntermediateResults args beta taskName analyzedTable group ar subExprMap 
 
     -- for fx, we record the output only once even if several tables were analysed, it is not clear whether multiple records could be more useful
     let recordedTable = "#"
-    -- if the actual group is not a text, we need to put addtional quotation around
-    let groupNameStr = case head groupName of {'\'' -> groupName ; _ -> "\'" ++ groupName ++ "\'"}
-    let tbl_fx = ["\'" ++ recordedTable ++ "\'", groupNameStr, show fx_value]
+    let tbl_fx = ["\'" ++ recordedTable ++ "\'", groupName, show fx_value]
 
     -- for sensitivities, we record the result separately for each table
-    let tbl_sens = [["\'" ++ analyzedTable ++ "\'", groupNameStr, show subf_value, show sdsf_value]]
+    let tbl_sens = [["\'" ++ analyzedTable ++ "\'", groupName, show subf_value, show sdsf_value]]
 
     when debug $ putStrLn ("-- intermediate output information for " ++ taskName ++ " w.r.t " ++ analyzedTable ++ ":")
     when debug $ putStrLn (show qr)

@@ -16,32 +16,6 @@ import qualified Data.Set as S
 sensRows :: String -> String
 sensRows tableName = tableName ++ "_sensRows"
 
--- TODO we get different separators from different sources,
--- probably we could make them the same on some earlier step
--- replace the '.' with '_'
-varNameToQueryName x = map (\c -> if c == tsep then csep else c) x
-varNameToTableName x = if isIntermediateQueryVar x then takeWhile (/= tsep) x else x
-varNameToSubVarName x = if isIntermediateQueryVar x then tail $ dropWhile (/= tsep) x else x
-
-queryNameToPreficedVarName x = if elem csep x then queryNameToTableName x ++ [tsep] ++ queryNameToVarName x else x
-
-isIntermediateQueryName x = elem csep x
-isIntermediateQueryVar x = elem tsep x
-
-isGroupQueryVar x = elem grsep x
-removeGroupFromQName x = takeWhile (/= grsep) x
-
-queryNameToTableName x     = reverse $ tail $ dropWhile (/= csep) (reverse x)
-queryNameToVarName x       = reverse $ takeWhile (/= csep) (reverse x)
-
-queryNameToGroupName x     = if elem grsep x then tail $ dropWhile (/= grsep) (queryNameToVarName x) else queryNameToVarName x
-queryNameToAggrName x      = takeWhile (/= grsep) (queryNameToVarName x)
-queryNameToGroupAggrName x = (queryNameToGroupName x, queryNameToAggrName x)
-
-preficedVarName t x = t ++ [tsep] ++ x
-connectedVarName t x = t ++ [csep] ++ x
-addGroupToQName t x = t ++ [grsep] ++ x
-
 -- TODO think how to write it for several rows
 insertUniqueIntoIntermediateAggrTableSql :: String -> String -> Int -> [String] -> [String]
 insertUniqueIntoIntermediateAggrTableSql tableName uniqueColName uniqueColIndex tbl =
@@ -71,16 +45,16 @@ insertIntoIntermediateAggrTableSensSql :: String -> [[String]] -> [String]
 insertIntoIntermediateAggrTableSensSql tableName tbl =
   ["INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ r -> '(' : intercalate ", " r ++ ")") tbl)]
 
-initIntermediateAggrTableSql :: String -> [String]
-initIntermediateAggrTableSql queryName =
+initIntermediateAggrTableSql :: M.Map String String -> String -> GroupData -> [String]
+initIntermediateAggrTableSql typeMap queryName group =
   let tableName = queryNameToTableName queryName in
   let aggrCol = queryNameToVarName queryName in
-  -- TODO we currently assume that the group column name is fixed
-  let groupCol = defaultGroupColumn in
+  let groupCol = getGroupColName group in
+  let groupVar = getGroupVarName group in
 
   let sensTableName = sensRows tableName in
   let colNamesTypes = [("tableName", "text"),
-                       (groupCol,    "text"),
+                       (groupCol,   typeMap ! groupVar),
                        (aggrCol,   "float8")] in
   [
     "DROP TABLE IF EXISTS " ++ tableName,

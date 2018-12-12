@@ -40,6 +40,11 @@ readErr varType s = case reads s of
 --                      [(x, "")] -> Right (Right (Left x))
 --                      _ -> Right (Right (Right s))
 
+-- tostring function
+intToString s = do
+   let x = read s :: Double
+   return x
+
 -- djb2 hash
 hash :: String -> Double
 hash = fromIntegral . foldl' (\h c -> xor (33*h) (ord c)) 5381

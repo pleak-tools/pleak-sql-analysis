@@ -1,6 +1,2 @@
-all
-gender color;
-x = l0 gender;
-y = l0 color;
-z = linf x y;
-return lp 1.0 z;
+rows: all;
+cols: gender color;

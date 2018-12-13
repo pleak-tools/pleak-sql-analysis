@@ -1,1 +1,1 @@
-wishes.item_id range 1 6;
+wishes.item_id set 1 2 3 4 5 6;

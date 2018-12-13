@@ -189,9 +189,9 @@ normsFromCombinedData combinedDataMap tableName =
     let varMap = combinedDataMap ! tableName in
     let sensVars = M.keys varMap in
     let normVars = M.elems varMap in
-    let normVarNames = (map (\x -> "_nv" ++ show x) [0..(length normVars - 1)]) in
+    let normVarNames = (map (\x -> defaultNormVariable ++ show x) [0..(length normVars - 1)]) in
     let tempVarMap = M.fromList $ zip normVarNames normVars in
-    let nf = NF (M.insert "_nv" (LInf normVarNames) tempVarMap) (SelectL 1.0 "_nv") in
+    let nf = NF (M.insert defaultNormVariable (LInf normVarNames) tempVarMap) (SelectL 1.0 defaultNormVariable) in
     -- let all rows be sensitive by default, we will need additional input otherwise
     (([0..],sensVars),nf, Nothing)
 

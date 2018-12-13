@@ -22,6 +22,7 @@ import Data.Void
 import AexprQ
 import ErrorMsg
 import ExprQ
+import NormsQ
 import PolicyQ
 import QueryQ
 import ReaderQ
@@ -496,10 +497,10 @@ sqlQueryWithGroupBy = do
 --------------------------------------
 
 -- we change norm formatting, but we keep the old format as well for compatibility
-norm :: Parser (([Int], [VarName]), NormFunction, Maybe Double)
-norm = do
+norm :: M.Map String String -> Parser (([Int], [VarName]), NormFunction, Maybe Double)
+norm typeMap = do
     ((rxs, cxs), g) <- newNormHeader <|> oldNormHeader
-    f <- customNorm <|> defaultNorm cxs
+    f <- customNorm <|> defaultNorm typeMap cxs
     return ((rxs, cxs), f, g)
 
 -- TODO think on default G case for both old and new norms
@@ -544,10 +545,12 @@ customNorm = do
   f <- function
   return f
 
--- TODO verify that the file has ended, so it is not an error, but indeed the default norm
-defaultNorm xs = do
+defaultNorm typeMap xs = do
   -- if we succeed in reading the identifier, then something is wrong
-  let f = NF (M.fromList [("z",LInf xs)]) (SelectL 1.0 "z")
+  let ys = map (\x -> if typeMap ! x == "text" || typeMap ! x == "bool" then LZero x else Id x) xs
+  let zs = map (\i -> defaultNormVariable ++ show i) [0..length ys - 1]
+  let as = zip zs ys
+  let f = NF (M.fromList $ (defaultNormVariable, L 1.0 zs) : as) (SelectL 1.0 defaultNormVariable)
   return f
 
 asgnStmt :: Parser [(VarName,Expr)]
@@ -637,10 +640,9 @@ varStateRange = do
   ub <- signedFloat
   return (Range lb ub)
 
--- TODO we want to have arbitrary strings, just delimited
 varStateSet = do
   keyWord "set"
-  xs <- many varName
+  xs <- many floatAsQuotedString
   return (SubSet xs)
 
 varStateNone = do
@@ -754,6 +756,12 @@ signedFloat = try (L.signed spaceConsumer float) <|> fmap fromIntegral (L.signed
 stringAsInt :: Parser Double
 stringAsInt = hash <$> text
 
+floatAsString :: Parser String
+floatAsString = try text <|> fmap show signedFloat
+
+floatAsQuotedString :: Parser String
+floatAsQuotedString = fmap (\s -> "\'" ++ s ++ "\'") text <|> fmap show signedFloat
+
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
@@ -778,9 +786,9 @@ parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
 
 parsePolicyFromFile fileName   = if fileName == "" then do return [] else parseFromFile policy error_parsePolicy fileName
 parseAttackerFromFile fileName = if fileName == "" then do return M.empty else parseFromFile attacker error_parseAttacker fileName
-parseNormFromFile fileName = parseFromFile norm error_parseNorm fileName
-parseNormsFromFile fileName = do
-    r <- parseFromFile norm error_parseNorm fileName
-    return [r]
+parseNormFromFile typeMap fileName = parseFromFile (norm typeMap) error_parseNorm fileName
+--parseNormsFromFile fileName = do
+--    r <- parseFromFile norm error_parseNorm fileName
+--    return [r]
 parseSqlQueryFromFile fileName = parseFromFile sqlQueries error_parseSqlQuery fileName
 

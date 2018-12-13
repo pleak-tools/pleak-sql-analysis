@@ -33,6 +33,10 @@ data Norm a = Col a                     -- a variable, if it is toplevel, is tre
           | NormZero                    -- the same as NormScale with a -> infinity
   deriving (Show,Ord,Eq)
 
+-- default norm variable for automatized norm constructions
+-- we assume that noone actually uses this kind of variable
+defaultNormVariable = "_nv"
+
 -- we use this value as a flag for subterm grouping function
 -- TODO we are actually using only Ungroup, probably we will not need this structure at all
 data Grouping = Group | Ungroup

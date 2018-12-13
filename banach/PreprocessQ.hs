@@ -234,7 +234,7 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
                                                               let varState = (attMap ! groupVarName) in
                                                               case varState of
                                                                   Range x y -> map show [x..y]
-                                                                  SubSet xs -> map (\x -> "\'" ++ x ++ "\'") xs
+                                                                  SubSet xs -> xs
                                                                   _         -> error $ error_badAttMapBounds groupVarName varState
                                                           else error $ error_noAttMapBounds groupVarName
                                      in
@@ -307,7 +307,7 @@ readTableData policy queryPath attMap plcMaps typeMap tableNames tableAliases = 
     let dbNormData = if policy then
             return (constructNormData tableNames attMap plcMaps)
         else
-            mapM (\tableName -> parseNormFromFile $ queryPath ++ tableName ++ ".nrm") tableNames
+            mapM (\tableName -> parseNormFromFile (typeMap ! tableName) $ queryPath ++ tableName ++ ".nrm") tableNames
 
     let badNames = filter (\t -> not (M.member t typeMap)) tableNames
     when (length badNames > 0) $ error (error_schema (M.keys typeMap) badNames)
@@ -411,6 +411,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let fullTypeMap = foldr M.union M.empty (zipWith (\tableAlias tableName -> M.mapKeys (\s -> tableAlias ++ "." ++ s) (typeMap ! tableName)) allInputTableAliases allInputTableNames)
 
     traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Input table map: " ++ show inputTableMap
     traceIOIfDebug debug $ "Intermediate Vars: " ++ show uniqueIntermediateColNameList
     traceIOIfDebug debug $ "Group Vars: " ++ show allIntermediateGroupColNameList
     traceIOIfDebug debug $ "----------------"
@@ -423,6 +424,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "All input variables:    " ++ show (M.toList inputMap)
+    traceIOIfDebug debug $ "All sensitive vars:     " ++ show sensitiveVarList
     traceIOIfDebug debug $ "All sensitive cols:     " ++ show sensitiveColSet
 
     -- we assume that the output query table has only one column

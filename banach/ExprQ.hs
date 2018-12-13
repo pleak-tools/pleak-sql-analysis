@@ -530,6 +530,7 @@ exprToNorm prefix inputMap asgnMap t =
         ZeroSens _       -> NormZero
         L c xs           -> NormL (Exactly c) (map processRec xs)
         LInf xs          -> NormL Any (map processRec xs)
+        Id x             -> NormL (Exactly 1.0) [processRec x]
     where
         processRec x = if M.member x asgnMap then exprToNorm prefix inputMap asgnMap (asgnMap ! x) else Col (inputMap ! (prefix ++ x))
 

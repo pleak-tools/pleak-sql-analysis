@@ -468,40 +468,41 @@ scale :: M.Map B.Var Double -> B.Var -> Double
 scale mapX x = takeIfExists mapX x 1.0
 
 -- takes into account modifications in the norm and applies them to the query expression
-updateExpr :: M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> B.Expr -> B.Expr
-updateExpr mapCol mapLN mapLZ expr =
-    let precision_alpha = 5.0 in
+updateExpr :: Double -> M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> B.Expr -> B.Expr
+updateExpr sigmoidPrecision mapCol mapLN mapLZ expr =
+    --let precision_alpha = 5.0 in
+    let precision_alpha = sigmoidPrecision in
     case expr of
         B.PowerLN x c      -> B.ScaleNorm (scale mapLN  x) expr
         B.L0Predicate x f  -> B.ScaleNorm (scale mapLZ  x) expr
         B.Power x c        -> B.ScaleNorm (scale mapCol x) expr
-        B.ComposePower e c -> B.ComposePower (updateExpr mapCol mapLN mapLZ e) c
+        B.ComposePower e c -> B.ComposePower (updateExpr sigmoidPrecision mapCol mapLN mapLZ e) c
         B.Exp c x          -> B.ScaleNorm (scale mapCol x) (B.Exp c x)
-        B.ComposeExp c e   -> B.ComposeExp c (updateExpr mapCol mapLN mapLZ e)
+        B.ComposeExp c e   -> B.ComposeExp c (updateExpr sigmoidPrecision mapCol mapLN mapLZ e)
         B.Sigmoid a c x    -> B.ScaleNorm (scale mapCol x) (B.SigmoidPrecise precision_alpha a c x)
-        B.ComposeSigmoid a c e -> B.ComposeSigmoidPrecise precision_alpha a c (updateExpr mapCol mapLN mapLZ e)
+        B.ComposeSigmoid a c e -> B.ComposeSigmoidPrecise precision_alpha a c (updateExpr sigmoidPrecision mapCol mapLN mapLZ e)
         B.Tauoid a c x     -> B.ScaleNorm (scale mapCol x) (B.TauoidPrecise precision_alpha a c x)
-        B.ComposeTauoid a c e -> B.ComposeTauoidPrecise precision_alpha a c (updateExpr mapCol mapLN mapLZ e)
+        B.ComposeTauoid a c e -> B.ComposeTauoidPrecise precision_alpha a c (updateExpr sigmoidPrecision mapCol mapLN mapLZ e)
         B.Const a          -> B.Const a
-        B.ScaleNorm a e    -> B.ScaleNorm a $ updateExpr mapCol mapLN mapLZ e
+        B.ScaleNorm a e    -> B.ScaleNorm a $ updateExpr sigmoidPrecision mapCol mapLN mapLZ e
         B.ZeroSens e       -> B.ZeroSens e
         B.L p xs           -> B.ScaleNorm (foldr min 100000 $ map (scale mapCol) xs) (B.L p xs)
-        B.ComposeL p es    -> B.ComposeL p $ map (updateExpr mapCol mapLN mapLZ) es
+        B.ComposeL p es    -> B.ComposeL p $ map (updateExpr sigmoidPrecision mapCol mapLN mapLZ) es
         B.LInf xs          -> B.ScaleNorm (foldr min 100000 $ map (scale mapCol) xs) (B.LInf xs)
-        B.Prod es          -> B.Prod  $ map (updateExpr mapCol mapLN mapLZ) es
-        B.Prod2 es         -> B.Prod2 $ map (updateExpr mapCol mapLN mapLZ) es -- we assume that equality of subnorms has been already checked
-        B.Min es           -> B.Min $ map (updateExpr mapCol mapLN mapLZ) es
-        B.Max es           -> B.Max $ map (updateExpr mapCol mapLN mapLZ) es
-        B.Sump p es        -> B.Sump p $ map (updateExpr mapCol mapLN mapLZ) es
-        B.SumInf es        -> B.SumInf $ map (updateExpr mapCol mapLN mapLZ) es
-        B.Sum2 es          -> B.Sum2   $ map (updateExpr mapCol mapLN mapLZ) es -- we assume that equality of subnorms has been already checked
+        B.Prod es          -> B.Prod  $ map (updateExpr sigmoidPrecision mapCol mapLN mapLZ) es
+        B.Prod2 es         -> B.Prod2 $ map (updateExpr sigmoidPrecision mapCol mapLN mapLZ) es -- we assume that equality of subnorms has been already checked
+        B.Min es           -> B.Min $ map (updateExpr sigmoidPrecision mapCol mapLN mapLZ) es
+        B.Max es           -> B.Max $ map (updateExpr sigmoidPrecision mapCol mapLN mapLZ) es
+        B.Sump p es        -> B.Sump p $ map (updateExpr sigmoidPrecision mapCol mapLN mapLZ) es
+        B.SumInf es        -> B.SumInf $ map (updateExpr sigmoidPrecision mapCol mapLN mapLZ) es
+        B.Sum2 es          -> B.Sum2   $ map (updateExpr sigmoidPrecision mapCol mapLN mapLZ) es -- we assume that equality of subnorms has been already checked
         B.Prec ar          -> B.Prec ar
         B.StringCond s         -> B.StringCond s
 
-updateTableExpr :: B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> B.TableExpr
-updateTableExpr expr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm =
+updateTableExpr :: Double -> B.TableExpr -> M.Map B.Var Double -> M.Map B.Var Double -> M.Map B.Var Double -> ADouble -> ADouble -> B.TableExpr
+updateTableExpr sigmoidPrecision expr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm =
     
-    let g = updateExpr mapCol mapLN mapLZ in
+    let g = updateExpr sigmoidPrecision mapCol mapLN mapLZ in
     case expr of
         B.SelectProd es    -> if (queryAggrNorm < dbAggrNorm) then error $ error_badAggrNorm expr (f queryAggrNorm) (f dbAggrNorm)
                               else B.SelectProd $ map g es
@@ -543,9 +544,10 @@ tableExprToADouble t =
 
 -- Expr to B.Expr
 -- the constructor may depend on whether the arguments are input variables or expressions
-exprToBExpr :: S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> Expr -> (S.Set B.Var, B.Expr)
-exprToBExpr sensitiveCols inputMap asgnMap t = 
-    let beta = 0.1 in
+exprToBExpr :: Double -> S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> Expr -> (S.Set B.Var, B.Expr)
+exprToBExpr sigmoidBeta sensitiveCols inputMap asgnMap t = 
+    --let beta = 0.1 in
+    let beta = sigmoidBeta in
     case t of
 
         Text s      -> (S.empty, B.StringCond s)
@@ -673,14 +675,14 @@ exprToBExpr sensitiveCols inputMap asgnMap t =
    where err = error_queryExpr_repeatingVars t
          allInputVars xs  = foldr (\x y -> (not (M.member x asgnMap)) && y) True xs
          processRec f g x = if M.member x asgnMap then
-                                   let (usedVars,e) = exprToBExpr sensitiveCols inputMap asgnMap (asgnMap ! x) in
+                                   let (usedVars,e) = exprToBExpr sigmoidBeta sensitiveCols inputMap asgnMap (asgnMap ! x) in
                                    (usedVars,f e)
                                else
                                    let e = inputMap ! x in
                                    (S.singleton e, g e)
 
-tableExprToBTableExpr :: S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> TableExpr -> (S.Set B.Var, B.TableExpr)
-tableExprToBTableExpr sensitiveCols inputMap asgnMap t = 
+tableExprToBTableExpr :: Double -> S.Set B.Var -> M.Map VarName B.Var -> M.Map VarName Expr -> TableExpr -> (S.Set B.Var, B.TableExpr)
+tableExprToBTableExpr sigmoidBeta sensitiveCols inputMap asgnMap t = 
     case t of
         SelectProd x   -> (fst $ processRec x, B.SelectProd [snd $ processRec x])
         SelectMin x    -> (fst $ processRec x, B.SelectMin  [snd $ processRec x])
@@ -696,4 +698,4 @@ tableExprToBTableExpr sensitiveCols inputMap asgnMap t =
         SelectCount x  -> (fst $ processRec x, B.SelectL 0.0 $ map (const (B.Const 1.0)) [snd $ processRec x])
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
         SelectPlain _      -> error $ error_queryExpr_syntax t
-    where processRec x = exprToBExpr sensitiveCols inputMap asgnMap (asgnMap ! x)
+    where processRec x = exprToBExpr sigmoidBeta sensitiveCols inputMap asgnMap (asgnMap ! x)

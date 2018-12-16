@@ -1,5 +1,5 @@
 insert into wish_summary select
-    wishes.item_id AS groupid,
+    wishes.item_id AS item_id,
     count(*) AS need
 from wishes
 group by wishes.item_id;
@@ -11,7 +11,7 @@ select items.item_id as item_id,
 	(wish_summary.need - items.quantity) as needcount
 from items, wish_summary 
 where
-wish_summary.groupid = items.item_id
+wish_summary.item_id = items.item_id
 and items.quantity < wish_summary.need;
 
 SELECT count(*)

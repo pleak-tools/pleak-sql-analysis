@@ -1206,7 +1206,7 @@ findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeM
     return $ maximum minBetas
 
 -- find the minimum value of beta that is allowed for a given (copy of a) table
-findMinimumBeta1 :: ProgramOptions -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (M.Map String AnalysisResult) -> TableExpr -> [Int] -> IO (M.Map String (M.Map String AnalysisResult), Double)
+findMinimumBeta1 :: ProgramOptions -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (OneGroupData,(M.Map String AnalysisResult)) -> TableExpr -> [Int] -> IO (M.Map String (OneGroupData,(M.Map String AnalysisResult)), Double)
 findMinimumBeta1 args fromPart wherePart tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
 
     let debug = not (alternative args)
@@ -1350,9 +1350,9 @@ processIntermediateResults args beta taskName analyzedTable group ar subExprMap 
     sendQueriesToDb args intermediateTableCreateStatement
 
 
-performSubExprAnalysis :: ProgramOptions -> String -> String -> String -> String -> OneGroupData-> M.Map String (M.Map String AnalysisResult)
+performSubExprAnalysis :: ProgramOptions -> String -> String -> String -> String -> OneGroupData-> M.Map String (OneGroupData,(M.Map String AnalysisResult))
                   -> (String -> String -> String -> M.Map String AnalysisResult -> IO (AnalysisResult,b))
-                  -> IO(M.Map String (M.Map String AnalysisResult), [(String,b)])
+                  -> IO(M.Map String (OneGroupData,(M.Map String AnalysisResult)), [(String,b)])
 performSubExprAnalysis args fromPart wherePart tableName taskName group subExprMap f = do
 
     let debug = not (alternative args)
@@ -1364,10 +1364,15 @@ performSubExprAnalysis args fromPart wherePart tableName taskName group subExprM
     -- the query comes with "tableName = subQueryTable", and we want sensitivities w.r.t. all tables used by subQueryTable instead
     -- we store the analysis results separately for each input table
     let goodVarNames = filter (\x -> equal (varNameToTableName x) tableName) (M.keys subExprMap)
+
+    -- if there are several aggregations for the same table name, all of them use the same grouping
+    -- TODO we actually do not support several aggregations yet, as they may have repeating variables
+    let groupColumn = if equal goodVarNames [] then defaultGroupColumn else head $ map (\x -> getOneGroupColName (fst (subExprMap M.! x))) goodVarNames
+
     let temp = case goodVarNames of
                    [] -> [([tableName],M.empty)]
                    _  -> map (\goodVarName ->
-                       let m = (subExprMap M.! goodVarName) in
+                       let m = snd $ subExprMap M.! goodVarName in
                        let tableNames = M.keys m in
                        (tableNames, M.fromList (map (\x -> (goodVarName, m M.! x)) tableNames))) goodVarNames
 
@@ -1379,24 +1384,24 @@ performSubExprAnalysis args fromPart wherePart tableName taskName group subExprM
     putStrLn $ "suitable tables: " ++ show goodVarNames
     putStrLn $ "analyzed tables: " ++ show analyzedTables
 
-    let groupColName = getOneGroupColName group
     let results00 = map (\analyzedTable ->
             let extFromPart  = if equal analyzedTable tableName then fromPart else fromPart  ++ ", _sens_" ++ tableName in
-            let extWherePart = if equal analyzedTable tableName then wherePart else wherePart ++ " AND _sens_" ++ tableName ++ ".tableName = \'" ++ analyzedTable ++ "\'" ++ " AND _sens_" ++ tableName ++ "." ++ groupColName ++ " = " ++ tableName ++ "." ++ groupColName in
+            let extWherePart = if equal analyzedTable tableName then wherePart else wherePart ++ " AND _sens_" ++ tableName ++ ".tableName = \'" ++ analyzedTable ++ "\'" ++ " AND _sens_" ++ tableName ++ "." ++ groupColumn ++ " = " ++ tableName ++ "." ++ groupColumn in
             f extFromPart extWherePart analyzedTable subExprAnalysisResults) analyzedTables
 
     results0 <- sequence results00
     let (ars,results) = unzip results0
 
     let mapKey = removeGroupFromQName varName
-    let outputMap = M.insertWith chooseSaferARs mapKey (M.fromList $ zip analyzedTables ars) subExprMap
+    let outputMap = M.insertWith chooseSaferARs mapKey (group, M.fromList $ zip analyzedTables ars) subExprMap
     putStrLn $ "outputMap: " ++ show outputMap
     return (outputMap, if (isIntermediateQueryName taskName) then [] else zip analyzedTables results)
 
 -- if we have different analysis results for different groups, we take the one that works for all of them
-chooseSaferARs :: M.Map String AnalysisResult -> M.Map String AnalysisResult -> M.Map String AnalysisResult
-chooseSaferARs ars1 ars2 =
-   M.unionWith chooseSaferAR ars1 ars2
+chooseSaferARs :: (OneGroupData,M.Map String AnalysisResult) -> (OneGroupData,M.Map String AnalysisResult) -> (OneGroupData,M.Map String AnalysisResult)
+chooseSaferARs (x1,ars1) (x2,ars2) =
+   -- TODO the column names should be the same, but we need to verify it just in case
+   (x1,M.unionWith chooseSaferAR ars1 ars2)
 
 chooseSaferAR :: AnalysisResult -> AnalysisResult -> AnalysisResult
 chooseSaferAR ar1 ar2 =

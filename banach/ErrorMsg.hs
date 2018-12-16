@@ -52,6 +52,7 @@ error_queryExpr_repeatingVars t    = error_queryExpr t ++ ",\n variables are rep
 error_noColNames = "ERROR: all columns of intermediate tables need to be named, use SELECT ... AS ..."
 error_typeDoesNotExist s = "ERROR: data type \'" ++ s ++ "\' is not supported."
 error_tableTypeError x varType = "ERROR: table value " ++ show x ++ " is not of type " ++ varType ++ "."
+error_badTypes x y = "ERROR: cannot compare the types " ++ show x ++ " and " ++ show y ++ "."
 
 error_subQueries = "ERROR: subqueries cannot share variables with the main query or other subqueries."
 error_schema good bad = "ERROR: need to provide schemas for input tables " ++ show bad ++ ", found schemas only for " ++ show good ++ "."

@@ -16,7 +16,7 @@ data AExpr a
   = AVar a
   | AConst Double
   | AText String
-  | ASubExpr String a
+  | ASubExpr String a Bool
   | AUnary  AUnOp (AExpr a)
   | ABinary ABinOp (AExpr a) (AExpr a)
   | AZeroSens (AExpr a) -- in some cases, we need to deliberately force ZeroSens (also around sensitive expressions), be careful with this construction!
@@ -61,7 +61,7 @@ instance Ord AType where
     compare AFloat ABool = GT
     compare AString _ = GT
     compare _ AUnit = GT
-    compare x y = if x == y then EQ else error $ show x ++ " " ++ show y
+    compare x y = if x == y then EQ else error $ error_badTypes x y
 
 stringToAType :: String -> AType
 stringToAType "int"   = AInt
@@ -257,7 +257,7 @@ aexprToExpr y (AUnary ANot x) =
 aexprToExpr y (AConst c)   = M.fromList [(y, Const c)]
 aexprToExpr y (AVar x)     = M.fromList [(y, Id x)]
 -- TODO see what we actually want here
-aexprToExpr y (ASubExpr t x) = M.fromList [(y, Id (t ++ [tsep] ++ x))]
+aexprToExpr y (ASubExpr t x _) = M.fromList [(y, Id (t ++ [tsep] ++ x))]
 
 aexprToExpr y (ABinary ALike x1 x2) =
     let z1     = y ++ "~1" in
@@ -485,7 +485,7 @@ aexprToString aexpr =
         AConst c -> show c
         AText s -> s
 
-        ASubExpr t x -> t ++ [tsep] ++ x
+        ASubExpr t x _ -> t ++ [tsep] ++ x
         AZeroSens x -> aexprToString x
 
         AAbs x -> "abs(" ++ aexprToString x ++ ")"
@@ -534,8 +534,7 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
         AConst c -> AConst c
         AText c -> AText c
 
-        -- TODO check if it is the right thing
-        ASubExpr t x -> ASubExpr (processBase t) x
+        ASubExpr t x g -> ASubExpr (processBase t) x g
         AZeroSens x -> AZeroSens $ processRec x
 
         AAbs x -> AAbs $ processRec x
@@ -589,7 +588,7 @@ getAllAExprVars sensOnly aexpr =
         AText c -> S.empty
 
         -- TODO check if we want treat subtable outputs as variables
-        ASubExpr _ _ -> S.empty
+        ASubExpr _ _ _ -> S.empty
         AZeroSens x  -> if sensOnly then S.empty else processRec x
 
         AAbs x  -> processRec x
@@ -634,14 +633,14 @@ getAllAExprVars sensOnly aexpr =
 
 --------------------------
 -- get all variables
-getAllSubExprVars :: (Ord a, Show a) => Bool -> AExpr a -> S.Set (String,a)
-getAllSubExprVars sensOnly aexpr =
+getAllSubExprs :: (Ord a, Show a) => Bool -> AExpr a -> S.Set ((String,a),Bool)
+getAllSubExprs sensOnly aexpr =
     case aexpr of
         AVar x -> S.empty
         AConst c -> S.empty
         AText c -> S.empty
 
-        ASubExpr t x -> processBase (t,x)
+        ASubExpr t x g -> processBase ((t,x),g)
         AZeroSens x  -> if sensOnly then S.empty else processRec x
 
         AAbs x  -> processRec x
@@ -681,7 +680,7 @@ getAllSubExprVars sensOnly aexpr =
         ABinary AGEint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary AGTint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
-    where processRec x = getAllSubExprVars sensOnly x
+    where processRec x = getAllSubExprs sensOnly x
           processBase x = S.singleton x
 
 aexprToColSet :: (Show a, Ord a, Show b, Ord b) => M.Map a b -> Bool -> AExpr a -> S.Set b
@@ -696,7 +695,7 @@ aexprSubstitute aexprMap aexpr =
         AConst c -> AConst c
         AText c -> AText c
 
-        ASubExpr t x -> ASubExpr t x
+        ASubExpr t x g -> ASubExpr t x g
         AZeroSens x -> AZeroSens $ processRec x
 
         AAbs x -> AAbs $ processRec x
@@ -748,7 +747,7 @@ applyAexprTypes typeMap aexpr =
         AText c  -> (AString, AText c)
 
         -- TODO putting here float is safe, but actually we could use output table schema to decide if it could be something else
-        ASubExpr t x -> (AFloat, ASubExpr t x)
+        ASubExpr t x g -> (AFloat, ASubExpr t x g)
         AZeroSens x  -> let (t,[y]) = processRec [x] in (t, AZeroSens y)
 
         AAbs x   -> let (t,[y]) = processRec [x] in (t, AAbs y)

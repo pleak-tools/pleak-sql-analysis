@@ -38,9 +38,11 @@ defaultGroupValue   = "\'default\'"
 
 -- the default separator between a table name and a variable in subqueries
 tsep = '.'
-csep = '_'
 grsep = '#'
 
+-- we use an improper symbol csep as query name separator, and replace it with sqlsep when communicating with the database
+csep = '%'
+sqlsep = '_'
 
 -- TODO we get different separators from different sources,
 -- probably we could make them the same on some earlier step

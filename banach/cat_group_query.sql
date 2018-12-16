@@ -1,5 +1,5 @@
 INSERT INTO catcounts SELECT
-    cat.color AS groupid,
+    cat.color AS catcolor,
     count(*) AS cnt
 FROM
     cat
@@ -12,5 +12,5 @@ INSERT INTO results SELECT
 FROM
     catfood, catcounts
 WHERE
-    catfood.color = catcounts.groupid
+    catfood.color = catcounts.catcolor
 ;

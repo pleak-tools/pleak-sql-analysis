@@ -8,6 +8,7 @@ import qualified Data.Map as M
 -- import Expr from Banach.hs
 import qualified Banach as B
 import ErrorMsg
+import GroupQ
 import NormsQ
 
 -- let the variable names be alphanumeric strings starting with a character
@@ -197,8 +198,8 @@ getAllTableExprVars asgnMap b =
 updatePrefices :: (S.Set String) -> VarName -> VarName -> VarName
 updatePrefices fullTablePaths prefix var = 
     -- if the used table name equals to its full prefix, then it is an actual input
-    let varAlias = takeWhile (/= '.') var in
-    prefix ++ if S.member varAlias fullTablePaths then var else map (\x -> if x == '.' then '_' else x) var
+    let varAlias = varNameToTableName var in
+    prefix ++ if S.member varAlias fullTablePaths then var else map (\x -> if x == tsep then csep else x) var
 
 updatePreficesExpr :: (S.Set String) -> VarName -> Expr -> Expr
 updatePreficesExpr fullTablePaths prefix expr =

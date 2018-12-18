@@ -1,29 +1,31 @@
 module GroupQ where
 
+import Data.List
+
 -------------------------------
 ---- policy data structures ----
 -------------------------------
 
-data GroupData = GR String String String [String] | NoGR deriving Show
-data OneGroupData = OneGR String String deriving Show
+data GroupData = GR String [String] [String] [[String]] | NoGR deriving Show
+data OneGroupData = OneGR [String] [String] deriving Show
 
 getGroupTableName (GR x _ _ _) = x
 getGroupTableName NoGR = defaultGroupTable
 
 getGroupColName (GR _ x _ _) = x
-getGroupColName NoGR = defaultGroupColumn
+getGroupColName NoGR = [defaultGroupColumn]
 
 getGroupVarName (GR _ _ x _) = x
-getGroupVarName NoGR = defaultGroupVarName
+getGroupVarName NoGR = [defaultGroupVarName]
 
-addPrefixToGroupVar p (GR t x y z) = GR t x (p++y) z
+addPrefixToGroupVar p (GR t x ys z) = GR t x (map (p++) ys) z
 addPrefixToGroupVar _ NoGR       = NoGR
 
 addPrefixToGroupTable p (GR t x y z) = GR (p++t) x y z
 addPrefixToGroupTable _ NoGR       = NoGR
 
 getGroupValues  (GR _ _ _ x) = x
-getGroupValues  NoGR = [defaultGroupValue]
+getGroupValues  NoGR = [[defaultGroupValue]]
 
 hasGroups  (GR _ _ _ _) = True
 hasGroups  NoGR = False
@@ -44,7 +46,7 @@ grsep = '#'
 csep = '%'
 sqlsep = '_'
 
--- TODO we get different separators from different sources,
+-- TODO (not important) we get different separators from different sources,
 -- probably we could make them the same on some earlier step
 -- replace the '.' with '_'
 varNameToQueryName x = map (\c -> if c == tsep then csep else c) x
@@ -68,4 +70,4 @@ queryNameToGroupAggrName x = (queryNameToGroupName x, queryNameToAggrName x)
 
 preficedVarName t x = t ++ [tsep] ++ x
 connectedVarName t x = t ++ [csep] ++ x
-addGroupToQName t x = t ++ [grsep] ++ x
+addGroupToQName t x = t ++ [grsep] ++ (intercalate [grsep] x)

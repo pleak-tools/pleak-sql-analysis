@@ -1320,8 +1320,8 @@ processIntermediateResults args beta taskName analyzedTable group ar subExprMap 
     let outputTableName = queryNameToTableName taskName
 
     -- store the intermediate result into a database
-    let groupColumn = getOneGroupColName group
-    let groupName = getOneGroupValue group
+    let groupColumns = getOneGroupColName group
+    let groupNames   = getOneGroupValue group
     let qr = constProp $ fx ar
     fx_value <- sendDoubleQueryToDb args (show qr)
 
@@ -1333,18 +1333,18 @@ processIntermediateResults args beta taskName analyzedTable group ar subExprMap 
 
     -- for fx, we record the output only once even if several tables were analysed, it is not clear whether multiple records could be more useful
     let recordedTable = "#"
-    let tbl_fx = ["\'" ++ recordedTable ++ "\'", groupName, show fx_value]
+    let tbl_fx = [show fx_value, "\'" ++ recordedTable ++ "\'"] ++ groupNames
 
     -- for sensitivities, we record the result separately for each table
-    let tbl_sens = [["\'" ++ analyzedTable ++ "\'", groupName, show subf_value, show sdsf_value]]
+    let tbl_sens = [show subf_value, show sdsf_value, "\'" ++ analyzedTable ++ "\'"] ++ groupNames
 
     when debug $ putStrLn ("-- intermediate output information for " ++ taskName ++ " w.r.t " ++ analyzedTable ++ ":")
     when debug $ putStrLn (show qr)
     when debug $ putStrLn (show tbl_fx)
     when debug $ putStrLn (show tbl_sens)
     when debug $ putStrLn ("------------------")
-    let intermediateTableCreateStatement1 = insertUniqueIntoIntermediateAggrTableSql outputTableName groupColumn (round 1 :: Int) tbl_fx
-    let intermediateTableCreateStatement2 = insertIntoIntermediateAggrTableSensSql ("_sens_" ++ outputTableName) tbl_sens
+    let intermediateTableCreateStatement1 = insertIntoIntermediateAggrTableSql outputTableName [tbl_fx]
+    let intermediateTableCreateStatement2 = insertIntoIntermediateAggrTableSensSql ("_sens_" ++ outputTableName) [tbl_sens]
     let intermediateTableCreateStatement = intermediateTableCreateStatement1 ++ intermediateTableCreateStatement2
     when debug $ putStrLn (show intermediateTableCreateStatement)
     sendQueriesToDb args intermediateTableCreateStatement
@@ -1367,7 +1367,7 @@ performSubExprAnalysis args fromPart wherePart tableName taskName group subExprM
 
     -- if there are several aggregations for the same table name, all of them use the same grouping
     -- TODO we actually do not support several aggregations yet, as they may have repeating variables
-    let groupColumn = if equal goodVarNames [] then defaultGroupColumn else head $ map (\x -> getOneGroupColName (fst (subExprMap M.! x))) goodVarNames
+    let groupColumns = if equal goodVarNames [] then [defaultGroupColumn] else head $ map (\x -> getOneGroupColName (fst (subExprMap M.! x))) goodVarNames
 
     let temp = case goodVarNames of
                    [] -> [([tableName],M.empty)]
@@ -1386,7 +1386,8 @@ performSubExprAnalysis args fromPart wherePart tableName taskName group subExprM
 
     let results00 = map (\analyzedTable ->
             let extFromPart  = if equal analyzedTable tableName then fromPart else fromPart  ++ ", _sens_" ++ tableName in
-            let extWherePart = if equal analyzedTable tableName then wherePart else wherePart ++ " AND _sens_" ++ tableName ++ ".tableName = \'" ++ analyzedTable ++ "\'" ++ " AND _sens_" ++ tableName ++ "." ++ groupColumn ++ " = " ++ tableName ++ "." ++ groupColumn in
+            let extWherePart = if equal analyzedTable tableName then wherePart else wherePart ++ " AND _sens_" ++ tableName ++ ".tableName = \'" ++ analyzedTable ++ "\'"
+                                  ++ (concat $ map (\groupColumn -> " AND _sens_" ++ tableName ++ "." ++ groupColumn ++ " = " ++ tableName ++ "." ++ groupColumn) groupColumns) in
             f extFromPart extWherePart analyzedTable subExprAnalysisResults) analyzedTables
 
     results0 <- sequence results00

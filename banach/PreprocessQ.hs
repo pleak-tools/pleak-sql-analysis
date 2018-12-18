@@ -74,6 +74,11 @@ mergeQueryFuns fs aexpr =
 --        SelectPlain _ -> badQFuns qs
 --        _        -> (True, error_queryExpr_aggrInterm b)
 
+badQFun (F _ b) =
+    case b of
+        SelectPlain _ -> True
+        _             -> False
+
 deriveExprNorm :: Bool -> Double -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [NormFunction] -> B.Expr -> B.TableExpr -> B.TableExpr
 deriveExprNorm debug sigmoidPrecision inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
 
@@ -138,22 +143,22 @@ getTableExprDataWrtOneSensVarSet debug policy sigmoidPrecision inputMap tableNam
     (tableName, queryName, adjTableExpr, (sel, fr1, wh1))
 
 
--- TODO link intermadiate variables to some column indices?
--- or apply zeroSens to some special construction?
 getTableExprDataWrtIntermTable :: Bool -> Bool -> Double -> (M.Map VarName B.Var)
                                   -> B.TableExpr -> (String,String,String) -> String
                                   -> VarName -> B.Var
                                   -> (TableName, TableName, B.TableExpr, (String,String,String))
 getTableExprDataWrtIntermTable debug policy sigmoidPrecision inputMap filtQuery (sel,fr,wh) queryName intermediateSensVar intermediateSensCol =
 
+    -- we treat the column that is an output of some aggregation as sensitive
     let inputTableName = varNameToTableName intermediateSensVar in
     let intermediateSensCols = S.singleton intermediateSensCol in
 
     -- now transform the main query to a banach expression, now it is fine to use only the current table's sensitive columns
+    -- since the aggregation column is copied in the large cross product table, we apply linf-norm to the rows (i.e. SelectMax)
     let (queryExpr,  queryAggr)  = insertZeroSens intermediateSensCols filtQuery in
     let tableNorm = (NF (M.fromList [(defaultNormVariable ++ intermediateSensVar, Id intermediateSensVar)]) (SelectMax (defaultNormVariable ++ intermediateSensVar))) in
 
-    -- the query will also take into account sensitive rows of the current sensitive table
+    -- the query will also take into account sensitive rows of the aggragation table
     let sensRowTable  = inputTableName ++ "_sensRows" in
     let sensRowFilter = inputTableName ++ "_sensRows.ID = " ++ inputTableName ++ ".ID" in
 
@@ -227,27 +232,28 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
         -- collect all used tables of this query
         let query@(P groupVarNames queryFuns' usedAliasMap filterFuns') = queryMap ! tableName in
 
-        -- we assume that the group of 'group by' is a single column (can be a tuple)
-        if length groupVarNames > 1 then error $ error_queryExpr_groupBy else
-        if length groupVarNames > 0 && length queryFuns' /= 2 then error $ error_queryExpr_groupBy else
-        let (queryFuns,queryGroups,filterFuns) = if length groupVarNames > 0 then
+        -- we assume that the groups of 'group by' are followed by a single aggregation
+        let ng = length groupVarNames in
+        if ng > 0 && length queryFuns' /= ng + 1 then error $ error_queryExpr_groupBy else
+        let (queryFuns,queryGroups,filterFuns) = if ng > 0 then
+
                                      -- use attMap and generate as many queries as there are groups
-                                     let groupVarName = head groupVarNames in
-                                     let groupColName = (\(F as b) -> getVarNameFromTableExpr b) (head queryFuns') in
-                                     let groupVarValues = if M.member groupVarName attMap then
-                                                              let varState = (attMap ! groupVarName) in
-                                                              case varState of
-                                                                  Range x y -> map show [x..y]
-                                                                  SubSet xs -> xs
-                                                                  _         -> error $ error_badAttMapBounds groupVarName varState
-                                                          else error $ error_noAttMapBounds groupVarName
+                                     let groupColNames = map (\(F as b) -> getVarNameFromTableExpr b) (init queryFuns') in
+                                     let groupVarValues = map (\groupVarName -> 
+                                                                  if M.member groupVarName attMap then
+                                                                      let varState = (attMap ! groupVarName) in
+                                                                          case varState of
+                                                                              Range x y -> map show [x..y]
+                                                                              SubSet xs -> xs
+                                                                              _         -> error $ error_badAttMapBounds groupVarName varState
+                                                                  else error $ error_noAttMapBounds groupVarName) groupVarNames
                                      in
-                                     let n = length groupVarValues in
-                                     let q1 = (\(F as b) -> F as (let x = getVarNameFromTableExpr b in SelectGroup x)) (head queryFuns') in
-                                     let q2 = (last queryFuns') in
-                                     let gs = GR "" groupColName groupVarName groupVarValues in
+                                     let qs = map (\(F as b) -> F as (let x = getVarNameFromTableExpr b in SelectGroup x)) (init queryFuns') in
+                                     let q  = (last queryFuns') in
+                                     if badQFun q then error $ error_queryExpr_groupBy else
+                                     let gr = GR "" groupColNames groupVarNames groupVarValues in
                                      let fs = filterFuns' in
-                                     ([q1,q2], [gs,gs], [fs,fs])
+                                     (q : qs, replicate (ng + 1) gr, replicate (ng + 1) fs)
                                  else
                                      (queryFuns', replicate (length queryFuns') NoGR, replicate (length queryFuns') filterFuns')
         in
@@ -339,9 +345,9 @@ getColTableCounts colNames tableNames tableAliases =
       -- the table (alias) of each column
       colTableAliases = map varNameToTableName colNames
     in
-      -- TODO some column names now come from intermediate queries
-      -- we do not count these extra variables
-      -- if each aggregation is allowed to be used only once, then we do not miss any counts
+      -- some column names come from intermediate queries
+      -- we do not use colTableCounts for these extra variables
+      -- we only need to insert some arbitrary value to maintain proper indexation
       map (\x -> if M.member x aliasToCountMap then aliasToCountMap M.! x else 1) colTableAliases
 
 -- putting everything together
@@ -397,30 +403,39 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let subExprsQ = map (\ (F aexpr _) -> getAllSubExprs False aexpr) outputQueryFuns
     let subExprsF = concat $ map (map (getAllSubExprs False)) filterAexprs'
 
-
     let intermediateColNameSetsQ = map (S.map fst) subExprsQ
     let intermediateColNameSetsF = map (S.map fst) subExprsF
-    --let intermediateColNameSetsQ  = map (\ (F aexpr _) -> getAllSubExprs False aexpr) outputQueryFuns
-    --let intermediateColNameSetsF  = concat $ map (map (getAllSubExprs False)) filterAexprs'
     let intermediateColNameSets = intermediateColNameSetsQ ++ intermediateColNameSetsF
 
-    let allIntermediateGroupColNameList = map (\gr -> let (x,y) = (getGroupTableName gr, getGroupColName gr) in preficedVarName x y) outputGroups
+    let allIntermediateGroupColNameList = concat $ map (\gr -> let (x,ys) = (getGroupTableName gr, getGroupColName gr) in map (preficedVarName x) ys) outputGroups
     let allIntermediateColNameList      = map (uncurry preficedVarName) $ concat $ map S.toList intermediateColNameSets
-    let allIntermediateColNameSet  = S.fromList allIntermediateColNameList
-    let uniqueIntermediateColNameList = S.toList allIntermediateColNameSet
-    -- TODO this check does not work since repeating values may come for the same query e.g. used in a filter expression
-    -- but we still want to do an analogous check ...
-    --when (length allIntermediateColNameList /= S.size allIntermediateColNameSet) $ error $ error_subQueries
+
+    let uniqueSubExprvarList = S.toList $ S.fromList $ allIntermediateColNameList ++ allIntermediateGroupColNameList
+
+    -- check whether the output of the same subquery is used in several other subqueries
+    -- we do not count group equality checks, as the set of possible groups should be public anyway
+    -- we discover the cases where t.x1 and t.x2 for x1 /= x2 are used in the same query (unless one of them is public or is a group)
+    -- we discover the cases where t.x is used by different queries (unless it is a group)
+    -- using t.x multiple times in the same query is safe, since it is treated as the same variable
+    let subExprTablesQ = map (map (fst . fst) . filter (\(_,b) -> b) . S.toList) subExprsQ
+    let subExprTablesF = map (map (fst . fst) . filter (\(_,b) -> b) . S.toList) subExprsF
+
+    --let subExprTables  = zipWith (++) subExprTablesQ subExprTablesF
+    --let goodQueries    = map (\xs -> length xs == S.size (S.fromList xs)) subExprTables
+    --when (foldr (&&) True goodQueries == False) $ error $ error_subQueries
+    let subExprTables  = concat $ zipWith (++) subExprTablesQ subExprTablesF
+    let goodQueries    = length subExprTables == S.size (S.fromList subExprTables)
+    when (goodQueries == False) $ error $ error_subQueries
 
     let inputColNames    = concat $ map (getUsedCols . (inputTableMap ! ) ) orderedTableAliases
-    let colNames         = inputColNames ++ uniqueIntermediateColNameList ++ allIntermediateGroupColNameList
+    let colNames         = inputColNames ++ uniqueSubExprvarList
     let sensitiveVarList = concat $ map (getSensCols . (inputTableMap ! ) ) orderedTableAliases
 
     let fullTypeMap = foldr M.union M.empty (zipWith (\tableAlias tableName -> M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName)) allInputTableAliases allInputTableNames)
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Input table map: " ++ show inputTableMap
-    traceIOIfDebug debug $ "Intermediate Vars: " ++ show uniqueIntermediateColNameList
+    traceIOIfDebug debug $ "Intermediate Vars: " ++ show allIntermediateColNameList
     traceIOIfDebug debug $ "Group Vars: " ++ show allIntermediateGroupColNameList
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Types1: " ++ show typeMap
@@ -431,7 +446,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let sensitiveColSet = S.fromList $ map (inputMap ! ) sensitiveVarList
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "All input variables:    " ++ show (M.toList inputMap)
+    traceIOIfDebug debug $ "All input variables:    " ++ show inputMap
     traceIOIfDebug debug $ "All sensitive vars:     " ++ show sensitiveVarList
     traceIOIfDebug debug $ "All sensitive cols:     " ++ show sensitiveColSet
 
@@ -474,11 +489,16 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let tableGs = getTableGs inputTableMap
     let colTableCounts = getColTableCounts colNames allInputTableNames allInputTableAliases
 
+    -- if we are using combined sensitivity, then groups are not allowed
+    --let usingCombinedSensitivity = foldr (||) False $ map (\g -> case g of {Just a -> if a == 1/0 then False else True; _ -> True}) (map snd tableGs)
+    --when (usingCombinedSensitivity && length outputQueryFuns > 1) $ error $ error_noCSGroupSupport
+    when (combinedSens args && length outputQueryFuns > 1) $ error $ error_noCSGroupSupport
+
     -- the last column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
     let tableExprData = (plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
 
-    -- TODO is it a proper place for table Gs?
+    -- TODO is it a proper place for table Gs if groups are used? we decide it when extend the groups to combined sensitivity
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Table Names:" ++ show allInputTableNames
     traceIOIfDebug debug $ "Table Aliases:" ++ show allInputTableAliases
@@ -572,8 +592,8 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     let filtersStr = map aexprToString filterAexprs in
 
     -- add groups
-    let groupVar = if hasGroups groups then getGroupVarName groups ++ " AS " ++ getGroupColName groups ++ "," else "" in
-    let groupBy  = if hasGroups groups then " GROUP BY " ++ getGroupColName groups else "" in
+    let groupVar = if hasGroups groups then concat $ zipWith (\gv gc -> gv ++ " AS " ++ gc ++ ",") (getGroupVarName groups) (getGroupColName groups) else "" in
+    let groupBy  = if hasGroups groups then " GROUP BY " ++ (intercalate ", " (getGroupColName groups)) else "" in
     let alias    = if isIntermediateQueryName queryName && isAggrQuery query then " AS " ++ (queryNameToVarName queryName) else "" in
     let mainSelect = "SELECT " ++ groupVar ++ queryStr ++ alias in
     let mainFrom   = intercalate ", " directTables in
@@ -601,34 +621,41 @@ getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fu
     let groupVarName = getGroupVarName gr in
     let groupList    = getGroupValues gr in
 
-    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName groupVarName groupColName) groupList
+    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName groupVarName groupColName) (allCombsOfLists groupList)
+
+-- given a list of sublists, find all combinations of different sublist elements
+allCombsOfLists [] = [[]]
+allCombsOfLists (xs:xss) =
+    [(y:ys) | y <- xs, ys <- allCombsOfLists xss]
 
 
 getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String
                         -> M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName])
                         -> [VarName]
-                        -> String -> String -> String -> String
+                        -> String -> [String] -> [String] -> [String]
                         -> [(TableName, TableName, OneGroupData, B.TableExpr, (String,String,String))]
-getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName groupVarName groupColName groupValue =
+getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName groupVarNames groupColNames groupValues =
 
     let (directTableAliases,subqueryTableAliases,intermediateVarList,intermediateIsCommonList,directColNames,gr,query,filterAexprs') = queryDataMap ! queryName in
 
     let (filterAexprs, group, newQueryName) =
-            if groupValue == defaultGroupValue then
+            if head groupValues == defaultGroupValue then
                 let x1 = filterAexprs' in
-                let x2 = OneGR defaultGroupColumn defaultGroupValue in
+                let x2 = OneGR [defaultGroupColumn] [defaultGroupValue] in
                 let x3 = queryName in
                 (x1,x2,x3)
             else
-                let x1 = if fullTypeMap ! groupVarName == "int" || fullTypeMap ! groupVarName == "double" then
-                             -- TODO it is better to do conversion the other way around and turn int to string only
-                             -- for this, we will need type information when reading attPlc file, and it is a larger change
-                             (ABinary AEQint (AVar groupVarName) (AConst $ unsafePerformIO (intToString groupValue))) : filterAexprs'
-                         else
-                             (ABinary AEQstr (AVar groupVarName) (AText groupValue)) : filterAexprs'
+                let x1 = zipWith (\groupVarName groupValue -> 
+                             if fullTypeMap ! groupVarName == "int" || fullTypeMap ! groupVarName == "double" then
+                                 -- TODO it is better to do conversion the other way around and turn int to string only
+                                 -- for this, we will need type information when reading attPlc file, and it is a larger change
+                                 ABinary AEQint (AVar groupVarName) (AConst $ unsafePerformIO (intToString groupValue))
+                             else
+                                 ABinary AEQstr (AVar groupVarName) (AText groupValue)
+                         ) groupVarNames groupValues ++ filterAexprs'
                 in
-                let x2 = OneGR groupColName groupValue in
-                let x3 = addGroupToQName queryName groupValue in
+                let x2 = OneGR groupColNames groupValues in
+                let x3 = addGroupToQName queryName groupValues in
                 (x1,x2,x3)
     in
 
@@ -679,19 +706,15 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     let wh  = if length pubFilter == 0 then "true" else intercalate " AND " pubFilter in
 
     -- compute min/max queries using sel, fr, wh
+    -- TODO we may actually want to use RangeUtils if we do not want to leak MIN/MAX before filtering
     let minmaxQuery = case queryAggr of
                           B.SelectMin _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
                           B.SelectMax _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
                           _             -> ""
     in
 
-    -- TODO (not important) we may take into account sensitivity of (max - min) as it was in the old version
-    -- the sensitivity would depend on the currently analyzed table, so this should be moved into "inputWrtEachTable"
-    --let finalTableExpr1 = applyPrecAggrTable arMin arMax queryAggr
-    --let finalTableExpr1 = queryAggr in
-
     -- we remove the group-related intermediate varibles since we do not need them
-    -- TODO this assumes that the group column name is fixed, we need a better way to distinguish group variables
+    -- TODO take a set if we are sure that we can handle repeating variables
     let commonIntermediateVarList = map snd $ filter (\(b,_) -> b) $ zip intermediateIsCommonList intermediateVarList in
     let commonIntermediateColList = map (inputMap ! ) commonIntermediateVarList in
 

@@ -12,6 +12,7 @@ import Debug.Trace
 
 import ErrorMsg
 import ExprQ
+import GroupQ
 import QueryQ
 import NormsQ
 
@@ -23,35 +24,43 @@ data VarState
   = Exact | None | Approx Double | Total Int | SubSet [String] | Range Double Double | ApproxPrior Double Double
   deriving (Show)
 
-verifyVarSecrecy :: M.Map String VarState -> M.Map String VarState -> String -> (String, (Int, [Bool],[String],[Expr]))
+
+-- the cases in which the given attacker guesses the variable with required precision
+isLeakedVar :: VarState -> VarState -> Bool
+isLeakedVar attState plcState =
+    case (attState, plcState) of
+            (Exact,_)                -> True
+            (Approx r1, Approx r2)   -> r1 <= r2
+            (ApproxPrior _ r1, Approx r2) -> r1 <= r2
+            (Total  n1, Total  n2)   -> n1 <= n2
+            (SubSet xs1, SubSet xs2) -> not $ S.isSubsetOf (S.fromList xs2) (S.fromList xs1)
+            -- here we assume that the actual data belongs to (lb,ub) -- i.e. the attacker knowledge is correct
+            -- while (ub - lb) / 2 <= r2 would already be sufficient in the case when the actual data is in the middle,
+            -- we only claim immediate leakage if it leaks for sure
+            (Range lb ub, Approx r2) -> (ub - lb) <= r2
+            _                        -> False
+
+
+-- the variable is not sensitive either if attacker already knows it, or we do not care about it
+isSensVar :: VarState -> VarState -> Bool
+isSensVar attState plcState =
+    if isLeakedVar attState plcState then False
+    else case (attState, plcState) of
+            (_, None) -> False
+            _         -> True
+
+verifyVarSecrecy :: M.Map String VarState -> M.Map String VarState -> String -> (String, (Int, [Bool],[VarName],[Expr]))
 verifyVarSecrecy attMap plcMap preficedVar =
 
-    let [prefix,var] = case (splitOn "." preficedVar) of
+    let [prefix,var] = case (splitOn [tsep] preficedVar) of
                            [s1,s2] -> [s1,s2]
                            _       -> error $ error_badPolicyFormat preficedVar
     in
     let plcState = plcMap ! preficedVar in
     let attState = if M.member preficedVar attMap then attMap ! preficedVar else None in
-    -- the cases in which the given attacker guesses the variable with required precision
-    let leakedVar = case (attState, plcState) of
-            (Exact,_)                -> [True]
-            (Approx r1, Approx r2)   -> [r1 <= r2]
-            (ApproxPrior _ r1, Approx r2) -> [r1 <= r2]
-            (Total  n1, Total  n2)   -> [n1 <= n2]
-            (SubSet xs1, SubSet xs2) -> [not $ S.isSubsetOf (S.fromList xs2) (S.fromList xs1)]
-            -- here we assume that the actual data belongs to (lb,ub) -- i.e. the attacker knowledge is correct
-            -- while (ub - lb) / 2 <= r2 would already be sufficient in the case when the actual data is in the middle,
-            -- we only claim immediate leakage if it leaks for sure
-            (Range lb ub, Approx r2) -> [(ub - lb) <= r2]
-            _                        -> [False]
-    in
 
-    -- the variable is not sensitive either if attacker already knows it, or we do not care about it
-    let sensVar = case (attState, plcState) of
-            (Exact,_) -> []
-            (_, None) -> []
-            _         -> [var]
-    in
+    let leakedVar = [isLeakedVar attState plcState] in
+    let sensVar = if isSensVar attState plcState then [var] else [] in
 
     -- constuct the norm, which is NormZero for insensitive vars, L0 for exact guesses, and is abs.value for approximated guesses
     let normVar = case (attState, plcState) of
@@ -66,23 +75,18 @@ verifyVarSecrecy attMap plcMap preficedVar =
 
     (prefix, (1, leakedVar,sensVar,normVar))
 
--- TODO verify if we indeed want weight 1.0 for the projections
+-- check whether sensitivity w.r.t. that variable needs to be analysed at all
 extract_bs :: M.Map String VarState -> M.Map String VarState -> [Bool]
 extract_bs attMap plcMap =
     map (extract_b attMap plcMap) (M.keys plcMap)
 
--- check whether sensitivity w.r.t. that variable needs to be analysed at all
--- TODO check if there are more "False" cases
 extract_b :: M.Map String VarState -> M.Map String VarState -> String -> Bool
 extract_b attMap plcMap var =
     let plcState = plcMap ! var in
     let attState = if M.member var attMap then attMap ! var else None in
-    case (attState, plcState) of
-            (_, None)    -> False
-            (Exact,_)    -> False
-            _            -> True
+    isSensVar attState plcState
 
-
+-- extract the guessing radius
 extract_rs :: M.Map String VarState -> M.Map String VarState -> [Double]
 extract_rs attMap plcMap =
     map (extract_r attMap plcMap) (M.keys plcMap)
@@ -98,6 +102,8 @@ extract_r attMap plcMap var =
             (_,SubSet _) -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
+
+-- how many "units" there are inside the guessing radius
 extract_crs :: M.Map String VarState -> M.Map String VarState -> [Double]
 extract_crs attMap plcMap =
     map (extract_cr attMap plcMap) (M.keys plcMap)
@@ -108,25 +114,13 @@ extract_cr attMap plcMap var =
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
             (_,Exact)     -> 1.0 -- 1 is compatible with L0-norm, and it assumes that CR will be the number of possible choices
-            (ApproxPrior p r1, Approx r2) -> p * r2 / r1
+            (ApproxPrior p r1, Approx r2) -> p * r2 / r1 -- TODO check if it is what we want
             (_,Approx r)  -> 2*r -- since radius stretches to 2 directions, we get 2*r units out of this
             (_,Total n)   -> fromIntegral n -- determines the size of X', and it assumes that CR will be the number of possible choices
             (_,SubSet xs) -> fromIntegral $ length xs
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
-extract_M :: M.Map String VarState -> M.Map String VarState -> Int
-extract_M attMap plcMap =
-    sum $ map (extract_m attMap plcMap) (M.keys plcMap)
-
-extract_m :: M.Map String VarState -> M.Map String VarState -> String -> Int
-extract_m attMap plcMap var =
-    let plcState = plcMap ! var in
-    let attState = if M.member var attMap then attMap ! var else None in
-    case (attState, plcState) of
-            (Exact,_) -> 0
-            (_, None) -> 0
-            _ -> 1
-
+-- extract the total space radius
 extract_Rs :: M.Map String VarState -> M.Map String String -> M.Map String VarState -> [(Double,Double)]
 extract_Rs attMap typeMap plcMap =
     map (extract_R attMap plcMap typeMap) (M.keys plcMap)
@@ -155,6 +149,7 @@ extract_R attMap plcMap typeMap var =
             --(Approx r,_)    -> r
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
+-- how many "units" there are inside the total space
 -- this is the same as R for continuous variables, but diffrent for ordinal
 extract_CRs :: M.Map String VarState -> M.Map String String -> M.Map String VarState -> [Double]
 extract_CRs attMap typeMap plcMap =

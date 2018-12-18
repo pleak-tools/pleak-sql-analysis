@@ -16,7 +16,6 @@ import qualified Data.Set as S
 sensRows :: String -> String
 sensRows tableName = tableName ++ "_sensRows"
 
--- TODO think how to write it for several rows
 insertUniqueIntoIntermediateAggrTableSql :: String -> String -> Int -> [String] -> [String]
 insertUniqueIntoIntermediateAggrTableSql tableName uniqueColName uniqueColIndex tbl =
   let numRows = 1 in
@@ -36,7 +35,7 @@ insertIntoIntermediateAggrTableSql tableName tbl =
   let sensRowsSet = S.fromList (take numRows sensRows) in
   [
     "INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (zipWith (\ r i -> '(' : intercalate ", " (r ++ [show i]) ++ ")") tbl [0..]),
-    "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
+    "INSERT INTO " ++ sensTableName ++ " SELECT " ++ intercalate ", " (map (\ i -> show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false")) [0..numRows-1]) ++ " WHERE NOT EXISTS (SELECT 1 FROM " ++ sensTableName ++ " WHERE id = 0)"]
 
 insertUniqueIntoIntermediateAggrTableSensSql :: String -> String -> Int -> [String] -> [String]
 insertUniqueIntoIntermediateAggrTableSensSql tableName uniqueColName uniqueColIndex tbl =
@@ -54,17 +53,15 @@ initIntermediateAggrTableSql typeMap queryName group =
   let groupVar = getGroupVarName group in
 
   let sensTableName = sensRows tableName in
-  let colNamesTypes = [("tableName", "text"),
-                       (groupCol,   typeMap ! groupVar),
-                       (aggrCol,   "float8")] in
+  let colNamesTypes = [(aggrCol, "float8"), ("tableName", "text")] ++ (zipWith (\x y -> (x,   typeMap ! y)) groupCol groupVar) in
   [
     "DROP TABLE IF EXISTS " ++ tableName,
     "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (aggrCol,typeName) -> aggrCol ++ " " ++ typeName ++ ", ") colNamesTypes ++ "ID int8)",
     "DROP TABLE IF EXISTS " ++ sensTableName,
     "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
     "DROP TABLE IF EXISTS " ++ "_sens_" ++ tableName,
-    "CREATE TABLE _sens_" ++ tableName ++ " (" ++ concatMap (\ (aggrCol,typeName) -> aggrCol ++ " " ++ typeName ++ ", ") (init colNamesTypes) ++
-                          (let (aggrCol,typeName) = last colNamesTypes in aggrCol ++ "_subf " ++ typeName ++ ", " ++ aggrCol ++ "_sdsf " ++ typeName ++ ")")
+    "CREATE TABLE _sens_" ++ tableName ++ " (" ++ (let (aggrCol,typeName) = head colNamesTypes in aggrCol ++ "_subf " ++ typeName ++ ", " ++ aggrCol ++ "_sdsf " ++ typeName)
+                                               ++ concatMap (\ (aggrCol,typeName) -> ", " ++ aggrCol ++ " " ++ typeName) (tail colNamesTypes) ++ ")"
   ]
 
 

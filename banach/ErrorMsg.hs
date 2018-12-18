@@ -38,7 +38,7 @@ error_filterExprConstr t = "ERROR: Unknown filter construction " ++ show t
 error_queryExpr t   = "ERROR: Unsupported term in the expression " ++ show t
 error_queryExpr_unnamed t          = "ERROR: Need to define an alias for intermediate query column " ++ show t
 error_queryExpr_syntax t           = "ERROR: Unsupported query syntax " ++ show t
-error_queryExpr_groupBy            = "ERROR: GROUP BY is allowed only for queries of the form SELECT x, y FROM t GROUP BY x"
+error_queryExpr_groupBy            = "ERROR: GROUP BY is allowed only for queries of the form SELECT x1,...,xn, y FROM t GROUP BY x1,...,xn"
 error_queryExpr_aggrInterm t       = "ERROR: Aggregator " ++ show t ++ " not supported in the intermediate tables."
 error_queryExpr_aggrFinal t        = "ERROR: Aggregator " ++ show t ++ " not supported in the final query."
 error_queryExpr_singleColumn       = "ERROR: Only a single output in the final query is supported."
@@ -84,6 +84,7 @@ error_badAttackerPolicyCombination attState plcState = "INTERNAL ERROR: no imple
 error_unboundedDataType t = "ERROR: data type " ++ t ++ " cannot be included into policy yet."
 error_badPolicyFormat preficedVar = "ERROR: policy format error, \"" ++ preficedVar ++ "\" is expected to be of the form \"tableName.varName\""
 
--- group by related messages
+-- groupBy-related messages
 error_noAttMapBounds x = "ERROR: no set of possible values is specified for " ++ x ++ ", which is essential for GROUP BY queries. Specify \'set x1 ... xn\' or \'range x y\' in the attacker file."
 error_badAttMapBounds x t = "ERROR: bad set of possible values " ++ show t ++ " for " ++ x ++ ", which is essential for GROUP BY queries. Use \'set x1 ... xn\' or \'range x y\' in the attacker file. Note that GROUP BY variables need to have table name prefices."
+error_noCSGroupSupport = "ERROR: GROUP BY is not support in combined sensitivity. Use plain derivative sensitivity (i.e. without \'-c\' parameter)."

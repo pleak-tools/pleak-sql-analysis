@@ -1,3 +1,3 @@
 cat.cat_id exact;
-cat.gender total 2;
-cat.color set 'black' 'white';
+cat.gender set 'male' 'female';
+cat.color set 'black' 'gray' 'white';

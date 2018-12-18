@@ -634,6 +634,8 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens subQueryMa
           b = gsens
           y = exp (ab * (gx - c))
           y' = exp (aa * (gx - c))
+          y'' :: Double -> ExprQ -- choose ab automatically from beta
+          y'' beta = let ab = (beta - beta2) / b in exp (ab * (gx - c))
           z = y' / (y' + 1)
           a' = abs ab
           gx_ub = getUbFromAr ar
@@ -643,7 +645,9 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens subQueryMa
                                                       in z
       in aR {fx = z,
              subf = SUB (const (Q 1)) 0,
-             sdsf = SUB (\ beta -> aa * y / (y+1)**2 * sdsf1g (beta - a' * b)) (a' * b + beta2),
+             sdsf = SUB (if ab == 0 then \ beta -> let y = y'' beta in aa * y / (y+1)**2 * sdsf1g (beta - a' * b)
+                                    else \ beta -> aa * y / (y+1)**2 * sdsf1g (beta - a' * b))
+                        (a' * b + beta2),
              gub = ub,
              gsens = abs aa / 4 * gsens,
              arVarState = Range 0 ub}
@@ -836,13 +840,24 @@ combineArsProd2 ars =
       gubs = map gub ars
       gsenss = map gsens ars
       rs = map getRangeFromAr ars
+      minSubfBeta = sum subfBetas
       n = length ars
-      divByn :: Double -> Double
-      divByn x = x / (fromIntegral n :: Double)
-      c i beta = ((sdsgs !! i) (divByn beta)) * product (map ($ (divByn beta)) $ skipith i subgs)
+      n' = fromIntegral n :: Double
+      divideSubfBeta :: [Double] -> Double -> [Double]
+      divideSubfBeta subfBetas beta =
+        let
+          numZeroSubfBetas = fromIntegral (length $ filter (== 0) subfBetas) :: Double
+          minSubfBeta = sum subfBetas
+        in
+          if numZeroSubfBetas == 0 then let excess = (beta - minSubfBeta) / n' in map (+ excess) subfBetas
+                                   else let excess = (beta - minSubfBeta) / numZeroSubfBetas in map (\ x -> if x == 0 then excess else x) subfBetas
+      --divByn :: Double -> Double
+      --divByn x = x / n'
+      c i beta = product $ zipWith ($) ((sdsgs !! i) : skipith i subgs) (divideSubfBeta ((sdsfBetas !! i) : skipith i subfBetas) beta)
+      --c i beta = ((sdsgs !! i) (divByn beta)) * product (map ($ (divByn beta)) $ skipith i subgs)
       gc i = let s = (gsenss !! i) in if s == 0 then 0 else s * product (skipith i gubs)
   in aR {fx = product fxs,
-         subf = SUB (\ beta -> product (map ($ (divByn beta)) subgs)) (sum subfBetas),
+         subf = SUB (\ beta -> product (zipWith ($) subgs (divideSubfBeta subfBetas beta))) minSubfBeta,
          sdsf = SUB (\ beta -> sum (map (\ i -> c i beta) [round 0..n P.- round 1])) (sum subfBetas + maximum (zipWith (-) sdsfBetas subfBetas)),
          gub = product gubs,
          gsens = sum (map gc [round 0..n P.- round 1]),
@@ -1105,7 +1120,7 @@ performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames 
     when debug $ print te
     --let pa = performSubExprAnalysis args epsilon (Just beta) fromPart wherePart tableName taskName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subQueryMap'
 
-    let f v x y z w = performAnalysis args epsilon (Just beta) x y tableName z taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts w v
+    let f v x y z w = performAnalysis args epsilon (Just beta) qr x y tableName z taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts w v
     let pa v = performSubExprAnalysis args fromPart wherePart tableName taskName group subQueryMap' (f v)
 
     case M.lookup tableName tableGmap of
@@ -1225,10 +1240,10 @@ findMinimumBeta1 args fromPart wherePart tableName taskName group colNames varSt
 
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> String -> String -> OneGroupData -> [String] -> [VarState] -> [String] -> TableExpr ->
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> Double -> String -> String -> String -> String -> String -> OneGroupData -> [String] -> [VarState] -> [String] -> TableExpr ->
                    IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] ->  M.Map String AnalysisResult -> Maybe Double ->
                    IO (AnalysisResult, (Double,Double,String,(Double,Double,Double,Double,Double)))
-performAnalysis args epsilon fixedBeta fromPart wherePart tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG = do
+performAnalysis args epsilon fixedBeta initialQr fromPart wherePart tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG = do
     let debug = not (alternative args)
     --when debug $ printf "varStates = %s\n" (show varStates)
     let sensitiveVarSet = S.fromList sensitiveVarList
@@ -1254,7 +1269,7 @@ performAnalysis args epsilon fixedBeta fromPart wherePart tableName analyzedTabl
     let qr = constProp $ fx ar
     when debug $ putStrLn "Query result:"
     when debug $ putStrLn (show qr ++ ";")
-    when (dbSensitivity args && debug) $ sendDoubleQueryToDb args (show qr) >>= printf "database returns %0.6f\n"
+    when (dbSensitivity args && debug) $ sendDoubleQueryToDb args (show qr) >>= \ qr -> printf "database returns %0.6f (relative error from sigmoids %0.3f%%)\n" qr (abs (qr / initialQr - 1) * 100)
     let sds = constProp $ subg (sdsf ar) beta
     when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
 

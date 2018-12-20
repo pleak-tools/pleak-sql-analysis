@@ -1,0 +1,2 @@
+#!/bin/bash
+../../../banach --localsenspath ../../ --db-create-tables -QD -e 1 --sigmoid-beta=0.0 --sigmoid-precision=0.24 -G 10 combinedschema.sql combinedquery.sql combinedattacker.att

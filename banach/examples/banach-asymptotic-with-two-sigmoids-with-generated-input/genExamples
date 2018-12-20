@@ -1,0 +1,5 @@
+#!/bin/bash
+sh ./genOneExample 90 a
+sh ./genOneExample 1000 b
+sh ./genOneExample 9000 c
+sh ./genOneExample 100000 d

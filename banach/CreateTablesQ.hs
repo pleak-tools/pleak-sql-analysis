@@ -86,8 +86,8 @@ initIntermediateAggrTableSql typeMap queryName group =
 --    "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
 --    "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
 
-createTableSqlTyped :: Bool -> String -> String -> String -> [(String,[(String, String)])] -> IO [String]
-createTableSqlTyped policy dataPath separator tableName types = do
+createTableSqlTyped :: Bool -> String -> String -> String -> [Int] -> [(String,[(String, String)])] -> IO [String]
+createTableSqlTyped policy dataPath separator tableName sR types = do
 
     let dbFileName = dataPath ++ tableName ++ ".db"
 
@@ -96,13 +96,13 @@ createTableSqlTyped policy dataPath separator tableName types = do
 
     let numRows = length tbl
     let sensTableName = sensRows tableName
-    sensRows <- if policy then do return ([0..])
-                else do
-                    let normFileName = dataPath ++ tableName ++ ".nrm"
-                    ((sR, _), _, _) <- parseNormFromFile (typeMap ! tableName) normFileName
-                    return sR
+    --sensRows <- if policy then do return ([0..])
+    --            else do
+    --                let normFileName = dataPath ++ tableName ++ ".nrm"
+    --                ((sR, _), _, _) <- parseNormFromFile (typeMap ! tableName) normFileName
+    --                return sR
 
-    let sensRowsSet = S.fromList (take numRows sensRows)
+    let sensRowsSet = S.fromList (take numRows sR)
     let colTypes = map (\col -> typeMap ! tableName ! col) colNames
     return [
       "DROP TABLE IF EXISTS " ++ tableName,

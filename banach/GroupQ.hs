@@ -1,6 +1,7 @@
 module GroupQ where
 
 import Data.List
+import Data.List.Split
 
 -------------------------------
 ---- policy data structures ----
@@ -52,6 +53,7 @@ sqlsep = '_'
 varNameToQueryName x = map (\c -> if c == tsep then csep else c) x
 varNameToTableName x = if isIntermediateQueryVar x then takeWhile (/= tsep) x else x
 varNameToSubVarName x = if isIntermediateQueryVar x then tail $ dropWhile (/= tsep) x else x
+varNameToTableAndSubVarName x = splitOn [tsep] x
 
 queryNameToPreficedVarName x = if elem csep x then queryNameToTableName x ++ [tsep] ++ queryNameToVarName x else x
 

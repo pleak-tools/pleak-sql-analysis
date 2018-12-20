@@ -1,9 +1,11 @@
 leak
+cat.sensRows range 0 3;
 cat.cat_id exact;
 cat.gender exact;
 cost 100
 
 leak
+cat.sensRows range 0 3;
 cat.cat_id exact;
 cat.color exact;
 cost 50

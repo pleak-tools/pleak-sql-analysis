@@ -4,7 +4,6 @@ import Control.Monad (void)
 import Data.Bits
 import Data.Either
 import Data.List
-import Data.List.Split
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Void
@@ -24,6 +23,7 @@ data VarState
   = Exact | None | Approx Double | Total Int | SubSet [String] | Range Double Double | ApproxPrior Double Double
   deriving (Show)
 
+reservedSensRowsKeyword = "sensRows"
 
 -- the cases in which the given attacker guesses the variable with required precision
 isLeakedVar :: VarState -> VarState -> Bool
@@ -52,10 +52,11 @@ isSensVar attState plcState =
 verifyVarSecrecy :: M.Map String VarState -> M.Map String VarState -> String -> (String, (Int, [Bool],[VarName],[Expr]))
 verifyVarSecrecy attMap plcMap preficedVar =
 
-    let [prefix,var] = case (splitOn [tsep] preficedVar) of
+    let [prefix,var] = case (varNameToTableAndSubVarName preficedVar) of
                            [s1,s2] -> [s1,s2]
                            _       -> error $ error_badPolicyFormat preficedVar
     in
+    if var == reservedSensRowsKeyword then (prefix, (0,[],[],[])) else
     let plcState = plcMap ! preficedVar in
     let attState = if M.member preficedVar attMap then attMap ! preficedVar else None in
 
@@ -179,24 +180,44 @@ combineSets :: M.Map String Expr -> M.Map String Expr -> M.Map String Expr
 combineSets m1 m2 = 
     M.unionWith const m1 m2
 
-normsFromCombinedData :: M.Map TableName (M.Map String Expr) -> TableName -> (([Int], [VarName]), NormFunction, Maybe Double)
-normsFromCombinedData combinedDataMap tableName =
+normsFromCombinedData :: M.Map TableName (M.Map String Expr) -> TableName -> [Int] -> (([Int], [VarName]), NormFunction, Maybe Double)
+normsFromCombinedData combinedDataMap tableName tableSensRows =
     let varMap = combinedDataMap ! tableName in
     let sensVars = M.keys varMap in
     let normVars = M.elems varMap in
     let normVarNames = (map (\x -> defaultNormVariable ++ show x) [0..(length normVars - 1)]) in
     let tempVarMap = M.fromList $ zip normVarNames normVars in
     let nf = NF (M.insert defaultNormVariable (LInf normVarNames) tempVarMap) (SelectL 1.0 defaultNormVariable) in
-    -- let all rows be sensitive by default, we will need additional input otherwise
-    (([0..],sensVars),nf, Nothing)
+    ((tableSensRows,sensVars),nf, Nothing)
 
 constructNormData :: [TableName] -> M.Map String VarState -> [(M.Map String VarState, Double)] -> [(([Int], [VarName]), NormFunction, Maybe Double)]
 constructNormData tableNames attMap plcMaps =
     -- we put together all variables of all sensitive sets to define one norm over all of them
     -- TODO we currently assume that, if a variable occurs in several sets, it still has the same sensitivity radius
     let temp = map (constructNormDataSet tableNames attMap . fst) plcMaps in
-    let allTableMap = foldr (M.unionWith combineSets) M.empty temp in
-    map (normsFromCombinedData allTableMap) tableNames
+    let combinedDataMap = foldr (M.unionWith combineSets) M.empty temp in
+
+    --extract the special variables for sow sensitivity
+    let kwlen = length reservedSensRowsKeyword in
+    let sensRowData = map (M.filterWithKey (\varName _ -> length varName >= kwlen && reverse (take kwlen (reverse varName)) == reservedSensRowsKeyword) . fst) plcMaps in
+    let tableSensRows = map (extractRange plcMaps) tableNames in
+
+    zipWith (normsFromCombinedData combinedDataMap) tableNames tableSensRows
+
+extractRange plcMaps tableName =
+    let key = preficedVarName tableName reservedSensRowsKeyword in
+    S.toList $ extractRanges S.empty key (map fst plcMaps)
+
+extractRanges indexSet _ [] = indexSet
+extractRanges indexSet key (plcMap:ps) =
+    if M.member key plcMap then
+        let varState = plcMap ! key in
+        let newRange = case varState of
+                Range lb ub -> S.fromList [round lb .. round (ub-1)]
+                _           -> error $ error_badPolicySensRows varState
+        in extractRanges (S.union indexSet newRange) key ps
+    else
+        extractRanges indexSet key ps
 
 constructNormDataSet :: [TableName] -> M.Map String VarState -> M.Map String VarState -> M.Map TableName (M.Map String Expr)
 constructNormDataSet tableNames attMap plcMap =

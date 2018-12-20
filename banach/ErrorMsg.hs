@@ -36,6 +36,7 @@ error_filterExpr ord b   = "ERROR: Unsupported filter for relation " ++ show ord
 error_filterExprConstr t = "ERROR: Unknown filter construction " ++ show t
 
 error_queryExpr t   = "ERROR: Unsupported term in the expression " ++ show t
+error_queryExpr_prefices           = "ERROR: Need to add a prefix to the columns, i.e. write \'tableName.x\' for the column \'x\' and the corresponding \'tableName\'."
 error_queryExpr_unnamed t          = "ERROR: Need to define an alias for intermediate query column " ++ show t
 error_queryExpr_syntax t           = "ERROR: Unsupported query syntax " ++ show t
 error_queryExpr_groupBy            = "ERROR: GROUP BY is allowed only for queries of the form SELECT x1,...,xn, y FROM t GROUP BY x1,...,xn"
@@ -67,9 +68,9 @@ error_internal_fillMissing x i xs      = "case x < i in fillMissing: " ++ show x
 
 error_mapElem x xs     = "INTERNAL ERROR: Element " ++ show x ++ " is not in " ++ show xs
 error_arrElem x xs     = "INTERNAL ERROR: Index " ++ show x ++ " is out of bounds in array " ++ show xs
-error_badNorm   t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
-error_badLNNorm t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
-error_badLZNorm t sens = "ERROR: the database norm " ++ show t ++ " does not contain the variable " ++ show sens ++ " declared as sensitive."
+error_badNorm   t sens = "ERROR: could not match the query norm " ++ show t ++ " agaist the variable " ++ show sens ++ ", which should be declared as numeric (i.e. be of type INT8 or FLOAT8 in the schema, and not embedded by \'l0\' in the database norm)."
+error_badLNNorm t sens = "ERROR: could not match the query norm " ++ show t ++ " agaist the variable " ++ show sens ++ ", which should be declared as logarithmic (i.e. be of type INT8 or FLOAT8 in the schema, and embedded into \'ln\' construction in the database norm)."
+error_badLZNorm t sens = "ERROR: could not match the query norm " ++ show t ++ " agaist the variable " ++ show sens ++ ", which should be declared as discrete (i.e. be of type \'TEXT\' datatype in the schema, and embedded by \'l0\' construction the database norm)."
 error_badAggrNorm t p q  = "ERROR: can compute sensitivity for " ++ show t ++ " only w.r.t row norm l_" ++ p ++ ", not l_" ++ q ++ "."
 
 --subquery related errors
@@ -83,6 +84,7 @@ error_attackerBreaksEverything = "ERROR: impossible to enforce policy against cu
 error_badAttackerPolicyCombination attState plcState = "INTERNAL ERROR: no implementation for attacker state " ++ show attState ++ " and policy state " ++ show plcState ++ "."
 error_unboundedDataType t = "ERROR: data type " ++ t ++ " cannot be included into policy yet."
 error_badPolicyFormat preficedVar = "ERROR: policy format error, \"" ++ preficedVar ++ "\" is expected to be of the form \"tableName.varName\""
+error_badPolicySensRows vs = "ERROR: the sensitive rows should be listed as \'Range a b\', but we got " ++ show vs ++ " instead."
 
 -- groupBy-related messages
 error_noAttMapBounds x = "ERROR: no set of possible values is specified for " ++ x ++ ", which is essential for GROUP BY queries. Specify \'set x1 ... xn\' or \'range x y\' in the attacker file."

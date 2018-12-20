@@ -323,7 +323,7 @@ readTableData policy queryPath attMap plcMaps typeMap tableNames tableAliases = 
     let tableColNames = map (\t -> M.keys (typeMap ! t)) tableNames
 
     (tableSensitives, tableNormFuns, tableGs) <- fmap unzip3 dbNormData
-    let (_,tableSensitiveVars) = unzip tableSensitives
+    let (tableSensRows,tableSensitiveVars) = unzip tableSensitives
 
     -- we put table names in front of column names
     let namePrefices = map (\tableAlias -> tableAlias ++ [tsep]) tableAliases
@@ -331,10 +331,9 @@ readTableData policy queryPath attMap plcMaps typeMap tableNames tableAliases = 
     let fullSensitiveVarNames = zipWith (\x ys -> map (\y -> x ++ y) ys) namePrefices tableSensitiveVars
 
     -- put all table data together
-    let tableData = zipWith5 T tableNames fullTableColNames fullSensitiveVarNames tableGs tableNormFuns
+    let tableData = zipWith6 T tableNames fullTableColNames fullSensitiveVarNames tableGs tableNormFuns tableSensRows
     let tableMap  = M.fromList $ zip tableAliases tableData
     return tableMap
-
 
 -- for each column, find the number of times the table of this column is used
 getColTableCounts colNames tableNames tableAliases =
@@ -393,6 +392,9 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "Input table aliases: " ++ show allInputTableAliases
     traceIOIfDebug debug $ "Task names:          " ++ show taskNames
     traceIOIfDebug debug $ "Task map:            " ++ show taskMap
+    traceIOIfDebug debug $ "Type map:            " ++ show typeMap
+    traceIOIfDebug debug $ "Att map:            " ++ show attMap
+    traceIOIfDebug debug $ "Plc map:            " ++ show plcMaps
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
     inputTableMap <- readTableData policy dataPath attMap plcMaps typeMap allInputTableNames allInputTableAliases
@@ -434,12 +436,11 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let fullTypeMap = foldr M.union M.empty (zipWith (\tableAlias tableName -> M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName)) allInputTableAliases allInputTableNames)
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Input table map: " ++ show inputTableMap
     traceIOIfDebug debug $ "Intermediate Vars: " ++ show allIntermediateColNameList
     traceIOIfDebug debug $ "Group Vars: " ++ show allIntermediateGroupColNameList
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Types1: " ++ show typeMap
-    traceIOIfDebug debug $ "Types2: " ++ show fullTypeMap
+    traceIOIfDebug debug $ "Types plain: " ++ show typeMap
+    traceIOIfDebug debug $ "Types preficed: " ++ show fullTypeMap
 
     -- assign a unique integer to each column name, which is the order of this column in the cross product table
     let inputMap        = M.fromList $ zip colNames [0..length colNames - 1]
@@ -527,13 +528,15 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     sendQueriesToDbAndCommit args (initQueries)
 
     -- this has moved here from BanachQ since it is easier to extract pure input table names here
-    let uniqueTableNames = nub $ concat inputTableNames
+    --let uniqueTableNames = nub $ concat inputTableNames
+    -- TODO continue from here
+    let uniqueTableNames = nub $ M.elems $ M.map (\td -> (getTableName td, getSensRows td)) inputTableMap
     let separator = delimiter args
     when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
     ctss <- if (not (dbCreateTables args)) then (do return []) else
-                  forM uniqueTableNames $ \ t -> do cts <- createTableSqlTyped policy dataPath separator t typeList
-                                                    when debug $ putStr (concatMap (++ ";\n") cts)
-                                                    return cts
+                  forM uniqueTableNames $ \ (t,sR) -> do cts <- createTableSqlTyped policy dataPath separator t sR typeList
+                                                         when debug $ putStr (concatMap (++ ";\n") cts)
+                                                         return cts
 
     when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
 
@@ -562,6 +565,10 @@ constructQueryData initialSubQueryDataMap (queryName:qs) =
     let directColNamesQ = (\ (F aexpr _) -> getAllAExprVars False aexpr) query in
     let directColNamesF = foldr S.union S.empty $ map (getAllAExprVars False) filterAexprs in
     let directColNames = S.toList $ S.union directColNamesQ directColNamesF in
+
+    -- all direct column names need to be preficed, since our analyser does not check which columns come from which table
+    let goodVars = map (\x -> if elem tsep x then True else False) directColNames in
+    if not (foldr (&&) True goodVars) then error $ error_queryExpr_prefices  else 
 
     let subExprsQ = (\ (F aexpr _) -> getAllSubExprs False aexpr) query in
     let subExprsF = foldr S.union S.empty $ map (getAllSubExprs False) filterAexprs in

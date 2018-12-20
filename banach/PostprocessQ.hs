@@ -56,6 +56,7 @@ performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap 
                   (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f\t %0.6f\t %0.6f\t %0.3f" tableName sds qr (sds/b) ((sds/b) / qr * 100)) res)) taskAggr
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") taskStr
 
+-- TODO continue from here, add special processing of sensRows
 performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
 performPolicyAnalysis args dataPath separator initialQuery colNames typeMap taskMap tableExprData plcMaps attMap colTableCounts = do
 
@@ -65,19 +66,23 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   let fixedBeta = getBeta args
 
   -- process the policy and the attacker knowledge
-  let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (tname ++ "." ++ x,y)) tmap) typeMap
+  let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (tname ++ [tsep] ++ x,y)) tmap) typeMap
   let plainTypeMap  = M.fromList $ concat plainTypeMaps
 
   -- TODO this is not the right way to compute cost for several sensitive sets
   let cost = sum $ map snd plcMaps
 
-  let bss  = map (extract_bs attMap . fst) plcMaps
-  let rss    = zipWith filterWith bss $ map (extract_rs attMap . fst) plcMaps
-  let css    = zipWith filterWith bss $ map (extract_crs attMap . fst) plcMaps
-  let bounds = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap . fst) plcMaps
+  --remove the special variables that are not needed
+  let kwlen = length reservedSensRowsKeyword
+  let plcMapData = map (M.filterWithKey (\varName _ -> length varName < kwlen || reverse (take kwlen (reverse varName)) /= reservedSensRowsKeyword) . fst) plcMaps
+
+  let bss  = map (extract_bs attMap) plcMapData
+  let rss    = zipWith filterWith bss $ map (extract_rs attMap) plcMapData
+  let css    = zipWith filterWith bss $ map (extract_crs attMap) plcMapData
+  let bounds = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap) plcMapData
 
   let rrss'  = map (map (\(lb,ub) -> (ub - lb) / 2.0)) bounds
-  let crss'  = zipWith filterWith bss $ map (extract_CRs attMap plainTypeMap . fst) plcMaps
+  let crss'  = zipWith filterWith bss $ map (extract_CRs attMap plainTypeMap) plcMapData
 
   let rrss = zipWith (zipWith (/)) rrss' rss --rescaled bounds
   let crss = zipWith (zipWith (/)) crss' css --rescaled counts
@@ -89,7 +94,7 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   -- we multiply the dimensions of variables belonging to one sensitive set
   -- we add the weights of different sensitive sets, since the attacker may guess any of them
   -- TODO do not include repeating variables muliple times into m and the intersection weight
-  let allSensVars = S.fromList $ concat (map (M.keys . fst) plcMaps) 
+  let allSensVars = S.fromList $ concat (map M.keys plcMapData) 
 
   let m = fromIntegral $ length (concat rss)
   let intersectionWeight = product $ map product pss

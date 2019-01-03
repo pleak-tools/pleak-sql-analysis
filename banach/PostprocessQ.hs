@@ -173,7 +173,7 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   traceIOIfDebug debug ("params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
 
   --putStrLn $ intercalate ("\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
-  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
+  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (finalError * 100)]
   -- for PRISMS graphs, we have modified the output, adjusting it to histograms
   -- putStrLn $ intercalate (if alternative args then ";" else "\n\n") [show delta, show finalError]
 
@@ -183,7 +183,7 @@ repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestError = do
     let nextBeta = (betaMax + betaMin) / 2.0
     nextError <- step (Just nextBeta)
     let (bestBeta', bestError') = if nextError < bestError then (nextBeta, nextError) else (bestBeta, bestError)
-    if (betaMax - betaMin > 0.01) && (betaMax > 0.01)
+    if (betaMax - betaMin > 0.01) && (betaMax > 0.01) && (betaMin /= 1/0) && (betaMax /= 1/0)
       then do
         --do binary search
         if (prevError <= nextError) then do
@@ -201,10 +201,7 @@ performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames ty
 
   -- take the main results, which is "for all tables"
   let (b, sds) = resultMap ! B.resultForAllTables
-
-  -- for PRISMS graphs, we temporarily use absolute errors instead of relative errors here
-  -- return (sds / b)
-  return ((sds / b) / qr * 100)
+  return ((sds / b) / qr)
 
 
 performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])

@@ -20,7 +20,7 @@ import NormsQ
 -------------------------------
 
 data VarState
-  = Exact | None | Approx Double | Total Int | SubSet [String] | Range Double Double | ApproxPrior Double Double
+  = Exact | None | Approx Double | Total Int | IntSubSet [Int] | SubSet [String] | Range Double Double | ApproxPrior Double Double
   deriving (Show)
 
 reservedSensRowsKeyword = "sensRows"
@@ -34,6 +34,7 @@ isLeakedVar attState plcState =
             (ApproxPrior _ r1, Approx r2) -> r1 <= r2
             (Total  n1, Total  n2)   -> n1 <= n2
             (SubSet xs1, SubSet xs2) -> not $ S.isSubsetOf (S.fromList xs2) (S.fromList xs1)
+            (IntSubSet xs1, IntSubSet xs2) -> not $ S.isSubsetOf (S.fromList xs2) (S.fromList xs1)
             -- here we assume that the actual data belongs to (lb,ub) -- i.e. the attacker knowledge is correct
             -- while (ub - lb) / 2 <= r2 would already be sufficient in the case when the actual data is in the middle,
             -- we only claim immediate leakage if it leaks for sure
@@ -71,6 +72,7 @@ verifyVarSecrecy attMap plcMap preficedVar =
             (_,Approx r) -> [ScaleNorm (1/r) var]
             (_,Total _)  -> [LZero var]
             (_,SubSet _) -> [LZero var]
+            (_,IntSubSet _) -> [LZero var] -- if integers come as a set, we consider l0-norm
             _ -> error $ error_badAttackerPolicyCombination attState plcState
     in
 
@@ -101,6 +103,7 @@ extract_r attMap plcMap var =
             (_,Approx r) -> r
             (_,Total _)  -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
             (_,SubSet _) -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
+            (_,IntSubSet _) -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 
@@ -119,6 +122,7 @@ extract_cr attMap plcMap var =
             (_,Approx r)  -> 2*r -- since radius stretches to 2 directions, we get 2*r units out of this
             (_,Total n)   -> fromIntegral n -- determines the size of X', and it assumes that CR will be the number of possible choices
             (_,SubSet xs) -> fromIntegral $ length xs
+            (_,IntSubSet xs) -> fromIntegral $ length xs
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 -- extract the total space radius
@@ -144,6 +148,7 @@ extract_R attMap plcMap typeMap var =
 
             (Total _, _)    -> (0.0,1.0) -- compatible with L0-norm
             (SubSet _,_)   -> (0.0,1.0) -- compatible with L0-norm
+            (IntSubSet _,_)   -> (0.0,1.0) -- compatible with L0-norm
             (Range lb ub,_) -> (lb, ub)
             -- TODO this currently gives correct results, but could be nicer
             (ApproxPrior _ r1, _) -> (0, 2*r1)
@@ -170,6 +175,7 @@ extract_CR attMap plcMap typeMap var =
 
             (Total n, _)    -> fromIntegral n
             (SubSet xs,_)   -> fromIntegral $ length xs
+            (IntSubSet xs,_)   -> fromIntegral $ length xs
             (Range lb ub,_) -> ub - lb
             (ApproxPrior p _, _) -> p
             --(Approx r,_)    -> 2*r
@@ -188,7 +194,9 @@ normsFromCombinedData combinedDataMap tableName tableSensRows =
     let normVarNames = (map (\x -> defaultNormVariable ++ show x) [0..(length normVars - 1)]) in
     let tempVarMap = M.fromList $ zip normVarNames normVars in
     let nf = NF (M.insert defaultNormVariable (LInf normVarNames) tempVarMap) (SelectL 1.0 defaultNormVariable) in
-    ((tableSensRows,sensVars),nf, Nothing)
+    -- if there are no explicit records for sensitive rows, we consider all of them sensitive by deafult
+    let recordedTableSensRows = if length tableSensRows == 0 then [0..] else tableSensRows in
+    ((recordedTableSensRows,sensVars),nf, Nothing)
 
 constructNormData :: [TableName] -> M.Map String VarState -> [(M.Map String VarState, Double)] -> [(([Int], [VarName]), NormFunction, Maybe Double)]
 constructNormData tableNames attMap plcMaps =
@@ -197,9 +205,8 @@ constructNormData tableNames attMap plcMaps =
     let temp = map (constructNormDataSet tableNames attMap . fst) plcMaps in
     let combinedDataMap = foldr (M.unionWith combineSets) M.empty temp in
 
-    --extract the special variables for sow sensitivity
+    --extract the special variables for row sensitivity
     let kwlen = length reservedSensRowsKeyword in
-    let sensRowData = map (M.filterWithKey (\varName _ -> length varName >= kwlen && reverse (take kwlen (reverse varName)) == reservedSensRowsKeyword) . fst) plcMaps in
     let tableSensRows = map (extractRange plcMaps) tableNames in
 
     zipWith (normsFromCombinedData combinedDataMap) tableNames tableSensRows
@@ -213,8 +220,9 @@ extractRanges indexSet key (plcMap:ps) =
     if M.member key plcMap then
         let varState = plcMap ! key in
         let newRange = case varState of
-                Range lb ub -> S.fromList [round lb .. round (ub-1)]
-                _           -> error $ error_badPolicySensRows varState
+                Range lb ub  -> S.fromList [round lb .. round (ub-1)]
+                IntSubSet xs -> S.fromList xs
+                _            -> error $ error_badPolicySensRows varState
         in extractRanges (S.union indexSet newRange) key ps
     else
         extractRanges indexSet key ps

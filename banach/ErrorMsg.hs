@@ -84,7 +84,8 @@ error_attackerBreaksEverything = "ERROR: impossible to enforce policy against cu
 error_badAttackerPolicyCombination attState plcState = "INTERNAL ERROR: no implementation for attacker state " ++ show attState ++ " and policy state " ++ show plcState ++ "."
 error_unboundedDataType t = "ERROR: data type " ++ t ++ " cannot be included into policy yet."
 error_badPolicyFormat preficedVar = "ERROR: policy format error, \"" ++ preficedVar ++ "\" is expected to be of the form \"tableName.varName\""
-error_badPolicySensRows vs = "ERROR: the sensitive rows should be listed as \'Range a b\', but we got " ++ show vs ++ " instead."
+error_badSetPolicyFormat xs1 xs2 = "ERROR: policy format error, should not use strings " ++ show xs1 ++ " and integers " ++ show xs2 ++ " in one set."
+error_badPolicySensRows vs    = "ERROR: the sensitive rows should be listed as \'Range a b\', but we got " ++ show vs ++ " instead."
 
 -- groupBy-related messages
 error_noAttMapBounds x = "ERROR: no set of possible values is specified for " ++ x ++ ", which is essential for GROUP BY queries. Specify \'set x1 ... xn\' or \'range x y\' in the attacker file."

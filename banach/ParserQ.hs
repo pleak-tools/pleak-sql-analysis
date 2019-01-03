@@ -14,6 +14,7 @@ import Control.Monad (void)
 
 import Debug.Trace
 import Data.Char
+import Data.Either
 import Data.List
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -642,8 +643,13 @@ varStateRange = do
 
 varStateSet = do
   keyWord "set"
-  xs <- many floatAsQuotedString
-  return (SubSet xs)
+  xs <- many quotedString
+  let xs1 = lefts xs
+  let xs2 = rights xs
+  let y = if length xs1 > 0 && length xs2 > 0 then error $ error_badSetPolicyFormat xs1 xs2
+          else if length xs1 > 0 then SubSet xs1
+          else IntSubSet xs2
+  return y
 
 varStateNone = do
   keyWord "none"
@@ -756,11 +762,11 @@ signedFloat = try (L.signed spaceConsumer float) <|> fmap fromIntegral (L.signed
 stringAsInt :: Parser Double
 stringAsInt = hash <$> text
 
-floatAsString :: Parser String
-floatAsString = try text <|> fmap show signedFloat
+--floatAsString :: Parser String
+--floatAsString = try text <|> fmap show signedFloat
 
-floatAsQuotedString :: Parser String
-floatAsQuotedString = fmap (\s -> "\'" ++ s ++ "\'") text <|> fmap show signedFloat
+quotedString :: Parser (Either String Int)
+quotedString = fmap (\s -> Left ("\'" ++ s ++ "\'")) text <|> fmap Right integer
 
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")

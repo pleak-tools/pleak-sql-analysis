@@ -96,11 +96,11 @@ createTableSqlTyped policy dataPath separator tableName sR types = do
 
     let numRows = length tbl
     let sensTableName = sensRows tableName
-    --sensRows <- if policy then do return ([0..])
-    --            else do
-    --                let normFileName = dataPath ++ tableName ++ ".nrm"
-    --                ((sR, _), _, _) <- parseNormFromFile (typeMap ! tableName) normFileName
-    --                return sR
+    --sR <- if policy then do return ([0..])
+    --      else do
+    --              let normFileName = dataPath ++ tableName ++ ".nrm"
+    --              ((sR', _), _, _) <- parseNormFromFile (typeMap ! tableName) normFileName
+    --              return sR'
 
     let sensRowsSet = S.fromList (take numRows sR)
     let colTypes = map (\col -> typeMap ! tableName ! col) colNames

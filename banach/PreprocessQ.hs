@@ -529,12 +529,12 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- this has moved here from BanachQ since it is easier to extract pure input table names here
     --let uniqueTableNames = nub $ concat inputTableNames
-    -- TODO continue from here
-    let uniqueTableNames = nub $ M.elems $ M.map (\td -> (getTableName td, getSensRows td)) inputTableMap
+    let uniqueTableNamesAndSR = M.toList $ M.fromList $ M.elems $ M.map (\td -> (getTableName td, getSensRows td)) inputTableMap
     let separator = delimiter args
     when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
     ctss <- if (not (dbCreateTables args)) then (do return []) else
-                  forM uniqueTableNames $ \ (t,sR) -> do cts <- createTableSqlTyped policy dataPath separator t sR typeList
+              forM uniqueTableNamesAndSR $ \ (t,sR) -> do
+                                                         cts <- createTableSqlTyped policy dataPath separator t sR typeList
                                                          when debug $ putStr (concatMap (++ ";\n") cts)
                                                          return cts
 

@@ -1395,9 +1395,9 @@ performSubExprAnalysis args fromPart wherePart tableName taskName group subExprM
     let analyzedTables = concat analyzedTables0
     let subExprAnalysisResults = foldr M.union M.empty subExprAnalysisResults0
 
-    putStrLn $ "initial table: " ++ show tableName
-    putStrLn $ "suitable tables: " ++ show goodVarNames
-    putStrLn $ "analyzed tables: " ++ show analyzedTables
+    when debug $ putStrLn ("initial table: " ++ show tableName)
+    when debug $ putStrLn ("suitable tables: " ++ show goodVarNames)
+    when debug $ putStrLn ("analyzed tables: " ++ show analyzedTables)
 
     let results00 = map (\analyzedTable ->
             let extFromPart  = if equal analyzedTable tableName then fromPart else fromPart  ++ ", _sens_" ++ tableName in
@@ -1410,7 +1410,7 @@ performSubExprAnalysis args fromPart wherePart tableName taskName group subExprM
 
     let mapKey = removeGroupFromQName varName
     let outputMap = M.insertWith chooseSaferARs mapKey (group, M.fromList $ zip analyzedTables ars) subExprMap
-    putStrLn $ "outputMap: " ++ show outputMap
+    when debug $ putStrLn ("outputMap: " ++ show outputMap)
     return (outputMap, if (isIntermediateQueryName taskName) then [] else zip analyzedTables results)
 
 -- if we have different analysis results for different groups, we take the one that works for all of them

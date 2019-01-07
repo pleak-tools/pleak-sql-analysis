@@ -739,15 +739,17 @@ aexprSubstitute aexprMap aexpr =
           processBase x = if M.member x aexprMap then aexprMap ! x else AVar x
 
 -- TODO introduce type errors here
-applyAexprTypes :: (Ord a, Show a) => (M.Map a String) -> (AExpr a) -> (AType, AExpr a)
+applyAexprTypes :: (M.Map VarName String) -> (AExpr VarName) -> (AType, AExpr VarName)
 applyAexprTypes typeMap aexpr =
     case aexpr of
         AVar x   -> (stringToAType (typeMap ! x), AVar x)
         AConst c -> if isInteger c then (AInt, AConst c) else (AFloat, AConst c)
         AText c  -> (AString, AText c)
 
-        -- TODO putting here float is safe, but actually we could use output table schema to decide if it could be something else
-        ASubExpr t x g -> (AFloat, ASubExpr t x g)
+        ASubExpr t x g -> let v = preficedVarName t x in
+                          if M.member v typeMap then (stringToAType (typeMap ! v), ASubExpr t x g)
+                          else (AFloat, ASubExpr t x g)
+
         AZeroSens x  -> let (t,[y]) = processRec [x] in (t, AZeroSens y)
 
         AAbs x   -> let (t,[y]) = processRec [x] in (t, AAbs y)

@@ -221,13 +221,15 @@ addGroupToQuery grName (F as b) =
     let b' = setVarNameToTableExpr b (x ++ [grsep] ++ grName) in
     (F as b')
 
+
+-- TODO we also want to extract the table namses and aliases of intermediate tables for the type map
 processQuery :: TableName -> (M.Map TableName Query) -> (M.Map String VarState) -> TableName -> TableAlias -> TableName -> 
-                ([[TableName]], [[TableAlias]],[[TableName]], [GroupData], [Function], [[AExpr VarName]])
+                ([[TableName]], [[TableAlias]],[[TableName]], [(TableAlias,TableName)], [GroupData], [Function], [[AExpr VarName]])
 processQuery outputTableName queryMap attMap taskName tableAlias tableName =
 
     -- if the table is not in the query map, then it is an input table
     if not (M.member tableName queryMap) then
-        ([[taskName]], [[tableAlias]], [[tableName]], [NoGR], [F (AVar tableName) (SelectPlain tableName)], [[]])
+        ([[taskName]], [[tableAlias]], [[tableName]], [], [NoGR], [F (AVar tableName) (SelectPlain tableName)], [[]])
     else
         -- collect all used tables of this query
         let query@(P groupVarNames queryFuns' usedAliasMap filterFuns') = queryMap ! tableName in
@@ -243,8 +245,9 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
                                                                   if M.member groupVarName attMap then
                                                                       let varState = (attMap ! groupVarName) in
                                                                           case varState of
-                                                                              Range x y -> map show [x..y]
+                                                                              Range x y -> map show [x..(y-1)]
                                                                               SubSet xs -> xs
+                                                                              IntSubSet xs -> map show xs
                                                                               _         -> error $ error_badAttMapBounds groupVarName varState
                                                                   else error $ error_noAttMapBounds groupVarName) groupVarNames
                                      in
@@ -262,11 +265,12 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
         let usedAliases = M.keys usedAliasMap in
         let usedNames   = M.elems usedAliasMap in
         let subData = map (\key -> processQuery outputTableName queryMap attMap tableName key (usedAliasMap ! key)) usedAliases in
-        let (taskNames', tableAliases', tableNames', subQueryGroups',subQueryFuns', subFiltFuns') = unzip6 subData in
+        let (taskNames', tableAliases', tableNames', tableAliasesNamesSub', subQueryGroups',subQueryFuns', subFiltFuns') = unzip7 subData in
 
         let taskNames      = concat taskNames'      in
         let tableAliases   = concat tableAliases'   in
         let tableNames     = concat tableNames'     in
+        let tableAliasesNamesSub   = concat tableAliasesNamesSub'   in
         let subQueryGroups = concat subQueryGroups' in
         let subQueryFuns   = concat subQueryFuns'   in
         let subFiltFuns    = concat subFiltFuns'    in
@@ -302,8 +306,7 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
         let outputFilters    = (map (\x -> map (mergeQueryFuns newSubQueryFuns) x ++ concat plainSubFiltFuns) newFilterFuns) ++ aggrSubFiltFuns in
         -- if there are several items in the query, all the taskNames are treated as subqueries of both
         let outputTaskNames = (map (taskName :) taskNames) in
-
-        (outputTaskNames, outputAliases, outputNames, outputGroupNames, outputQueryFuns, outputFilters)
+        (outputTaskNames, outputAliases, outputNames, (tableAlias,tableName) : map (\(x,y) -> (prefix ++ x, y)) tableAliasesNamesSub, outputGroupNames, outputQueryFuns, outputFilters)
         where aggrQueryType ((F _ b),_,_,_,_) = case b of {SelectPlain _ -> False; _ -> True}
 
 -- assume that the tables are located in the same place where the query is
@@ -374,7 +377,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
-    let (taskNames, inputTableAliases', inputTableNames', outputGroups, outputQueryFuns, filterAexprs') = processQuery outputTableName queryMap attMap "" outputTableName outputTableName
+    let (taskNames, inputTableAliases', inputTableNames', subTableAliases, outputGroups, outputQueryFuns, filterAexprs') = processQuery outputTableName queryMap attMap "" outputTableName outputTableName
     -- by construction, the used table aliases may repeat, so we discard repetitions first
     let (inputTableAliases, inputTableNames) = unzip $ zipWith (\xs zs -> unzip $ S.toList $ S.fromList $ zip xs zs) inputTableAliases' inputTableNames' 
     let (allInputTableNames,allInputTableAliases) = unzip $ nub $ zip (concat inputTableNames) (concat inputTableAliases)
@@ -390,6 +393,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Input table names:   " ++ show allInputTableNames
     traceIOIfDebug debug $ "Input table aliases: " ++ show allInputTableAliases
+    traceIOIfDebug debug $ "... aliases: " ++ show subTableAliases
     traceIOIfDebug debug $ "Task names:          " ++ show taskNames
     traceIOIfDebug debug $ "Task map:            " ++ show taskMap
     traceIOIfDebug debug $ "Type map:            " ++ show typeMap
@@ -403,7 +407,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let orderedTableAliases = M.keys inputTableMap
 
     let subExprsQ = map (\ (F aexpr _) -> getAllSubExprs False aexpr) outputQueryFuns
-    let subExprsF = concat $ map (map (getAllSubExprs False)) filterAexprs'
+    let subExprsF = map (\fs -> foldr S.union S.empty (map (getAllSubExprs False) fs)) filterAexprs'
+    let subExprs  = zipWith S.union subExprsQ subExprsF
 
     let intermediateColNameSetsQ = map (S.map fst) subExprsQ
     let intermediateColNameSetsF = map (S.map fst) subExprsF
@@ -419,21 +424,25 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- we discover the cases where t.x1 and t.x2 for x1 /= x2 are used in the same query (unless one of them is public or is a group)
     -- we discover the cases where t.x is used by different queries (unless it is a group)
     -- using t.x multiple times in the same query is safe, since it is treated as the same variable
-    let subExprTablesQ = map (map (fst . fst) . filter (\(_,b) -> b) . S.toList) subExprsQ
-    let subExprTablesF = map (map (fst . fst) . filter (\(_,b) -> b) . S.toList) subExprsF
+    let subExprTables = concat $ map (map (fst . fst) . filter (\(_,b) -> b) . S.toList) subExprs
 
     --let subExprTables  = zipWith (++) subExprTablesQ subExprTablesF
     --let goodQueries    = map (\xs -> length xs == S.size (S.fromList xs)) subExprTables
     --when (foldr (&&) True goodQueries == False) $ error $ error_subQueries
-    let subExprTables  = concat $ zipWith (++) subExprTablesQ subExprTablesF
     let goodQueries    = length subExprTables == S.size (S.fromList subExprTables)
+    traceIOIfDebug debug $ "subExprsQ: " ++ show subExprsQ
+    traceIOIfDebug debug $ "subExprsF: " ++ show subExprsF
+    traceIOIfDebug debug $ "subExprs: " ++ show subExprs
+    traceIOIfDebug debug $ "subExprTables: " ++ show subExprTables
     when (goodQueries == False) $ error $ error_subQueries
 
     let inputColNames    = concat $ map (getUsedCols . (inputTableMap ! ) ) orderedTableAliases
     let colNames         = inputColNames ++ uniqueSubExprvarList
     let sensitiveVarList = concat $ map (getSensCols . (inputTableMap ! ) ) orderedTableAliases
 
-    let fullTypeMap = foldr M.union M.empty (zipWith (\tableAlias tableName -> M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName)) allInputTableAliases allInputTableNames)
+    let fullTypeMap1 = foldr M.union M.empty $ zipWith (\tableAlias tableName -> M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName)) allInputTableAliases allInputTableNames
+    let fullTypeMap2 = foldr M.union M.empty $ map (\(tableAlias,tableName) -> if M.member tableName typeMap then M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName) else M.empty) subTableAliases
+    let fullTypeMap = M.union fullTypeMap1 fullTypeMap2
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Intermediate Vars: " ++ show allIntermediateColNameList

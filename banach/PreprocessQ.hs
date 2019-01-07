@@ -353,7 +353,7 @@ getColTableCounts colNames tableNames tableAliases =
       map (\x -> if M.member x aliasToCountMap then aliasToCountMap M.! x else 1) colTableAliases
 
 -- putting everything together
-getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String -> IO ([(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, TableName, OneGroupData, B.TableExpr,(String,String,String))],[(String, Maybe Double)],[Int])
+getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String -> IO (String,[(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], [(String,[Int],Bool)], [String], [(TableName, TableName, OneGroupData, B.TableExpr,(String,String,String))],[(String, Maybe Double)],[Int])
 getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
 
     let debug = not (alternative args)
@@ -506,7 +506,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- the last column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let tableExprData = (plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
+    let tableExprData = (outputTableName,plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
 
     -- TODO is it a proper place for table Gs if groups are used? we decide it when extend the groups to combined sensitivity
     traceIOIfDebug debug $ "----------------"

@@ -41,6 +41,7 @@ optimal_a_epsilon xWeight c r rr a epsilon k n m =
     let (a'',epsilon'') = if (epsilon' > epsilon) then (a',epsilon') else (a,epsilon) in
     optimal_a_epsilon xWeight c r rr a'' epsilon'' (k-1) n m
 
+-- TODO if we want to look for an optimal beta here using binary search, we will also need outputTableName here
 performDPAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
 performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
@@ -56,9 +57,9 @@ performDPAnalysis args dataPath separator initialQuery colNames typeMap taskMap 
                   (intercalate "\n" $ map (\ (tableName, (b,sds)) -> printf "%s: %0.6f\t %0.6f\t %0.6f\t %0.3f" tableName sds qr (sds/b) ((sds/b) / qr * 100)) res)) taskAggr
   putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") taskStr
 
--- TODO continue from here, add special processing of sensRows
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
-performPolicyAnalysis args dataPath separator initialQuery colNames typeMap taskMap tableExprData plcMaps attMap colTableCounts = do
+
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
+performPolicyAnalysis args outputTableName dataPath separator initialQuery colNames typeMap taskMap tableExprData plcMaps attMap colTableCounts = do
 
   -- the input epsilon now works as delta, the upper bound on attacker's advantage
   let debug = not (alternative args)
@@ -159,7 +160,7 @@ performPolicyAnalysis args dataPath separator initialQuery colNames typeMap task
   --traceIO ("Pr_pre: " ++ (show ps) ++ "  -->  " ++ (show pr_pre))
   --traceIO ("Pr_post: " ++ (show posts) ++ "  -->  " ++ (show pr_post))
 
-  let step = performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
+  let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
   (finalBeta,finalError) <- case fixedBeta of
                     Nothing -> do
                         initialBeta <- BQ.findMinimumBeta args epsilon Nothing dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
@@ -193,11 +194,11 @@ repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestError = do
       else do
         return (bestBeta', bestError')
 
-performAnalysisBetaStep :: ProgramOptions -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO Double
-performAnalysisBetaStep args epsilon dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
+performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO Double
+performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
 
   (qr,taskAggr) <- performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
-  let resultMap = M.fromList $ snd (last taskAggr)
+  let resultMap = M.fromList $ (M.fromList taskAggr) ! outputTableName
 
   -- take the main results, which is "for all tables"
   let (b, sds) = resultMap ! B.resultForAllTables

@@ -99,38 +99,62 @@ extract_r attMap plcMap var =
     let plcState = plcMap ! var in
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (_,Exact)    -> 0.5 -- compatible with L0-norm
+            (_,Exact)    -> 1.0 -- compatible with L0-norm
             (_,Approx r) -> r
-            (_,Total _)  -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
-            (_,SubSet _) -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
-            (_,IntSubSet _) -> 0.5 -- this is used only for discrete variables, compatible with L0-norm
+            (_,Total _)  -> 1.0 -- this is used only for discrete variables, compatible with L0-norm
+            (_,SubSet _) -> 1.0 -- this is used only for discrete variables, compatible with L0-norm
+            (_,IntSubSet _) -> 1.0 -- this is used only for discrete variables, compatible with L0-norm
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
+-- extract whether the dimension has discrete norm
+extract_ds :: M.Map String VarState -> M.Map String VarState -> [Bool]
+extract_ds attMap plcMap =
+    map (extract_d attMap plcMap) (M.keys plcMap)
 
--- how many "units" there are inside the guessing radius
-extract_crs :: M.Map String VarState -> M.Map String VarState -> [Double]
-extract_crs attMap plcMap =
-    map (extract_cr attMap plcMap) (M.keys plcMap)
-
-extract_cr :: M.Map String VarState -> M.Map String VarState -> String -> Double
-extract_cr attMap plcMap var =
+extract_d :: M.Map String VarState -> M.Map String VarState -> String -> Bool
+extract_d attMap plcMap var =
     let plcState = plcMap ! var in
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (_,Exact)     -> 1.0 -- 1 is compatible with L0-norm, and it assumes that CR will be the number of possible choices
-            (ApproxPrior p r1, Approx r2) -> p * r2 / r1 -- TODO check if it is what we want
-            (_,Approx r)  -> 2*r -- since radius stretches to 2 directions, we get 2*r units out of this
-            (_,Total n)   -> fromIntegral n -- determines the size of X', and it assumes that CR will be the number of possible choices
-            (_,SubSet xs) -> fromIntegral $ length xs
-            (_,IntSubSet xs) -> fromIntegral $ length xs
+            (_,Exact)    -> True
+            (_,Approx r) -> False
+            (_,Total _)  -> True
+            (_,SubSet _) -> True
+            (_,IntSubSet _) -> True
+            _ -> error $ error_badAttackerPolicyCombination attState plcState
+
+
+-- TODO extract the total weight of the space (will make use of ApproxPrior)
+
+-- extract the function computing probabilities in total space
+extract_gs :: M.Map String VarState -> M.Map String VarState -> [Double -> Maybe [Double]]
+extract_gs attMap plcMap =
+    map (extract_g attMap plcMap) (M.keys plcMap)
+
+extract_g :: M.Map String VarState -> M.Map String VarState -> String -> (Double -> Maybe [Double])
+extract_g attMap plcMap var =
+    let plcState = plcMap ! var in
+    let attState = if M.member var attMap then attMap ! var else None in
+    case (attState, plcState) of
+            (Exact,_)        -> const $ Just [1.0]     -- the sensitive region already has sensitivity 1
+            (None, _)        -> const Nothing        -- no knowledge
+            -- currently, we assume unform distribution for discrete data
+            (Total n, _)    -> (\x -> Just [x / fromIntegral n])
+            (SubSet xs,_)    -> let n = length xs in (\x -> Just [x / fromIntegral n])
+            (IntSubSet xs,_) -> let n = length xs in (\x -> Just [x / fromIntegral n])
+            -- currently, we assume unform distribution for real numbers
+            (Range lb ub,_)  -> let rr = (ub - lb) / 2.0 in (\x -> Just [x / rr])
+            -- this is for the case when the attacker provides certain r himself
+            (ApproxPrior p r, _) -> (\x -> if x == r then Just [p] else Nothing)
+
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 -- extract the total space radius
-extract_Rs :: M.Map String VarState -> M.Map String String -> M.Map String VarState -> [(Double,Double)]
+extract_Rs :: M.Map String VarState -> M.Map String String -> M.Map String VarState -> [Double]
 extract_Rs attMap typeMap plcMap =
     map (extract_R attMap plcMap typeMap) (M.keys plcMap)
 
-extract_R :: M.Map String VarState -> M.Map String VarState -> M.Map String String -> String -> (Double,Double)
+extract_R :: M.Map String VarState -> M.Map String VarState -> M.Map String String -> String -> Double
 extract_R attMap plcMap typeMap var =
     let plcState = plcMap ! var in
     --trace (show attMap) $
@@ -139,47 +163,21 @@ extract_R attMap plcMap typeMap var =
     --trace "---------" $
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
-            (Exact,_)       -> (0.0,1.0) -- compatible with L0-norm
-            (None, _)       -> let dataType = typeMap ! var in
-                                   case dataType of
-                                       "int8"   -> (-2^63,2^63)
-                                       "bool"   -> (0.0,1.0)
-                                       _       -> error $ error_unboundedDataType dataType
-
-            (Total _, _)    -> (0.0,1.0) -- compatible with L0-norm
-            (SubSet _,_)   -> (0.0,1.0) -- compatible with L0-norm
-            (IntSubSet _,_)   -> (0.0,1.0) -- compatible with L0-norm
-            (Range lb ub,_) -> (lb, ub)
-            -- TODO this currently gives correct results, but could be nicer
-            (ApproxPrior _ r1, _) -> (0, 2*r1)
-            --(Approx r,_)    -> r
-            _ -> error $ error_badAttackerPolicyCombination attState plcState
-
--- how many "units" there are inside the total space
--- this is the same as R for continuous variables, but diffrent for ordinal
-extract_CRs :: M.Map String VarState -> M.Map String String -> M.Map String VarState -> [Double]
-extract_CRs attMap typeMap plcMap =
-    map (extract_CR attMap plcMap typeMap) (M.keys plcMap)
-
-extract_CR :: M.Map String VarState -> M.Map String VarState -> M.Map String String -> String -> Double
-extract_CR attMap plcMap typeMap var =
-    let plcState = plcMap ! var in
-    let attState = if M.member var attMap then attMap ! var else None in
-    case (attState, plcState) of
-            (Exact,_)       -> 1.0 -- if the attacker already knows the value exactly, there is 1 possible choice
+            (Exact,_)       -> 1.0 -- compatible with L0-norm
             (None, _)       -> let dataType = typeMap ! var in
                                    case dataType of
                                        "int8"   -> 2^64
-                                       "bool"   -> 2.0 -- we have 2 choices, although the radius is 1
+                                       "bool"   -> 2.0
                                        _       -> error $ error_unboundedDataType dataType
 
-            (Total n, _)    -> fromIntegral n
-            (SubSet xs,_)   -> fromIntegral $ length xs
-            (IntSubSet xs,_)   -> fromIntegral $ length xs
-            (Range lb ub,_) -> ub - lb
-            (ApproxPrior p _, _) -> p
-            --(Approx r,_)    -> 2*r
+            (Total n, _)     -> fromIntegral $ n
+            (SubSet xs,_)    -> fromIntegral $ length xs
+            (IntSubSet xs,_) -> fromIntegral $ length xs
+            (Range lb ub,_)  -> (ub - lb) / 2.0
+            -- TODO this currently gives correct results, but could be nicer with ub and lb
+            (ApproxPrior _ r1, _) -> r1
             _ -> error $ error_badAttackerPolicyCombination attState plcState
+
 
 -- TODO since we scale all repeating variables in the same way, we may take any of them (let it be the first one)
 combineSets :: M.Map String Expr -> M.Map String Expr -> M.Map String Expr

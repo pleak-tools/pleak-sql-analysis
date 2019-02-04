@@ -609,7 +609,7 @@ sensitiveFormula :: Parser [(M.Map String VarState, Double)]
 sensitiveFormula = do
 
     cexpr <- cExpr
-    let cs = trace (show cexpr) $ (fromDNFtoList . toDNF) cexpr
+    let cs = (fromDNFtoList . toDNF) cexpr
     let n = length cs
 
     let stateMapList = map M.fromList cs

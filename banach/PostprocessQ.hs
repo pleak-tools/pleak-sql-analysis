@@ -61,6 +61,10 @@ compute_one_comb_data delta ass dss rrss qs' ps =
     else
         let p   = (product qs) - (product $ zipWith (-) qs (map fromJust ps)) in
         let eps = compute_epsilon delta a q p in
+        --trace (show qs) $
+        --trace (show ps) $
+        --trace (show (a,eps,q,p)) $
+        --trace ("-------------") $
         (a,eps,q,p)
 
 compute_data :: Double -> Double -> [[Double -> Maybe [Double]]] -> [[Bool]] -> [[Double]] -> [[Double]] -> (Double,Double,Double,Double)
@@ -70,8 +74,8 @@ compute_data delta starting_a gss dss rss rrss =
     let ass = zipWith (zipWith (\d rr -> if d then rr else min rr starting_a)) dss rrss in
 
     -- compute the weights (some of them can be unknown)
-    let qss = zipWith (zipWith (\g a -> g a)) gss ass in
-    let pss = zipWith (zipWith (\g r -> g r)) gss rss in
+    let qss = zipWith3 (zipWith3 (\g a r -> g (a*r))) gss ass rss in
+    let pss = zipWith  (zipWith  (\g r   -> g r    )) gss rss in
 
     -- collect all possible variants of q and p
     let cqss = (map (map (\qs -> if elem Nothing qs then Nothing else Just $ product (map fromJust qs))) . allCombsOfLists . map allCombsOfMaybeLists) qss in
@@ -79,6 +83,13 @@ compute_data delta starting_a gss dss rss rrss =
     let eps  = zipWith (compute_one_comb_data delta ass dss rrss) cqss cpss in
 
     let (a,epsilon,q,p) = foldr (\x1@(_,e1,_,_) x2@(_,e2,_,_) -> if e1 < e2 then x1 else x2) (head eps) (tail eps) in
+    --trace ("ass: " ++ show ass) $
+    --trace ("rss: " ++ show rss) $
+    --trace ("qss: " ++ show qss) $
+    --trace ("pss: " ++ show pss) $
+    --trace ("eps: " ++ show eps) $
+    --trace (show (a,epsilon,q,p)) $
+    --trace ("-------------") $
     (a,epsilon,q,p)
 
 optimal_a_epsilon :: Double -> Double -> [[Double -> Maybe [Double]]] -> [[Bool]] -> [[Double]] -> [[Double]] -> Double -> Double -> Double -> Double
@@ -134,12 +145,11 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let bss  = map (extract_bs attMap) plcMapData
   let gss    = zipWith filterWith bss $ map (extract_gs attMap) plcMapData
   let dss    = zipWith filterWith bss $ map (extract_ds attMap) plcMapData
-  let rss'   = zipWith filterWith bss $ map (extract_rs attMap) plcMapData
+  let rss    = zipWith filterWith bss $ map (extract_rs attMap) plcMapData
   let rrss'  = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap) plcMapData
 
   -- further, we assume r = 1 everywhere in each dimension
-  let rrss = zipWith (zipWith (/)) rrss' rss' --rescaled R
-  let rss  = zipWith (zipWith (/)) rss'  rss' --rescaled r
+  let rrss = zipWith (zipWith (/)) rrss' rss --rescaled R
   let r = 1
 
   -- space dimensionality comes from the total number of sensitive variables
@@ -169,7 +179,6 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   traceIOIfDebug debug ("--------")
   traceIOIfDebug debug ("delta: " ++ (show delta))
   traceIOIfDebug debug ("--------")
-  traceIOIfDebug debug ("rss': " ++ (show rss'))
   traceIOIfDebug debug ("rrss': " ++ (show rrss'))
   traceIOIfDebug debug ("rss: " ++ (show rss))
   traceIOIfDebug debug ("rrss: " ++ (show rrss))

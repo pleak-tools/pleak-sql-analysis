@@ -302,14 +302,33 @@ bOperators =
     , InfixL (ABinary AGTint <$ symbol ">~")
     , InfixL (ABinary AGT <$ symbol ">") ]
 
-  , [ InfixL (ABinary AAnd <$ caseInsensKeyWord "and")
-    , InfixL (ABinary AOr  <$ caseInsensKeyWord "or") 
+  , [ InfixL (ABinary AAnd <$ caseInsensKeyWord "and")]
+  , [ InfixL (ABinary AOr  <$ caseInsensKeyWord "or")
     , InfixL (ABinary AXor  <$ caseInsensKeyWord "xor")]
 
   ]
 
 bTerm :: Parser (AExpr VarName)
 bTerm = try aExpr <|> parens bExpr
+
+cExpr :: Parser (AExpr (String,VarState))
+cExpr = makeExprParser cTerm cOperators
+
+cOperators :: [[Operator Parser (AExpr (String,VarState))]]
+cOperators =
+  [
+    [ InfixL (ABinary AAnd <$ caseInsensKeyWord "and")]
+  , [InfixL (ABinary AOr  <$ caseInsensKeyWord "or")]
+  ]
+
+cTerm :: Parser (AExpr (String,VarState))
+cTerm = try cVarStateStmt <|> parens cExpr
+
+cVarStateStmt :: Parser (AExpr (String,VarState))
+cVarStateStmt = do
+    a <- varName
+    b <- varStateVal
+    return $ AVar (a,b)
 
 ------------------------------------------------------------
 ---- Parsing SQL query (simlpified, could be delegated) ----
@@ -584,15 +603,33 @@ function = do
 ---- Parsing policy and attacker file ----
 ------------------------------------------
 policy :: Parser [(M.Map String VarState, Double)]
-policy = many sensitiveSet
+policy = sensitiveFormula <|> many sensitiveSet
+
+sensitiveFormula :: Parser [(M.Map String VarState, Double)]
+sensitiveFormula = do
+
+    cexpr <- cExpr
+    let cs = trace (show cexpr) $ (fromDNFtoList . toDNF) cexpr
+    let n = length cs
+
+    let stateMapList = map M.fromList cs
+    c <- costValue
+    let costList = replicate n (c / fromIntegral n)
+
+    return $ zip stateMapList costList
 
 sensitiveSet :: Parser (M.Map String VarState, Double)
 sensitiveSet = do
   keyWord "leak"
   ps <- many varStateStmt
+  c <- costValue
+  return (M.fromList ps, c)
+
+costValue :: Parser Double
+costValue = do
   keyWord "cost"
   c <- float
-  return (M.fromList ps, c)
+  return c
 
 attacker :: Parser (M.Map String VarState)
 attacker = do
@@ -608,12 +645,16 @@ varStateStmt = do
 
 varStateVal :: Parser VarState
 varStateVal = varStateExact
+  <|> varStateNone
   <|> varStateApprox
-  <|> varStateApproxPrior
+  <|> varStateTotalUnif
   <|> varStateTotal
+  <|> varStateRangeUnif
+  <|> varStateSetUnif
+  <|> varStateRangePrior
+  <|> varStateSetPrior
   <|> varStateRange
   <|> varStateSet
-  <|> varStateNone
 
 varStateExact = do
   keyWord "exact"
@@ -623,12 +664,6 @@ varStateApprox = do
   keyWord "approx"
   r  <- float
   return (Approx r)
-
-varStateApproxPrior = do
-  keyWord "prior"
-  p  <- float
-  r  <- float
-  return (ApproxPrior p r)
 
 varStateTotal = do
   keyWord "total"
@@ -650,6 +685,60 @@ varStateSet = do
           else if length xs1 > 0 then SubSet xs1
           else IntSubSet xs2
   return y
+
+varStateTotalUnif = do
+  keyWord "totalUnif"
+  r  <- integer
+  return (TotalUn r)
+
+varStateRangeUnif = do
+  keyWord "rangeUnif"
+  lb <- signedFloat
+  ub <- signedFloat
+  return (RangeUn lb ub)
+
+varStateSetUnif = do
+  keyWord "setUnif"
+  xs <- many quotedString
+  let xs1 = lefts xs
+  let xs2 = rights xs
+  let y = if length xs1 > 0 && length xs2 > 0 then error $ error_badSetPolicyFormat xs1 xs2
+          else if length xs1 > 0 then SubSetUn xs1
+          else IntSubSetUn xs2
+  return y
+
+varStateRangePrior = do
+  keyWord "rangePrior"
+  lb <- signedFloat
+  xs <- many varStateRangePriorPair
+  return $ RangePr lb (M.fromList xs)
+
+varStateRangePriorPair = do
+  symbol "("
+  x <- signedFloat
+  symbol ","
+  p <- float
+  symbol ")"
+  return (x,p)
+
+varStateSetPrior = do
+  keyWord "setPrior"
+  zs <- many varStateSetPriorPair
+  let (xs,ys) = unzip zs
+  let xs1 = lefts xs
+  let xs2 = rights xs
+  let y = if length xs1 > 0 && length xs2 > 0 then error $ error_badSetPolicyFormat xs1 xs2
+          else if length xs1 > 0 then SubSetPr $ M.fromList (zip xs1 ys)
+          else IntSubSetPr $ M.fromList (zip xs2 ys)
+  return y
+
+varStateSetPriorPair = do
+  symbol "("
+  x <- quotedString
+  symbol ","
+  p <- float
+  symbol ")"
+  return (x,p)
 
 varStateNone = do
   keyWord "none"

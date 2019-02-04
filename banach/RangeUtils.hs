@@ -1,6 +1,6 @@
 module RangeUtils where
 
-import PolicyQ (VarState(..))
+import PolicyQ (VarState(..), getUb)
 import qualified Banach as B (lpnorm, linfnorm)
 
 infinity :: Double
@@ -8,17 +8,23 @@ infinity = 1/0
 
 -- upper bound on the absolute value
 getGubFromVs :: VarState -> Double
-getGubFromVs (Range lb ub) = max (abs lb) ub
+getGubFromVs (Range   lb ub) = max (abs lb) ub
+getGubFromVs (RangeUn lb ub) = max (abs lb) ub
+getGubFromVs (RangePr lb mp) = let ub = getUb lb mp in max (abs lb) ub
 getGubFromVs _             = infinity
 
 -- upper bound on the actual value
 getUbFromVs :: VarState -> Double
-getUbFromVs (Range lb ub) = ub
+getUbFromVs (Range   lb ub) = ub
+getUbFromVs (RangeUn lb ub) = ub
+getUbFromVs (RangePr lb mp) = getUb lb mp
 getUbFromVs _             = infinity
 
 -- lower bound on the actual value
 getLbFromVs :: VarState -> Double
-getLbFromVs (Range lb ub) = lb
+getLbFromVs (Range   lb ub) = lb
+getLbFromVs (RangeUn lb ub) = lb
+getLbFromVs (RangePr lb mp) = lb
 getLbFromVs _             = -infinity
 
 getRangeFromVs :: VarState -> VarState

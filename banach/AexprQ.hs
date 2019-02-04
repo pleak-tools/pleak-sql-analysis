@@ -104,6 +104,28 @@ toCNF = toCNF' . toNNF
     dist e1 (ABinary AAnd e21 e22) = (e1 `dist` e21) `conj` (e1 `dist` e22)
     dist e1 e2                    = e1 `disj` e2
 
+toDNF :: AExpr a -> AExpr a
+toDNF = toDNF' . toNNF
+  where
+    toDNF' :: AExpr a -> AExpr a
+    toDNF' (ABinary AAnd exp1 exp2) = toDNF' exp1 `dist` toDNF' exp2
+    toDNF' (ABinary AOr exp1 exp2) = toDNF' exp1 `disj` toDNF' exp2
+    toDNF' expr                    = expr
+
+    dist :: AExpr a -> AExpr a -> AExpr a
+    dist (ABinary AOr e11 e12) e2 = (e11 `dist` e2) `disj` (e12 `dist` e2)
+    dist e1 (ABinary AOr e21 e22) = (e1 `dist` e21) `disj` (e1 `dist` e22)
+    dist e1 e2                    = e1 `conj` e2
+
+-- This does not take into account negations
+fromDNFtoList :: (Show a) => AExpr a -> [[a]]
+fromDNFtoList expr =
+    case expr of
+        (ABinary AOr  exp1 exp2) -> fromDNFtoList exp1 ++ fromDNFtoList exp2
+        (ABinary AAnd exp1 exp2) -> zipWith (++) (fromDNFtoList exp1) (fromDNFtoList exp2)
+        (AUnary ANot  exp)       -> fromDNFtoList exp
+        (AVar x)                 -> [[x]]
+
 -- fix the abs constructions
 aexprFixAbs (AUnary AAbsEnd (AUnary AAbsBegin x)) = AAbs (aexprFixAbs x)
 

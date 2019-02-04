@@ -81,7 +81,14 @@ error_verifyNorm t  = "INTERNAL ERROR: Could not prove that the database norm is
 
 -- policy analysis error messages
 error_attackerBreaksEverything = "ERROR: impossible to enforce policy against current attacker definition."
-error_badAttackerPolicyCombination attState plcState = "INTERNAL ERROR: no implementation for attacker state " ++ show attState ++ " and policy state " ++ show plcState ++ "."
+error_badAttackerPolicyCombination attState plcState = "ERROR: the combination of attacker state " ++ show attState ++ " and sensittive data state " ++ show plcState ++ " is not supported."
+err_badAttackerPolicy_n x     = "ERROR: negative number of choices in " ++ show x
+err_badAttackerPolicy_range x = "ERROR: lower bound is smaller than upper bound in " ++ show x
+err_badAttackerPolicy_Pr x    = "ERROR: the probbailities should be nonnegative and sum up to 1 in " ++ show x
+err_badAttackerPolicy x       = "ERROR: unsupported attacker state " ++ show x
+err_badPolicy_r x             = "ERROR: negative radius in sensitive data state " ++ show x
+err_badPolicy x               = "ERROR: unsupported sensitive data state " ++ show x
+
 error_unboundedDataType t = "ERROR: data type " ++ t ++ " cannot be included into policy yet."
 error_badPolicyFormat preficedVar = "ERROR: policy format error, \"" ++ preficedVar ++ "\" is expected to be of the form \"tableName.varName\""
 error_badSetPolicyFormat xs1 xs2 = "ERROR: policy format error, should not use strings " ++ show xs1 ++ " and integers " ++ show xs2 ++ " in one set."

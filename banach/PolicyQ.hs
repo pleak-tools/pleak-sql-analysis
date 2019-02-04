@@ -19,27 +19,101 @@ import NormsQ
 ---- policy data structures ----
 -------------------------------
 
+-- TODO use the new constructions also in BanachQ
 data VarState
-  = Exact | None | Approx Double | Total Int | IntSubSet [Int] | SubSet [String] | Range Double Double | ApproxPrior Double Double
+  = Exact | None | Approx Double
+  | IntSubSet   [Int]              | SubSet   [String]              | Range   Double Double                | Total Int
+  | IntSubSetUn [Int]              | SubSetUn [String]              | RangeUn Double Double                | TotalUn Int
+  | IntSubSetPr (M.Map Int Double) | SubSetPr (M.Map String Double) | RangePr Double (M.Map Double Double)
   deriving (Show)
 
 reservedSensRowsKeyword = "sensRows"
+
+getUb :: Double -> M.Map Double Double -> Double
+getUb lb mp = foldr max lb (M.keys mp)
+
+-- verify the "goodness" of attacker an policy states
+isBadPlcState :: String -> VarState -> (Bool,String)
+isBadPlcState var x =
+    case x of
+            Exact -> (False,"")
+            None  -> (False,"")
+            Range _ _   -> if varNameToSubVarName var == reservedSensRowsKeyword then (False,"") else (True, err_badPolicy x)
+            IntSubSet _ -> if varNameToSubVarName var == reservedSensRowsKeyword then (False,"") else (True, err_badPolicy x)
+            Approx r -> if r >= 0 then (False,"") else (True, err_badPolicy_r x)
+            _ -> (True, err_badPolicy x)
+
+isBadAttState :: VarState -> (Bool,String)
+isBadAttState x =
+    case x of
+            Exact -> (False,"")
+            None  -> (False,"")
+
+            Total   n     -> if n >= 0 then (False,"") else (True, err_badAttackerPolicy_n x)
+            TotalUn n     -> if n >= 0 then (False,"") else (True, err_badAttackerPolicy_n x)
+
+            Range   lb ub -> if lb <= ub then (False,"") else (True, err_badAttackerPolicy_range x)
+            RangeUn lb ub -> if lb <= ub then (False,"") else (True, err_badAttackerPolicy_range x)
+            RangePr lb mp -> let prs = M.elems mp in
+                             let ubs = M.keys  mp in
+                             if length (filter (< 0) prs) == 0 && sum prs == 1 then
+                                 if length (filter (< lb) ubs) == 0 then (False,"")
+                                 else (True, err_badAttackerPolicy_range x)
+                             else (True, err_badAttackerPolicy_Pr x)
+
+            SubSet _       -> (False,"")
+            SubSetUn _     -> (False,"")
+            SubSetPr mp    -> let prs = M.elems mp in
+                              if length (filter (< 0) prs) == 0 && sum prs == 1 then (False,"")
+                              else (True, err_badAttackerPolicy_Pr x)
+
+            IntSubSet _    -> (False,"")
+            IntSubSetUn _  -> (False,"")
+            IntSubSetPr mp -> let prs = M.elems mp in
+                              if length (filter (< 0) prs) == 0 && sum prs == 1 then (False,"")
+                              else (True, err_badAttackerPolicy_Pr x)
+
+            _ -> (True, err_badAttackerPolicy x)
+
+-- get all possible values from a state description
+getStateValues :: M.Map String VarState -> String -> [String]
+getStateValues attMap varName =
+    if M.member varName attMap then
+        let varState = (attMap ! varName) in
+            case varState of
+                Range   x y  -> map show [x..(y-1)]
+                RangeUn x y  -> map show [x..(y-1)]
+                RangePr x mp -> let y = getUb x mp in map show [x..(y-1)]
+
+                SubSet   xs -> xs
+                SubSetUn xs -> xs
+                SubSetPr mp -> M.keys mp
+
+                IntSubSet   xs -> map show xs
+                IntSubSetUn xs -> map show xs
+                IntSubSetPr mp -> map show $ M.keys mp
+
+                _ -> error $ error_badAttMapBounds varName varState
+    else error $ error_noAttMapBounds varName
 
 -- the cases in which the given attacker guesses the variable with required precision
 isLeakedVar :: VarState -> VarState -> Bool
 isLeakedVar attState plcState =
     case (attState, plcState) of
-            (Exact,_)                -> True
-            (Approx r1, Approx r2)   -> r1 <= r2
-            (ApproxPrior _ r1, Approx r2) -> r1 <= r2
-            (Total  n1, Total  n2)   -> n1 <= n2
-            (SubSet xs1, SubSet xs2) -> not $ S.isSubsetOf (S.fromList xs2) (S.fromList xs1)
-            (IntSubSet xs1, IntSubSet xs2) -> not $ S.isSubsetOf (S.fromList xs2) (S.fromList xs1)
+
+            (Exact,_)  -> True
+            (None, _)  -> False
+            (_, Exact) -> False
+            (_, None)  -> False
+
             -- here we assume that the actual data belongs to (lb,ub) -- i.e. the attacker knowledge is correct
             -- while (ub - lb) / 2 <= r2 would already be sufficient in the case when the actual data is in the middle,
             -- we only claim immediate leakage if it leaks for sure
-            (Range lb ub, Approx r2) -> (ub - lb) <= r2
-            _                        -> False
+            (Range   lb ub,  Approx r) -> (ub - lb) <= r
+            (RangeUn lb ub,  Approx r) -> (ub - lb) <= r
+            (RangePr lb ubs, Approx r) -> (sum $ map (\ub -> if ub - lb <= r then ubs ! ub else 0) (M.keys ubs)) == 1
+
+            _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 
 -- the variable is not sensitive either if attacker already knows it, or we do not care about it
@@ -70,9 +144,6 @@ verifyVarSecrecy attMap plcMap preficedVar =
             (_, None)    -> []
             (_,Exact)    -> [LZero var]
             (_,Approx r) -> [ScaleNorm (1/r) var]
-            (_,Total _)  -> [LZero var]
-            (_,SubSet _) -> [LZero var]
-            (_,IntSubSet _) -> [LZero var] -- if integers come as a set, we consider l0-norm
             _ -> error $ error_badAttackerPolicyCombination attState plcState
     in
 
@@ -101,9 +172,6 @@ extract_r attMap plcMap var =
     case (attState, plcState) of
             (_,Exact)    -> 1.0 -- compatible with L0-norm
             (_,Approx r) -> r
-            (_,Total _)  -> 1.0 -- this is used only for discrete variables, compatible with L0-norm
-            (_,SubSet _) -> 1.0 -- this is used only for discrete variables, compatible with L0-norm
-            (_,IntSubSet _) -> 1.0 -- this is used only for discrete variables, compatible with L0-norm
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 -- extract whether the dimension has discrete norm
@@ -118,13 +186,7 @@ extract_d attMap plcMap var =
     case (attState, plcState) of
             (_,Exact)    -> True
             (_,Approx r) -> False
-            (_,Total _)  -> True
-            (_,SubSet _) -> True
-            (_,IntSubSet _) -> True
             _ -> error $ error_badAttackerPolicyCombination attState plcState
-
-
--- TODO extract the total weight of the space (will make use of ApproxPrior)
 
 -- extract the function computing probabilities in total space
 extract_gs :: M.Map String VarState -> M.Map String VarState -> [Double -> Maybe [Double]]
@@ -138,14 +200,38 @@ extract_g attMap plcMap var =
     case (attState, plcState) of
             (Exact,_)        -> const $ Just [1.0]     -- the sensitive region already has sensitivity 1
             (None, _)        -> const Nothing        -- no knowledge
-            -- currently, we assume unform distribution for discrete data
-            (Total n, _)    -> (\x -> Just [x / fromIntegral n])
-            (SubSet xs,_)    -> let n = length xs in (\x -> Just [x / fromIntegral n])
-            (IntSubSet xs,_) -> let n = length xs in (\x -> Just [x / fromIntegral n])
-            -- currently, we assume unform distribution for real numbers
-            (Range lb ub,_)  -> let rr = (ub - lb) / 2.0 in (\x -> Just [x / rr])
-            -- this is for the case when the attacker provides certain r himself
-            (ApproxPrior p r, _) -> (\x -> if x == r then Just [p] else Nothing)
+
+            -- unknown distribution
+            (Total n, _)     -> const Nothing
+            (SubSet xs,_)    -> const Nothing
+            (IntSubSet xs,_) -> const Nothing
+            (Range lb ub,_)  -> const Nothing
+
+            -- uniform distribution
+            -- since the distance does not depend on x, it always makes sense to take the entire space for a > 1
+            (TotalUn n, _)     -> (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
+            (SubSetUn xs,_)    -> let n = length xs in (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
+            (IntSubSetUn xs,_) -> let n = length xs in (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
+            -- here the distance does depend on x
+            (RangeUn lb ub,_)  -> let rr = (ub - lb) / 2.0 in (\x -> Just [x / rr])
+
+            -- customized distribution
+            -- we look at all possiblilities for "g 1", and take "g a = 1" for a > 1
+            (SubSetPr mp,_)    -> (\x -> if x == 1 then Just (M.elems mp) else Just (replicate (M.size mp) 1.0))
+            (IntSubSetPr mp,_) -> (\x -> if x == 1 then Just (M.elems mp) else Just (replicate (M.size mp) 1.0))
+
+            -- if the range is given in several segments, we assume that the distribution inside each segment is uniform
+            -- TODO can we do something better?
+            (RangePr lb mp,_)  -> (\x ->
+                                       -- compute the weight of blocks that are fully under x
+                                       let p1 = sum $ map (\ub -> if ub - lb <= x then mp ! ub else 0) (M.keys mp) in
+                                       -- compute the partial weight of the block where x locates
+                                       let ubsL = takeWhile (<= x) (M.keys mp) in
+                                       let ubsR = dropWhile (<  x) (M.keys mp) in
+                                       let ubL = if length ubsL > 0 then last ubsL else lb in
+                                       let ubR = if length ubsR > 0 then head ubsR else getUb lb mp in
+                                       let p2 = if ubL == ubR then 0 else ((x + lb) - ubL) / (ubR - ubL) * (mp ! ubR) in
+                                       Just [p1 + p2])
 
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
@@ -157,31 +243,78 @@ extract_Rs attMap typeMap plcMap =
 extract_R :: M.Map String VarState -> M.Map String VarState -> M.Map String String -> String -> Double
 extract_R attMap plcMap typeMap var =
     let plcState = plcMap ! var in
-    --trace (show attMap) $
-    --trace (show plcMap) $
-    --trace (show typeMap) $
-    --trace "---------" $
     let attState = if M.member var attMap then attMap ! var else None in
     case (attState, plcState) of
             (Exact,_)       -> 1.0 -- compatible with L0-norm
+            (None, Exact)   -> 1.0 -- compatible with L0-norm
             (None, _)       -> let dataType = typeMap ! var in
                                    case dataType of
                                        "int8"   -> 2^64
                                        "bool"   -> 2.0
-                                       _       -> error $ error_unboundedDataType dataType
+                                       "INT8"   -> 2^64
+                                       "BOOL"   -> 2.0
+                                       _        -> 1/0
 
-            (Total n, _)     -> fromIntegral $ n
-            (SubSet xs,_)    -> fromIntegral $ length xs
-            (IntSubSet xs,_) -> fromIntegral $ length xs
-            (Range lb ub,_)  -> (ub - lb) / 2.0
-            -- TODO this currently gives correct results, but could be nicer with ub and lb
-            (ApproxPrior _ r1, _) -> r1
+            (Total n, _)       -> fromIntegral $ n
+            (TotalUn n, _)     -> fromIntegral $ n
+
+            (SubSet   xs,_)    -> fromIntegral $ length xs
+            (SubSetUn xs,_)    -> fromIntegral $ length xs
+            (SubSetPr mp,_)    -> fromIntegral $ M.size mp
+
+            (IntSubSet   xs,_) -> fromIntegral $ length xs
+            (IntSubSetUn xs,_) -> fromIntegral $ length xs
+            (IntSubSetPr mp,_) -> fromIntegral $ M.size mp
+
+            (Range   lb ub,_)  -> (ub - lb) / 2.0
+            (RangeUn lb ub,_)  -> (ub - lb) / 2.0
+            (RangePr lb mp,_)  -> let ub = getUb lb mp in (ub - lb) / 2.0
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 
--- TODO since we scale all repeating variables in the same way, we may take any of them (let it be the first one)
+extractRange plcMaps tableName =
+    let key = preficedVarName tableName reservedSensRowsKeyword in
+    S.toList $ extractRanges S.empty key (map fst plcMaps)
+
+extractRanges indexSet _ [] = indexSet
+extractRanges indexSet key (plcMap:ps) =
+    if M.member key plcMap then
+        let varState = plcMap ! key in
+        let newRange = case varState of
+                Range lb ub    -> S.fromList [round lb .. round (ub-1)]
+                RangePr lb mp  -> let ub = getUb lb mp in S.fromList [round lb .. round (ub-1)]
+                IntSubSet xs   -> S.fromList xs
+                IntSubSetPr mp -> S.fromList (M.keys mp)
+                _            -> error $ error_badPolicySensRows varState
+        in extractRanges (S.union indexSet newRange) key ps
+    else
+        extractRanges indexSet key ps
+
+constructNormData :: [TableName] -> M.Map String VarState -> [(M.Map String VarState, Double)] -> [(([Int], [VarName]), NormFunction, Maybe Double)]
+constructNormData tableNames attMap plcMaps =
+
+    -- check that the attacker knowledge and the sensitive variables have been defined correctly
+    let badAttStates = map isBadAttState $ M.elems attMap in
+    let (plcMapVars,plcMapStates) = unzip $ concat $ map (M.toList . fst) plcMaps in
+    let badPlcStates = zipWith isBadPlcState plcMapVars plcMapStates in
+    let badStates = badAttStates ++ badPlcStates in
+    let (somethingBad,errorMessages) = foldr (\(b1,e1) (b2,e2) -> (b1 || b2, if e1 == "" then e2 else e1 ++ ";\n" ++ e2)) (False,"") badStates in
+    if somethingBad then error errorMessages else
+
+    -- we put together all variables of all sensitive sets to define one norm over all of them
+    -- TODO we currently assume that, if a variable occurs in several sets, it still has the same sensitivity radius
+    let temp = map (constructNormDataSet tableNames attMap . fst) plcMaps in
+    let combinedDataMap = foldr (M.unionWith combineSets) M.empty temp in
+
+    --extract the special variables for row sensitivity
+    let kwlen = length reservedSensRowsKeyword in
+    let tableSensRows = map (extractRange plcMaps) tableNames in
+
+    zipWith (normsFromCombinedData combinedDataMap) tableNames tableSensRows
+
+-- since we scale all repeating variables in the same way, we may take any of them (let it be the first one)
 combineSets :: M.Map String Expr -> M.Map String Expr -> M.Map String Expr
-combineSets m1 m2 = 
+combineSets m1 m2 =
     M.unionWith const m1 m2
 
 normsFromCombinedData :: M.Map TableName (M.Map String Expr) -> TableName -> [Int] -> (([Int], [VarName]), NormFunction, Maybe Double)
@@ -195,35 +328,6 @@ normsFromCombinedData combinedDataMap tableName tableSensRows =
     -- if there are no explicit records for sensitive rows, we consider all of them sensitive by deafult
     let recordedTableSensRows = if length tableSensRows == 0 then [0..] else tableSensRows in
     ((recordedTableSensRows,sensVars),nf, Nothing)
-
-constructNormData :: [TableName] -> M.Map String VarState -> [(M.Map String VarState, Double)] -> [(([Int], [VarName]), NormFunction, Maybe Double)]
-constructNormData tableNames attMap plcMaps =
-    -- we put together all variables of all sensitive sets to define one norm over all of them
-    -- TODO we currently assume that, if a variable occurs in several sets, it still has the same sensitivity radius
-    let temp = map (constructNormDataSet tableNames attMap . fst) plcMaps in
-    let combinedDataMap = foldr (M.unionWith combineSets) M.empty temp in
-
-    --extract the special variables for row sensitivity
-    let kwlen = length reservedSensRowsKeyword in
-    let tableSensRows = map (extractRange plcMaps) tableNames in
-
-    zipWith (normsFromCombinedData combinedDataMap) tableNames tableSensRows
-
-extractRange plcMaps tableName =
-    let key = preficedVarName tableName reservedSensRowsKeyword in
-    S.toList $ extractRanges S.empty key (map fst plcMaps)
-
-extractRanges indexSet _ [] = indexSet
-extractRanges indexSet key (plcMap:ps) =
-    if M.member key plcMap then
-        let varState = plcMap ! key in
-        let newRange = case varState of
-                Range lb ub  -> S.fromList [round lb .. round (ub-1)]
-                IntSubSet xs -> S.fromList xs
-                _            -> error $ error_badPolicySensRows varState
-        in extractRanges (S.union indexSet newRange) key ps
-    else
-        extractRanges indexSet key ps
 
 constructNormDataSet :: [TableName] -> M.Map String VarState -> M.Map String VarState -> M.Map TableName (M.Map String Expr)
 constructNormDataSet tableNames attMap plcMap =

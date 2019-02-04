@@ -241,16 +241,7 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
 
                                      -- use attMap and generate as many queries as there are groups
                                      let groupColNames = map (\(F as b) -> getVarNameFromTableExpr b) (init queryFuns') in
-                                     let groupVarValues = map (\groupVarName -> 
-                                                                  if M.member groupVarName attMap then
-                                                                      let varState = (attMap ! groupVarName) in
-                                                                          case varState of
-                                                                              Range x y -> map show [x..(y-1)]
-                                                                              SubSet xs -> xs
-                                                                              IntSubSet xs -> map show xs
-                                                                              _         -> error $ error_badAttMapBounds groupVarName varState
-                                                                  else error $ error_noAttMapBounds groupVarName) groupVarNames
-                                     in
+                                     let groupVarValues = map (getStateValues attMap) groupVarNames in
                                      let qs = map (\(F as b) -> F as (let x = getVarNameFromTableExpr b in SelectGroup x)) (init queryFuns') in
                                      let q  = (last queryFuns') in
                                      if badQFun q then error $ error_queryExpr_groupBy else

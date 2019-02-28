@@ -24,7 +24,8 @@ data ProgramOptions
     getSigmoidPrecision :: Double,
     getEpsilon       :: Double,
     getBeta          :: Maybe Double,
-    getG             :: Maybe Double
+    getG             :: Maybe Double,
+    numOfQueries     :: Int
   }
 
 programArgs :: Parser ProgramOptions
@@ -47,6 +48,7 @@ programArgs = ProgramOptions
   <*> option auto (short 'e' <> long "epsilon" <> value 1.0 <> help "Specify epsilon (default is 1)")
   <*> optional (option auto (short 'B' <> long "beta" <> help "Specify beta (default is to choose automatically)"))
   <*> optional (option auto (short 'G' <> long "distance-G" <> help "Specify G (the distance between two databases that differ by exactly one row)"))
+  <*> option auto (short 'n' <> long "numOfQueries" <> value 1 <> help "Specify the limit on the number of queries applied to the same data (default is 1)")
 
 getProgramOptions :: IO ProgramOptions
 getProgramOptions = execParser opts

@@ -193,41 +193,48 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let pr_post = 1 / (1 + exp(- a * epsilon) * (q-p) / p)
 
   let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
-  (finalBeta,finalError) <- case fixedBeta of
+  (finalBeta,finalSds,finalError) <- case fixedBeta of
                     Nothing -> do
                         initialBeta <- BQ.findMinimumBeta args epsilon Nothing dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
-                        initialError <- step (Just initialBeta)
-                        repeatUntilGetBestError step initialError initialBeta (epsilon / 5.0) initialBeta initialError
+                        (initialSds,initialError) <- step (Just initialBeta)
+                        repeatUntilGetBestError step initialError initialBeta (epsilon / 5.0) initialBeta initialSds initialError
                     Just beta' -> do
-                        err' <- step (Just beta')
-                        return (beta', err')
+                        (sds',err') <- step (Just beta')
+                        return (beta', sds', err')
   
   let expectedCost = delta * cost
   traceIOIfDebug debug ("params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
 
-  --putStrLn $ intercalate ("\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
-  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (finalError * 100)]
+  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
+  -- TODO we want to output more values to the user
+  --putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0),
+  --                                                                                  show (pr_post * 100.0),
+  --                                                                                  show expectedCost,
+  --                                                                                  show (finalError * 100),
+  --                                                                                  show epsilon,
+  --                                                                                  show finalBeta,
+  --                                                                                  show finalSds]
   -- for PRISMS graphs, we have modified the output, adjusting it to histograms
   -- TODO we want to allow hsitograms if the last query was group by
   -- putStrLn $ intercalate (if alternative args then ";" else "\n\n") [show delta, show finalError]
 
 
-repeatUntilGetBestError :: (Maybe Double -> IO Double) -> Double -> Double -> Double -> Double -> Double -> IO (Double,Double)
-repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestError = do
+repeatUntilGetBestError :: (Maybe Double -> IO (Double,Double)) -> Double -> Double -> Double -> Double -> Double -> Double -> IO (Double,Double,Double)
+repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestSds bestError = do
     let nextBeta = (betaMax + betaMin) / 2.0
-    nextError <- step (Just nextBeta)
-    let (bestBeta', bestError') = if nextError < bestError then (nextBeta, nextError) else (bestBeta, bestError)
+    (nextSds, nextError) <- step (Just nextBeta)
+    let (bestBeta', bestSds', bestError') = if nextError < bestError then (nextBeta, nextSds, nextError) else (bestBeta, bestSds, bestError)
     if (betaMax - betaMin > 0.01) && (betaMax > 0.01) && (betaMin /= 1/0) && (betaMax /= 1/0)
       then do
         --do binary search
         if (prevError <= nextError) then do
-            repeatUntilGetBestError step prevError betaMin nextBeta bestBeta' bestError'
+            repeatUntilGetBestError step prevError betaMin nextBeta bestBeta' bestSds' bestError'
         else do
-            repeatUntilGetBestError step nextError nextBeta betaMax bestBeta' bestError'
+            repeatUntilGetBestError step nextError nextBeta betaMax bestBeta' bestSds' bestError'
       else do
-        return (bestBeta', bestError')
+        return (bestBeta', bestSds', bestError')
 
-performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO Double
+performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO (Double,Double)
 performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
 
   (qr,taskAggr) <- performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
@@ -235,7 +242,7 @@ performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQ
 
   -- take the main results, which is "for all tables"
   let (b, sds) = resultMap ! B.resultForAllTables
-  return ((sds / b) / qr)
+  return (sds, (sds / b) / qr)
 
 
 performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [(String,[Int],Bool)] -> [String] -> [(String, String, OneGroupData, B.TableExpr, (String,String,String))] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (Double,[(String, [(String, (Double, Double))])])

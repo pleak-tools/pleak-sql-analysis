@@ -310,7 +310,7 @@ extractScalarExpr expr =
         Star _ -> AConst 0.0
         Parens _ x -> extractScalarExpr x
 
-        SpecialOp _ (Name _ [Nmc "between"]) [x,x1,x2] -> ABinary AAnd (ABinary AGT (extractScalarExpr x) (extractScalarExpr x1)) (ABinary AGT (extractScalarExpr x2) (extractScalarExpr x))
+        SpecialOp _ (Name _ [Nmc "between"]) [x,x1,x2] -> ABinary AAnd (ABinary AGE (extractScalarExpr x) (extractScalarExpr x1)) (ABinary AGE (extractScalarExpr x2) (extractScalarExpr x))
         InPredicate _ x True (InList _ xs) -> foldr (\ae aes -> ABinary AOr (ABinary AEQ b ae) aes) (ABinary AEQ b a) as
                                               where (a:as) = map extractScalarExpr xs
                                                     b      = extractScalarExpr x

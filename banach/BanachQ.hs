@@ -327,14 +327,24 @@ instance Show ExprQ where
   show (Q x) | x >= 0    = if x == infinity then "99999.99" else show x
              | otherwise = '(' : show x ++ ")"
   show (VarQ x) = x
+
+  -- due to overflow errors, added temporarily rounding for exp here
+  -- show (FunQ f x) = case f of
+  --                      "exp" -> "round(" ++ f ++ '(' : show x ++ ") :: numeric, 64)"
+  --                      _     -> f ++ '(' : show x ++ ")"
   show (FunQ f x) = f ++ '(' : show x ++ ")"
+
   show (OpQ op x y) = '(' : show x ++ ' ' : op ++ ' ' : show y ++ ")"
   show (ListFunQ f xs) = f ++ '(' : intercalate ", " (map show xs) ++ ")"
   show (IfThenElseQ b x y) = "case when " ++ show b ++ " then " ++ show x ++ " else " ++ show y ++ " end"
   show (x :+ y) = '(' : show x ++ " + " ++ show y ++ ")"
   show (x :- y) = '(' : show x ++ " - " ++ show y ++ ")"
   show (x :* y) = '(' : show x ++ " * " ++ show y ++ ")"
+
+  -- due to overflow errors, added temporarily rounding for sigmoids here
+  -- show (x :/ y) = "round((" ++ show x ++ " / " ++ show y ++ ") :: numeric, 64)"
   show (x :/ y) = '(' : show x ++ " / " ++ show y ++ ")"
+
   show (x :** y) = '(' : show x ++ " ^ " ++ show y ++ ")"
   show (Select (Subquery x y) fr wh) = show (Subquery x (Select y fr wh))
   show (Select (GroupBy (x `Where` y) g h) fr wh) = show (Select (GroupBy x g h) fr ('(' : wh ++ ") AND " ++ y))
@@ -574,6 +584,11 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens subQueryMa
           vs = varStates !! i
           y = exp (a * (x - c))
           z = y / (y + 1)
+
+          -- tested whether 1 / (1 + 1/y) preforms better than y / (y + 1)
+          -- y' = exp (a * (c - x))
+          -- z' = 1 / (1 + y')
+
           a' = abs a
           ub = case vs of Range lb ub -> let x = ub
                                              y = exp (a * (x - c))
@@ -594,6 +609,11 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens subQueryMa
           b = gsens
           y = exp (a * (gx - c))
           z = y / (y + 1)
+
+          -- tested whether 1 / (1 + 1/y) preforms better than y / (y + 1)
+          --y' = exp (a * (c - gx))
+          --z' = 1 / (1 + y')
+
           a' = abs a
           gx_ub = getUbFromAr ar
           ub = if isInfinite gx_ub then infinity else let gx = gx_ub
@@ -613,6 +633,11 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens subQueryMa
           y = exp (ab * (x - c))
           y' = exp (aa * (x - c))
           z  = y' / (y'+1)
+
+          -- tested whether 1 / (1 + 1/y) preforms better than y / (y + 1)
+          --y'' = exp (aa * (c - x))
+          --z'' = 1 / (1+y'')
+
           a' = abs ab
           x_ub = getUbFromVs vs
           ub = case vs of Range lb ub -> let x = x_ub
@@ -637,6 +662,11 @@ analyzeExpr row sensitiveVarSet varStates colTableCounts computeGsens subQueryMa
           y'' :: Double -> ExprQ -- choose ab automatically from beta
           y'' beta = let ab = (beta - beta2) / b in exp (ab * (gx - c))
           z = y' / (y' + 1)
+
+          -- tested whether 1 / (1 + 1/y) preforms better than y / (y + 1)
+          --y''' = exp (aa * (c - gx))
+          --z''' = 1 / (1+y''')
+
           a' = abs ab
           gx_ub = getUbFromAr ar
           ub = if isInfinite gx_ub then infinity else let gx = gx_ub
@@ -1079,6 +1109,10 @@ performAnalyses args epsilon fixedBeta dataPath separator initialQuery colNames 
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Computing the initial query:"
   when debug $ putStrLn initialQuery
+
+  -- used for generating CSF benchmarks
+  -- putStrLn (initialQuery ++ ";")
+
   qr <- if (dbSensitivity args) then sendDoubleQueryToDb args initialQuery else (do return 0)
 
   when (dbSensitivity args && debug) $ putStrLn (show qr)
@@ -1316,6 +1350,15 @@ performAnalysis args epsilon fixedBeta initialQr fromPart wherePart tableName an
     when debug $ putStrLn (show sds ++ ";")
     sds_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show sds) else (do return 0)
     when (dbSensitivity args && debug) $ printf "database returns %0.6f\n" sds_value
+
+    -- used for generating CSF benchmarks
+    --putStrLn ("\\echo $$" ++ tableName)
+    --putStrLn ("\\echo " ++ show beta)
+    --putStrLn (show qr ++ ";")
+    --putStrLn (show sds ++ ";")
+    --when (dbSensitivity args) $ sendDoubleQueryToDb args (show qr) >>= \ qr -> printf "\\echo %0.6f %0.3f\n" qr (abs (qr / initialQr - 1) * 100)
+    --when (dbSensitivity args) $ printf "\\echo %0.6f\n" sds_value
+
 
     let tableGJustInf = case tableG of Just g | isInfinite g -> True; _ -> False
     (combinedSens_value,combinedRes,smoothingData) <- if combinedSens args && not tableGJustInf

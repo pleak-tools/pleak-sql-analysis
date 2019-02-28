@@ -543,7 +543,7 @@ aexprToString aexpr =
         ABinary ALTint x1 x2 -> "(" ++ aexprToString x1 ++ " < " ++ aexprToString x2 ++ ")"
         ABinary ALEint x1 x2 -> "(" ++ aexprToString x1 ++ " <= " ++ aexprToString x2 ++ ")"
         ABinary AEQint x1 x2 -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
-        ABinary AGEint x1 x2 -> "(" ++ aexprToString x1 ++ " => " ++ aexprToString x2 ++ ")"
+        ABinary AGEint x1 x2 -> "(" ++ aexprToString x1 ++ " >= " ++ aexprToString x2 ++ ")"
         ABinary AGTint x1 x2 -> "(" ++ aexprToString x1 ++ " > " ++ aexprToString x2 ++ ")"
         ABinary AEQstr x1 x2 -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
         ABinary ALike x1 x2 -> "(" ++ aexprToString x1 ++ " LIKE " ++ aexprToString x2 ++ ")"
@@ -746,9 +746,9 @@ aexprSubstitute aexprMap aexpr =
         ABinary AOr  x1 x2 -> ABinary AOr (processRec x1) (processRec x2)
         ABinary AXor x1 x2 -> ABinary AXor (processRec x1) (processRec x2)
         ABinary ALT x1 x2  -> ABinary ALT (processRec x1) (processRec x2)
-        ABinary ALE x1 x2  -> ABinary ALT (processRec x1) (processRec x2)
+        ABinary ALE x1 x2  -> ABinary ALE (processRec x1) (processRec x2)
         ABinary AEQ  x1 x2 -> ABinary AEQ (processRec x1) (processRec x2)
-        ABinary AGE x1 x2  -> ABinary AGT (processRec x1) (processRec x2)
+        ABinary AGE x1 x2  -> ABinary AGE (processRec x1) (processRec x2)
         ABinary AGT x1 x2  -> ABinary AGT (processRec x1) (processRec x2)
         ABinary AEQstr x1 x2 -> ABinary AEQint (processRec x1) (processRec x2)
         ABinary ALTint x1 x2 -> ABinary ALTint (processRec x1) (processRec x2)

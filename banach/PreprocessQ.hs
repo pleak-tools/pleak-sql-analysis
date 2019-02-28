@@ -222,7 +222,7 @@ addGroupToQuery grName (F as b) =
     (F as b')
 
 
--- TODO we also want to extract the table namses and aliases of intermediate tables for the type map
+-- TODO we also want to extract the table names and aliases of intermediate tables for the type map
 processQuery :: TableName -> (M.Map TableName Query) -> (M.Map String VarState) -> TableName -> TableAlias -> TableName -> 
                 ([[TableName]], [[TableAlias]],[[TableName]], [(TableAlias,TableName)], [GroupData], [Function], [[AExpr VarName]])
 processQuery outputTableName queryMap attMap taskName tableAlias tableName =
@@ -350,7 +350,9 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let debug = not (alternative args)
     let policy = policyAnalysis args
 
-    when debug $ putStrLn $ "\\echo ##========== Query " ++ inputQuery ++ " ==============="
+    -- used for generating CSF benchmarks
+    --putStrLn $ "\\echo ##" ++ inputQuery
+
     let dataPath = reverse $ dropWhile (/= '/') (reverse inputSchema)
 
     queryFileContents <- readInput inputQuery
@@ -603,7 +605,7 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     let groupBy  = if hasGroups groups then " GROUP BY " ++ (intercalate ", " (getGroupColName groups)) else "" in
     let alias    = if isIntermediateQueryName queryName && isAggrQuery query then " AS " ++ (queryNameToVarName queryName) else "" in
     let mainSelect = "SELECT " ++ groupVar ++ queryStr ++ alias in
-    let mainFrom   = intercalate ", " directTables in
+    --let mainFrom   = intercalate ", " directTables in
     let mainWhere  = if length filtersStr == 0 then "true" else intercalate " AND " filtersStr in
 
     -- the groups themselves do not need to be processed, so discard them from the list of subtables
@@ -611,7 +613,9 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     let subFroms = map (\x -> "(" ++ constructInitialQuery subQueryDataMap inputTableMap (varNameToQueryName x) ++ ") AS " ++ (varNameToTableName x)) subIntermediateVarList in
 
     -- add the subqueries to the FROM list
-    (mainSelect ++ " FROM " ++ mainFrom ++ (if length subFroms > 0 then "," ++ intercalate "," subFroms else "") ++ " WHERE " ++ mainWhere ++ groupBy)
+
+    (mainSelect ++ " FROM " ++ (intercalate ", " (directTables ++ subFroms)) ++ " WHERE " ++ mainWhere ++ groupBy)
+    --(mainSelect ++ " FROM " ++ mainFrom ++ (if length subFroms > 0 then "," ++ intercalate "," subFroms else "") ++ " WHERE " ++ mainWhere ++ groupBy)
 
 
 getQueryData :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String

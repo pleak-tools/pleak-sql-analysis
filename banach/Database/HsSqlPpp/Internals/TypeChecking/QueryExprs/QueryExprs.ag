@@ -1,0 +1,258 @@
+
+{-
+basic query expression type checking:
+
+take the environment produced by the tref
+feed it into the selectlist
+
+take the type produced in the select list and pass it up
+
+-}
+
+include "TypeChecking/QueryExprs/TableRefs.ag"
+include "TypeChecking/QueryExprs/SelectLists.ag"
+
+
+attr QueryExpr
+  syn upType :: {Maybe [(Text,TypeExtra)]}
+  inh expectedType :: {Maybe [TypeExtra]}
+
+attr WithQuery
+  syn upType :: {Maybe [(Text,TypeExtra)]}
+  syn name :: {Text}
+  syn colAliases :: {Maybe [NameComponent]}
+  inh catExtIncomp :: {Either [TypeError] Catalog}
+
+
+
+attr WithQueryList
+  syn catExtComp :: {Either [TypeError] Catalog}
+  inh catExtIncomp :: {Either [TypeError] Catalog}
+
+sem WithQueryList
+  | Cons
+        tl.catExtIncomp =
+          do
+          let getWithEx (WithQuery _ _ _ ex) = ex
+          upType' <- maybe (Left . anErrs . ann . getWithEx $ @hd.annotatedTree) Right
+            @hd.upType
+          colTyPairs <- mapM (secondM typeToCatName) upType'
+          colTyPairs' <- case @hd.colAliases of
+            Just alsNms -> do
+              unless (length alsNms == length colTyPairs) $
+                Left [BadCatalogUpdate "number of aliases differs from number of expressions in the select"]
+              return $ zip (map ncStrT alsNms) $ map snd colTyPairs
+            Nothing -> return colTyPairs
+          updateCatalog [CatCreateTable ("public", @hd.name ) colTyPairs'] =<< @lhs.catExtIncomp
+        hd.cat =
+          case @lhs.catExtIncomp of
+            Right catExtIncomp -> catExtIncomp
+            Left _ -> @lhs.cat
+  | Nil
+        lhs.catExtComp = @lhs.catExtIncomp
+
+sem WithQuery
+  | WithQuery
+        lhs.name = ncStrT @name
+        lhs.annotatedTree = WithQuery @ann.annotatedTree @name @colAliases @ex.annotatedTree
+        lhs.colAliases = @colAliases
+
+        loc.tpee:: {Either [TypeError] [(Text,TypeExtra)]}
+        loc.tpe :: {Either [TypeError] TypeExtra}
+        loc.tpee = maybe (Left []) Right @ex.upType
+
+        loc.tpe = liftM (mkTypeExtra . CompositeType) @loc.tpee
+
+        lhs.upType = either (const Nothing) Just @loc.tpee
+
+sem QueryExpr
+  | WithQueryExpr
+       withQe.cat =
+         case @withs.catExtComp of
+           Right catExtComp -> catExtComp
+           Left _ -> @lhs.cat
+       withs.catExtIncomp = return @lhs.cat
+
+       lhs.annotatedTree = 
+         case @withs.catExtComp of
+           Right _ -> WithQueryExpr (@ann.annotatedTree) (@withs.annotatedTree) (@withQe.annotatedTree)
+           Left tyErrs -> WithQueryExpr (emptyAnnotation { anType = Nothing, anErrs = tyErrs })
+             (@withs.annotatedTree) (@withQe.annotatedTree)
+
+{
+secondM :: Functor f => (t -> f a) -> (t1, t) -> f (t1, a)
+secondM f (a,b) = (a,) <$> f b
+}
+
+--support for correlated subqueries
+attr QueryExpr
+  inh outerDownEnv :: {Maybe Environment}
+sem Statement
+  | QueryStatement ex.outerDownEnv = Nothing
+sem TableRef
+  | SubTref sel.outerDownEnv = Nothing
+sem WithQuery
+  | WithQuery ex.outerDownEnv = Nothing
+sem InList
+  | InQueryExpr sel.outerDownEnv = Nothing
+
+sem WithQuery
+  | WithQuery
+        ann.tpe = Left []
+        ex.expectedType = liftM (map snd) @ex.upType
+
+sem QueryExpr
+    | Select
+        selSelectList.downEnv = @selTref.upEnv
+        selGroupBy.downEnv = @selTref.upEnv
+        selHaving.downEnv = @selTref.upEnv
+{-
+typechecking order by:
+order by can reference all the identifiers that the select list can
+additionally, can reference the output columns by name or index
+
+the punchline is that you can reference an output column by name, but
+not as part of an expression:
+
+'order by a' orders by an output column named a or if there isn't one,
+a tref column named a. if you write 'order by a + 1', and there is an
+output column named a and a tref column named a, then it uses the tref
+column
+
+so which a you refer to depends on the syntactic context even through
+the environment is the same in both cases.
+
+Going to punt on trying to typecheck that.
+
+-}
+        selOrderBy.downEnv = E.orderByEnvironment @selSelectList.upEnv @selTref.upEnv
+        loc.tpee = maybe (Left []) Right @selSelectList.upType
+        -- correlated subquery support - combine the identifiers
+        -- coming from outside the query expr
+        selWhere.downEnv = maybe @selTref.upEnv
+                            (\e -> E.createCorrelatedSubqueryEnvironment e @selTref.upEnv)
+                            @lhs.outerDownEnv
+
+sem QueryExpr
+    | Select CombineQueryExpr Values WithQueryExpr
+        loc.tpee:: {Either [TypeError] [(Text,TypeExtra)]}
+        loc.tpe :: {Either [TypeError] TypeExtra}
+        -- wrap the names and types in a composite which
+        -- fits with the annotation type
+        loc.tpe = liftM (mkTypeExtra . CompositeType) @loc.tpee
+        -- the tpe and the uptype aren't the same (because of the wrapping)
+        -- but are equivalent
+        lhs.upType = either (const Nothing) Just @loc.tpee
+
+-- temp
+
+sem QueryExpr
+    | WithQueryExpr
+        loc.tpee = maybe (Left []) Right @withQe.upType
+    | Values
+        loc.tpee = @qeValues.upType
+        qeValues.expectedCast=True
+    | CombineQueryExpr
+        loc.tpee =
+          do
+          a <- maybe (Left []) Right @cqQe0.upType
+          b <- maybe (Left []) Right @cqQe1.upType
+          unless (length a == length b) $ Left [IncompatibleUnionTypes (CompositeType a) (CompositeType b)]
+          let uts = zipWithM (\(_,te1) (_,te2) -> resolveResultSetTypeExtra @lhs.cat [te1,te2])
+                        a b
+          case uts of
+            Left{} -> Left [IncompatibleUnionTypes (CompositeType a) (CompositeType b)]
+            Right uts' -> return $ zipWith (\(n,_) te -> (n,te)) a uts'
+
+attr ScalarExprTransposedList
+  syn upType :: {Maybe [TypeExtra]}
+  inh expectedType :: {Maybe [TypeExtra]}
+  inh expectedCast :: Bool
+
+sem ScalarExprTransposedList
+    | Cons
+        lhs.upType = liftM2 (:) @hd.upType @tl.upType
+        hd.expectedType = liftM fst $ splitTypeExtraList @lhs.expectedType
+        tl.expectedType = liftM snd $ splitTypeExtraList @lhs.expectedType
+        hd.expectedCast = @lhs.expectedCast
+        tl.expectedCast = @lhs.expectedCast
+    | Nil
+        lhs.upType = Just []
+
+attr ScalarExprListList
+  inh downEnv :: Environment
+  -- type errors can happen at this level, so I have to declare upType as Either
+  syn upType :: {Either [TypeError] [(Text,TypeExtra)]}
+  inh expectedType :: {Maybe [TypeExtra]}
+  inh expectedCast :: Bool
+
+sem ScalarExprListList
+    | Cons
+        lhs.upType =
+          do
+          a <- maybe (Left [InternalError "type error in VALUES clause"]) Right @hd.upType
+          b <- @tl.upType
+          -- ImplicitCastToDo: not sure that something like "VALUES ((),())" is not allowed
+          unless (not $ null a) $ Left [InternalError "empty row in VALUES clause"]
+          let a' = map ("",) a
+              itError = Left [IncompatibleUnionTypes (CompositeType a') (CompositeType b)]
+          unless (null b || length a == length b) itError
+          if null b
+            then return $ zip [T.pack ("values%" ++ show k) | k <- [(0::Int)..]] a
+            else
+              do
+              let uts = zipWithM (\te1 (_,te2) -> resolveResultSetTypeExtra @lhs.cat [te1,te2])
+                            a b
+              case uts of
+                Left{} -> itError
+                Right uts' -> return $ zipWith (\(n,_) te -> (n,te)) b uts'
+        hd.expectedCast = @lhs.expectedCast
+        tl.expectedCast = @lhs.expectedCast
+    | Nil lhs.upType = Right []
+
+attr MaybeBoolExpr ScalarExprDirectionPairList ScalarExprDirectionPair
+     JoinExpr InList
+  inh downEnv :: Environment
+
+sem InList
+    | InList InQueryExpr
+        loc.tpe = Left []
+
+sem JoinExpr
+    | JoinOn JoinUsing
+        loc.tpe = Left []
+
+{-
+
+quick hack for typechecking cube in group by
+
+create an alternative new rule for group by ScalarExprList
+
+we should add a type to the cube 'function call' so there aren't
+untyped nodes in the tree, and that is all we really need
+
+
+-}
+
+sem QueryExpr
+    | Select
+        loc.selGroupBy =
+            case @selGroupBy.annotatedTree of
+                [App e nm@(Name _ [Nmc "cube"]) es] ->
+                  -- just put in a dummy int4 type for now
+                  [App e{anType = (Just (mkTypeExtra $ ScalarType "int4"))
+                        ,anErrs = []
+                        } nm es]
+                x -> x
+        -- there must be a better way to do this?
+        lhs.annotatedTree = Select @ann.annotatedTree
+                                   @selDistinct
+                                   @selSelectList.annotatedTree
+                                   @selTref.annotatedTree
+                                   @selWhere.annotatedTree
+                                   @loc.selGroupBy
+                                   @selHaving.annotatedTree
+                                   @selOrderBy.annotatedTree
+                                   @selLimit.annotatedTree
+                                   @selOffset.annotatedTree
+                                   @selOption

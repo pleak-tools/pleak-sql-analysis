@@ -1,0 +1,84 @@
+
+
+{-
+
+typenames - translate from the syntactic typenames to semantic types
+
+typenames always refer to existing types, aren't used syntactically to
+when creating new types, so lookup the type in the catalog here to
+check it exists
+
+-}
+
+attr TypeName
+  syn namedType :: {Maybe TypeExtra}
+
+sem TypeName
+     | SimpleTypeName ArrayTypeName SetOfTypeName PrecTypeName Prec2TypeName
+{-
+for a simple type:
+get an either [type error] type
+
+if it is left error - want to attach the error to the typename
+node. don't want to duplicate this error to the name node or the
+parent node
+
+if it is right type: send the type to the parent. don't want to
+annotated the typename or the name with the type since this annotation
+isn't applicable to either node type
+
+TODO: add tests for cast which make sure there is only one type in the
+tree when successful, and only one type error in the tree when the
+typename isn't recognised
+
+-}
+         loc.tpe :: {Either [TypeError] TypeExtra}
+         lhs.namedType = either (const Nothing) Just @loc.tpe
+         ann.tpe = either Left (const $ Left []) @loc.tpe
+     | SimpleTypeName PrecTypeName Prec2TypeName
+         tn.tpe = Left []
+
+-- pass down to Name to set the annotation on it
+-- This isn't used yet, need to review when more of the typechecking
+-- is written to check this attribute is needed
+
+attr Name
+  inh tpe :: {Either [TypeError] TypeExtra}
+
+sem TypeName
+     | SimpleTypeName ArrayTypeName SetOfTypeName PrecTypeName Prec2TypeName
+         loc.canType :: {[NameComponent] -> [NameComponent]}
+         loc.canType = \x -> case x of
+                          -- todo: built in types might also exist in a schema
+                          -- maybe this should be in the catalog lookup code, which will match a typename
+                          -- and return the canonical name. Have to
+                          -- refactor the code because the dialect
+                          -- contains the catalog at the moment and
+                          -- this change would need the catalog to
+                          -- access the dialect
+                          -- also, this doesn't do quoted built in names
+                          [Nmc nc] -> [Nmc $ T.unpack $ canonicalizeTypeName (tcfDialect @lhs.flags) $ T.pack nc]
+                          _ -> x
+     | SimpleTypeName
+         loc.tpe = mkTypeExtraNN `liftM` catLookupType @lhs.cat (@loc.canType $ nameComponents @tn.originalTree)
+{-
+todos: check the array type exists
+check that this type can be used as a setof
+check that the type can accept one or two modifiers
+-}
+
+     | ArrayTypeName
+        loc.tpe = maybe (Left []) Right @typ.namedType
+                  >>= Right . (\t -> t{teType = ArrayType $ teType t})
+     | SetOfTypeName
+        loc.tpe = maybe (Left []) Right @typ.namedType
+                  >>= Right . (\t -> t{teType = Pseudo $ SetOfType $ teType t})
+     | PrecTypeName
+        loc.tpe = ((\t -> t{tePrecision = Just $ fromIntegral @prec}) . mkTypeExtraNN)
+                  `liftM` catLookupType @lhs.cat (nameComponents @tn.originalTree)
+     | Prec2TypeName
+        loc.tpe = ((\t -> t{tePrecision = Just $ fromIntegral @prec,
+                            teScale = Just $ fromIntegral @prec1})
+                        . mkTypeExtraNN)
+                  `liftM` catLookupType @lhs.cat (nameComponents @tn.originalTree)
+

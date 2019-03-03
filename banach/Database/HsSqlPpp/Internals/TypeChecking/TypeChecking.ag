@@ -1,0 +1,312 @@
+
+imports {
+import Data.Text (Text)
+import qualified Database.HsSqlPpp.Internals.TypeChecking.Environment as E
+import Database.HsSqlPpp.Internals.TypeChecking.Environment (Environment)
+import Database.HsSqlPpp.Internals.TypesInternal
+import Database.HsSqlPpp.Internals.Dialect
+import Database.HsSqlPpp.Internals.Catalog.CatalogInternal
+import Database.HsSqlPpp.Internals.Catalog.CatalogTypes
+import Database.HsSqlPpp.Internals.Catalog.CatalogBuilder
+import Database.HsSqlPpp.Internals.TypeChecking.TypeConversion.TypeConversion
+
+-- todo: find a better way to do this, this information should come
+-- via the dialect or catalog in the attributes
+import Database.HsSqlPpp.Dialects.OdbcCatalog
+
+import Control.Monad
+import Data.List
+import Data.Maybe
+import Data.Char
+import Text.Read
+import Control.Applicative
+}
+
+-- public api functions
+{
+
+-- | some options when typechecking
+data TypeCheckFlags =
+    TypeCheckFlags
+    { -- | add qualifiers to unqualified ids where possible
+     tcfAddQualifiers :: Bool
+     -- | add full aliases to every tableref and subselect
+    ,tcfAddFullTablerefAliases :: Bool
+     -- | add explicit aliases to all select items
+    ,tcfAddSelectItemAliases :: Bool
+     -- | expand stars in select lists to explicit list columns
+    ,tcfExpandStars :: Bool
+    ,tcfDialect :: Dialect}
+    deriving (Show,Eq)
+
+-- | Typechecks the ast, and returns the updated catalog (which
+-- includes changes from any ddl statements in the ast).
+typeCheckStatements :: TypeCheckFlags -> Catalog -> [Statement] -> (Catalog,[Statement])
+typeCheckStatements f cat sts =
+    let t = sem_Root (Root sts)
+        ta = wrap_Root t Inh_Root {cat_Inh_Root = cat
+                                  ,flags_Inh_Root = f
+                                  {-,lib_Inh_Root = emptyBindings
+                                  ,idenv_Inh_Root = emptyIDEnv "tcs"-}}
+        tl = annotatedTree_Syn_Root ta
+        cat1 = cat --producedCat_Syn_Root ta
+    in case tl of
+         Root r -> (cat1,fixTree (tcfDialect f) r)
+-- | Typecheck a query expr
+typeCheckQueryExpr :: TypeCheckFlags -> Catalog -> QueryExpr -> QueryExpr
+typeCheckQueryExpr f cat qe =
+   let (_,[QueryStatement _ qe']) = typeCheckStatements f cat [QueryStatement emptyAnnotation qe]
+   in qe'
+
+-- | Not working yet. Typechecks a statement possibly containing ?
+-- placeholders. These are annotated with the 'inferred type', and the
+-- stType annotation on the return value can be used to get this info
+-- easily. Returns Left if the statement is not a query,insert,update or delete
+-- statement
+{-typeCheckParameterizedStatement :: TypeCheckFlags -> Catalog -> Statement -> Either String Statement
+typeCheckParameterizedStatement f cat st =
+    case st of
+      QueryStatement _ _ -> tc
+      Insert _ _ _ _ _ -> tc
+      Update _ _ _ _ _ _ -> tc
+      Delete _ _ _ _ _ -> tc
+      _ -> Left "requires select, update, insert or delete statement"
+    where
+      tc = let tl = typeCheckStatements f cat [st]
+           in case tl of
+                (_,[st1]) -> Right st1
+                _ -> error "impossible happened in typeCheckPS!"
+-}
+{-
+-- | type check a scalar expr
+typeCheckScalarExpr :: TypeCheckFlags -> Catalog -> ScalarExpr -> ScalarExpr
+typeCheckScalarExpr f cat ex =
+    let t = sem_ScalarExprRoot (ScalarExprRoot ex)
+        rt = (annotatedTree_Syn_ScalarExprRoot
+              (wrap_ScalarExprRoot t Inh_ScalarExprRoot {cat_Inh_ScalarExprRoot = cat
+                                                        ,flags_Inh_ScalarExprRoot = f
+                                                        ,downEnv_Inh_ScalarExprRoot = E.emptyEnvironment
+                                                        {-,lib_Inh_ScalarExprRoot = emptyBindings
+                                                        ,idenv_Inh_ScalarExprRoot = emptyIDEnv "t
+cse"-}}))
+    in case rt of
+         ScalarExprRoot e -> fixTree e -}
+
+typeCheckScalarExpr ::  TypeCheckFlags -> Catalog -> Environment
+                          -> ScalarExpr -> ScalarExpr
+typeCheckScalarExpr f cat env ex =
+    let t = sem_ScalarExprRoot (ScalarExprRoot ex)
+        rt = annotatedTree_Syn_ScalarExprRoot
+                $ wrap_ScalarExprRoot t
+                    Inh_ScalarExprRoot{cat_Inh_ScalarExprRoot = cat
+                                      ,flags_Inh_ScalarExprRoot = f
+                                      ,downEnv_Inh_ScalarExprRoot = env}
+    in case rt of
+         ScalarExprRoot e -> fixTree (tcfDialect f) e
+
+}
+
+{-
+
+main global attributes
+
+-}
+
+attr AllNodes Root ScalarExprRoot Annotation
+  inh cat :: Catalog
+     ,flags :: TypeCheckFlags
+  syn annotatedTree :: self -- annotated tree is the output tree with the types added
+     ,originalTree :: self -- this is the original tree, should not be changed
+
+-- the types and errors are pulled out of the attributes, which
+-- are set by the sem for each type/ ctor in the various files in
+-- TypeChecking/ and put into the annotated tree output
+
+attr Annotation
+  inh tpe :: {Either [TypeError] TypeExtra}
+
+attr AllNodes Annotation
+  inh imCast :: {Maybe TypeExtra}
+
+sem Root
+   | Root
+       statements.imCast = Nothing
+sem ScalarExprRoot
+   | ScalarExprRoot
+       expr.imCast = Nothing
+
+sem Annotation
+  | Annotation
+      lhs.annotatedTree =
+          let t = either (const Nothing) Just @lhs.tpe
+              es = either id (const []) @lhs.tpe
+          in Annotation @anSrc t es @lhs.imCast @anCatUpd
+
+
+include "TypeChecking/ScalarExprs.ag"
+include "TypeChecking/QueryExprs/QueryExprs.ag"
+include "TypeChecking/Misc.ag"
+include "TypeChecking/Statements.ag"
+include "TypeChecking/Updates.ag"
+include "TypeChecking/Boilerplate.ag"
+
+--include "TypeChecking/AddTrefAliases.ag"
+--{
+--addTrefAliases = id
+--}
+
+{
+
+-- | run on a typechecked tree. Finds all the places where an implicit
+-- cast has been used in the typechecking and inserts an explicit cast
+addExplicitCasts :: Data a => a -> a
+addExplicitCasts = transformBi removeDoubleCasts . transformBi addCast
+  where
+    addCast :: ScalarExpr -> ScalarExpr
+    addCast e = fromMaybe e $ do
+                  t <- anImplicitCast (getAnnotation e)
+                  n <- nameOfType $ teType t
+                  return $ Cast emptyAnnotation e n
+    -- addCast isn't very smart, so remove any unneeded casts
+    -- that it has inserted. Only do this when have two
+    -- nested casts which cast to the same type, so this
+    -- shouldn't cause problems with sane sql
+    removeDoubleCasts :: ScalarExpr -> ScalarExpr
+    removeDoubleCasts e = case e of
+      (Cast a (Cast _ e' t1) t)
+         | resetAnnotations t1 == resetAnnotations t -> Cast a e' t
+      e' -> e'
+    resetAnnotations = transformBi (const emptyAnnotation)
+-- | variation of the above, which uses ImplicitCast ctor
+addImplicitCasts :: Data a => Catalog -> a -> a
+addImplicitCasts cat = transformBi removeDoubleCasts . transformBi addCast
+  where
+    addCast:: ScalarExpr -> ScalarExpr
+    addCast e = fromMaybe e $ do
+                  te <- anImplicitCast ann'
+                  -- ImplicitCastToDo: why anImplicitCast is not Nothing above Star
+                  _ <- nameOfType $ teType te -- in order to preserve the old logic
+                  -- guard $ isCastable e $ teType te
+                  guard $ anType ann' /= Just te
+                  return $ ImplicitCast emptyAnnotation e te
+      where
+        _isCastable:: ScalarExpr -> Type -> Bool
+        _isCastable e' to = fromMaybe False $ do
+            from <- liftM teType $ anType $ getAnnotation e'
+            either  (const $ if from == UnknownType then Just True else Nothing) Just
+                    $ catCast cat ImplicitCastContext from to
+        ann' = getAnnotation e
+    removeDoubleCasts:: ScalarExpr -> ScalarExpr
+    removeDoubleCasts e = fst $ accumulateCasts e
+    -- For each implicit cast, if there is a sequence of implicit casts right under it,
+    --    that remained after bottom-up application of the algorithm being described:
+    --  1. Check if there is a type in the sequence (of argument types of implicit casts),
+    --      which is implicitly castable to the target type of the current implicit cast,
+    --      according to the current catalog.
+    --  2. If there is such a type, replace a sequence of casts that starts at this type with
+    --      a single cast, and shorten the list of casts to be further investigated (snd of
+    --      output type of this function).
+    --    2.1. Analyze the list bottom-up, so that the longest possible sequence of casts is
+    --      replaced.
+    --  3. If there is no such a type, just add the current cast to the list.
+    -- Reset the list on a node other than ImplicitCast.
+    accumulateCasts:: ScalarExpr -> (ScalarExpr,[(ScalarExpr,Type)])
+    accumulateCasts e = case e of
+        ImplicitCast a e' te
+          ->  let (e1,ets) = accumulateCasts e'
+                  eStart = ImplicitCast a e1 te
+                  isCastable (_,t) = either (const False) id
+                      $ catCast cat ImplicitCastContext t $ teType te
+                  f z xs = case dropWhile (not . isCastable) xs of
+                      [] -> z
+                      xs'@((e'',_):rest) -> f (ImplicitCast a e'' te, xs') rest
+              in case anType $ getAnnotation e1 of
+                    Nothing -> (eStart,[]) -- cut here (should not happen in practice)
+                    Just te1 -> f (eStart, (e1, teType te1):ets) ets
+        _ -> (e,[])
+
+nameOfType :: Type -> Maybe TypeName
+nameOfType (ScalarType t) = Just $ SimpleTypeName emptyAnnotation (Name emptyAnnotation [Nmc $ T.unpack t])
+-- a hack to support precision cast from string literals
+nameOfType UnknownType = Just $ SimpleTypeName emptyAnnotation (Name emptyAnnotation [Nmc "unknown"])
+nameOfType (DomainType t) = Just $ SimpleTypeName emptyAnnotation (Name emptyAnnotation [Nmc $ T.unpack t])
+nameOfType (EnumType t) = Just $ SimpleTypeName emptyAnnotation (Name emptyAnnotation [Nmc $ T.unpack t])
+nameOfType (NamedCompositeType t) = Just $ SimpleTypeName emptyAnnotation (Name emptyAnnotation [Nmc $ T.unpack t])
+nameOfType _ = Nothing
+
+-- hack for various fixups
+fixTree :: Data a => Dialect -> a -> a
+fixTree = fixMssqlDates
+
+{-
+
+
+disgusting hack to fix up datediff,datepart, convert and other
+functions which accept a fixed list of keywords for one or more of the
+arguments for sql server: set the type for the first argument to type
+in if it is in the acceptable list.
+
+This is really bad. What happens is that the normal typechecker will
+check the keyword as an identifier and (usually!) put in unknown
+identifier error. Then, when the function is typechecked, it will
+ignore the type for this argument. After we've finished, the type
+error is replaced with int type here.
+
+The proper fix:
+
+I think a good way to look at these is to consider them fixed enums
+which can only accept a literal (and not an enum valued
+expression). We set a flag/enum thing in the typecheck environment of
+the identifier, so that it can check the identifier fits one of the
+valid functions in the identifier itself. Then, there doesn't need to
+be a fix here, and typechecking the function should work without a
+hack here too. The typechecking of the function itself still needs
+some special casing (e.g. for the convert function in odbc (and
+similar in regular sql server syntax), the result type depends on the
+value of the 'enum'. This can be implemented in a similar way to the
+literal ints being passed to the function type checker.
+
+This will be fixed with the rewrite of the findcallmatch/matchapp/a
+million different fns for precision and nullability/tcApplike mess.
+
+-}
+
+fixMssqlDates :: Data a => Dialect -> a -> a
+fixMssqlDates d = transformBi $ \x -> case x of
+  App aa nm@(Name _ [Nmc fn]) [Identifier ai tn@(Name _ [Nmc tnn]),a,b]
+    | map toLower fn `elem` ["datediff","dateadd"]
+    , map toLower tnn `elem` dateparts ->
+      App aa nm [Identifier (nai ai) tn,a,b]
+  App aa nm@(Name _ [Nmc fn]) [Identifier ai tn@(Name _ [Nmc tnn]),a]
+    | map toLower fn == "datepart"
+    , map toLower tnn `elem` dateparts ->
+      App aa nm [Identifier (nai ai) tn,a]
+  App aa nm@(Name _ [Nmc fn]) [a,Identifier ai tn@(Name _ [Nmc tnn])]
+    | map toLower fn == "convert"
+    , map toLower tnn `elem` map fst odbcConvertTypes ->
+      App aa nm [a,Identifier (nai ai) tn]
+  App aa nm@(Name _ [Nmc fn]) (Identifier ai tn@(Name _ [Nmc tnn]):as)
+    | map toLower fn `elem` ["timestampadd","timestampdiff"]
+    , map toLower tnn `elem` odbcIntervalTypes ->
+      App aa nm (Identifier (nai ai) tn:as)
+  x' -> x'
+  where
+      dateparts :: [String]
+      dateparts = ["day","dd","d","month","mm","m","year","yyyy"
+                  ,"yy","quarter","qq","q","dayofyear","doy","dy","y"
+                  ,"weekday","dw","week","ww","wk","hour","hh"
+                  ,"minute","mi","n","second","ss","s","millisecond","ms"
+                  ,"microsecond","mcs","nanosecond","ns"]
+      -- todo: use canonical tsql name for typeInt
+      nai ai = ai {anType = (mkTypeExtraNN . ScalarType) <$> ansiTypeNameToDialect d "int"
+                  ,anErrs = []}
+
+
+-- temp utility function
+
+{-canonicalizeType :: Dialect -> Type -> Type
+canonicalizeType d (ScalarType t) = ScalarType $ canonicalizeTypeName d t
+canonicalizeType _ t = t-}
+
+}
+

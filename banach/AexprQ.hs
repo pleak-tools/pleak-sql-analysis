@@ -28,6 +28,7 @@ data AExpr a
   | AAnds [AExpr a]
   | AOrs  [AExpr a]
   | AXors [AExpr a] -- we assume that it is applied only to mutually exclusive conditions
+  | AVector [AExpr a]
   deriving (Show)
 
 data AUnOp
@@ -46,6 +47,7 @@ data ABinOp
   | ALTint | ALEint | AEQint | AGTint | AGEint
   | ALT | ALE | AEQ | AGE | AGT | ALike
   | AEQstr
+  | ADistance
   deriving (Show)
 
 data AType = AInt | AFloat | ABool | AString | AUnit deriving (Eq, Show)
@@ -244,6 +246,7 @@ aexprNormalize (AMaxs xs) = AMaxs $ map aexprNormalize xs
 aexprNormalize (AAnds xs) = AAnds $ map aexprNormalize xs
 aexprNormalize (AOrs  xs) = AOrs  $ map aexprNormalize xs
 aexprNormalize (AXors xs) = AXors $ map aexprNormalize xs
+aexprNormalize (AVector xs) = AVector $ map aexprNormalize xs
 
 aexprNormalize x = x
 
@@ -354,6 +357,20 @@ aexprToExpr y (ABinary AGT x1 x2) =
 --    M.union (aexprToExpr z x) $ M.fromList [(y, Sigmoid a c z)]
 
 -- lp-norm
+aexprToExpr y aexpr@(ABinary ADistance (AVector xs1) (AVector xs2)) =
+    if length xs1 /= length xs2 then error $ error_queryExpr_pointDistanceLen aexpr else
+    let n = length xs1 in
+    let zs  = map (\x -> y ++ "~0~" ++ show x) [0..n-1] in
+    let zs1 = map (\x -> y ++ "~1~" ++ show x) [0..n-1] in
+    let zs2 = map (\x -> y ++ "~2~" ++ show x) [0..n-1] in
+    let zs3 = map (\x -> y ++ "~3~" ++ show x) [0..n-1] in
+    
+    let ws1 = zipWith aexprToExpr zs1 xs1 in
+    let ws2 = zipWith aexprToExpr zs2 xs2 in
+
+    let ws = M.fromList $ concat $ zipWith4 (\z z1 z2 z3 -> [(z, Sum [z1,z3]), (z3, Prod ["-1", z2]), ("-1", Const (-1.0))]) zs zs1 zs2 zs3 in
+    M.union (foldr M.union ws (ws1 ++ ws2)) $ M.fromList [(y, L 2.0 zs)]
+
 aexprToExpr y aexpr@(AUnary (APower pinv) (ASum xs)) =
 
     let p = 1 / pinv in
@@ -363,7 +380,9 @@ aexprToExpr y aexpr@(AUnary (APower pinv) (ASum xs)) =
     let isEven = (mod pint 2 == 0) && (p == fromIntegral pint) in
 
     -- collect all expression and variable arguments separately
-    let ysExpr = filter (\x -> case x of {AUnary (APower q) (AAbs _)        -> p == q; AUnary (APower q) _        -> p == q && isEven; _ -> False}) xs in
+    let ysExpr = filter (\x -> case x of {AUnary (APower q) (AAbs _)        -> p == q;
+                                          AUnary (APower q) _        -> p == q && isEven;
+                                          _ -> False}) xs in
     let ysVar  = filter (\x -> case x of {AUnary (APower q) (AAbs (AVar _)) -> p == q; AUnary (APower q) (AVar _) -> p == q && isEven; _ -> False}) xs in
 
         -- if all arguments are p-powers of absolute values, then we have an lp-norm
@@ -518,6 +537,7 @@ aexprToString aexpr =
         AAnds xs -> "(" ++ intercalate " AND " (map aexprToString xs) ++ ")"
         AOrs  xs -> "(" ++ intercalate " OR " (map aexprToString xs) ++ ")"
         AXors xs -> "(" ++ intercalate " OR " (map aexprToString xs) ++ ")"
+        AVector xs -> "point(" ++ intercalate "," (map aexprToString xs) ++ ")"
 
         AUnary ALn x -> "log(" ++ aexprToString x ++ ")"
         AUnary AFloor x -> "floor(" ++ aexprToString x ++ ")"
@@ -547,6 +567,7 @@ aexprToString aexpr =
         ABinary AGTint x1 x2 -> "(" ++ aexprToString x1 ++ " > " ++ aexprToString x2 ++ ")"
         ABinary AEQstr x1 x2 -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
         ABinary ALike x1 x2 -> "(" ++ aexprToString x1 ++ " LIKE " ++ aexprToString x2 ++ ")"
+        ABinary ADistance x1 x2 -> "(" ++ aexprToString x1 ++ " <@> " ++ aexprToString x2 ++ ")"
 
 ------------------------------------------------------------------------------------
 updatePreficesAexpr :: (S.Set String) -> VarName -> AExpr VarName -> AExpr VarName
@@ -567,6 +588,7 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
         AAnds xs -> AAnds (map processRec xs)
         AOrs  xs -> AOrs (map processRec xs)
         AXors xs -> AXors (map processRec xs)
+        AVector xs -> AVector (map processRec xs)
 
         AUnary ALn x -> AUnary ALn $ processRec x
         AUnary AFloor x -> AUnary AFloor $ processRec x
@@ -596,6 +618,7 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
         ABinary AGEint x1 x2 -> ABinary AGEint (processRec x1) (processRec x2)
         ABinary AGTint x1 x2 -> ABinary AGTint (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> ABinary ALike (processRec x1) (processRec x2)
+        ABinary ADistance x1 x2 -> ABinary ADistance (processRec x1) (processRec x2)
 
    where processRec  x = updatePreficesAexpr fullTablePaths prefix x
          processBase x = updatePrefices      fullTablePaths prefix x
@@ -621,6 +644,7 @@ getAllAExprVars sensOnly aexpr =
         AAnds xs -> foldr S.union S.empty $ map processRec xs
         AOrs  xs -> foldr S.union S.empty $ map processRec xs
         AXors xs -> foldr S.union S.empty $ map processRec xs
+        AVector xs -> foldr S.union S.empty $ map processRec xs
 
         AUnary ALn x -> processRec x
         AUnary AFloor x -> processRec x
@@ -650,6 +674,7 @@ getAllAExprVars sensOnly aexpr =
         ABinary AGEint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary AGTint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ADistance x1 x2 -> S.union (processRec x1) (processRec x2)
     where processRec x = getAllAExprVars sensOnly x
           processBase x = S.singleton x
 
@@ -673,6 +698,7 @@ getAllSubExprs sensOnly aexpr =
         AAnds xs -> foldr S.union S.empty $ map processRec xs
         AOrs  xs -> foldr S.union S.empty $ map processRec xs
         AXors xs -> foldr S.union S.empty $ map processRec xs
+        AVector xs -> foldr S.union S.empty $ map processRec xs
 
         AUnary ALn x -> processRec x
         AUnary AFloor x -> processRec x
@@ -702,6 +728,7 @@ getAllSubExprs sensOnly aexpr =
         ABinary AGEint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary AGTint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
+        ABinary ADistance x1 x2 -> S.union (processRec x1) (processRec x2)
     where processRec x = getAllSubExprs sensOnly x
           processBase x = S.singleton x
 
@@ -721,13 +748,14 @@ aexprSubstitute aexprMap aexpr =
         AZeroSens x -> AZeroSens $ processRec x
 
         AAbs x -> AAbs $ processRec x
-        ASum xs -> ASum (map processRec xs)
-        AProd xs -> AProd (map processRec xs)
-        AMins xs -> AMins (map processRec xs)
-        AMaxs xs -> AMaxs (map processRec xs)
-        AAnds xs -> AAnds (map processRec xs)
-        AOrs  xs -> AOrs (map processRec xs)
-        AXors xs -> AXors (map processRec xs)
+        ASum xs -> ASum $ map processRec xs
+        AProd xs -> AProd $ map processRec xs
+        AMins xs -> AMins $ map processRec xs
+        AMaxs xs -> AMaxs $ map processRec xs
+        AAnds xs -> AAnds $ map processRec xs
+        AOrs  xs -> AOrs $ map processRec xs
+        AXors xs -> AXors $ map processRec xs
+        AVector xs -> AVector $ map processRec xs
 
         AUnary ALn x -> AUnary ALn $ processRec x
         AUnary AFloor x -> AUnary AFloor $ processRec x
@@ -757,6 +785,7 @@ aexprSubstitute aexprMap aexpr =
         ABinary AGEint x1 x2 -> ABinary AGEint (processRec x1) (processRec x2)
         ABinary AGTint x1 x2 -> ABinary AGTint (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> ABinary ALike (processRec x1) (processRec x2)
+        ABinary ADistance x1 x2 -> ABinary ADistance (processRec x1) (processRec x2)
     where processRec x = aexprSubstitute aexprMap x
           processBase x = if M.member x aexprMap then aexprMap ! x else AVar x
 
@@ -782,6 +811,7 @@ applyAexprTypes typeMap aexpr =
         AAnds xs -> let (t,ys)  = processRec xs  in (t, AAnds ys)
         AOrs  xs -> let (t,ys)  = processRec xs  in (t, AOrs ys)
         AXors xs -> let (t,ys)  = processRec xs  in (t, AXors ys)
+        AVector xs -> let (t,ys)  = processRec xs  in (t, AVector ys)
 
         AUnary ALn x        -> let (_,[y]) = processRec [x] in (AFloat, AUnary ALn y)
         AUnary AFloor x     -> let (_,[y]) = processRec [x] in (AInt, AUnary AFloor y)
@@ -834,6 +864,7 @@ applyAexprTypes typeMap aexpr =
 
         ABinary AEQstr x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary AEQstr y1 y2)
         ABinary ALike x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary ALike y1 y2)
+        ABinary ADistance x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary ADistance y1 y2)
    where processRec xs =
              let (types,aexprs) = unzip (map (applyAexprTypes typeMap) xs) in
              (foldr max AUnit types, aexprs)

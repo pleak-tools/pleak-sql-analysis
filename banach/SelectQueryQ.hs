@@ -170,8 +170,8 @@ isSupportedWhereExpr = \case
   InPredicate _ _ True (InList _ _) -> True
   _                -> False
   where
-    ops = ["=", "<", ">", "<=", ">=", "<>", "and", "or", "xor", "+", "-", "*", "/", "%", "^", "not"]
-    apps = ["log", "exp", "abs", "least", "greatest"]
+    ops = ["=", "<", ">", "<=", ">=", "<>", "<@>", "and", "or", "xor", "+", "-", "*", "/", "%", "^", "not"]
+    apps = ["log", "exp", "abs", "least", "greatest","point"]
 
 isSupportedAggregOp :: Name -> Bool
 isSupportedAggregOp op = nameToStr op `elem` ["count", "sum", "avg", "min", "max"]
@@ -273,13 +273,14 @@ extractScalarExpr expr =
         Identifier _ (Name _ nmcs) -> AVar $ intercalate "." (map (\(Nmc x) -> x) nmcs)
         NumberLit _ s -> AConst (read s)
         StringLit _ s -> AText ("\'" ++ s ++ "\'")
+        BinaryOp _ (Name _ [Nmc "<>"]) x1 x2 -> AUnary ANot $ ABinary AEQ (extractScalarExpr x1) (extractScalarExpr x2)
+        BinaryOp _ (Name _ [Nmc "<@>"]) x1 x2 -> ABinary ADistance (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "<="]) x1 x2 -> ABinary ALE (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "<"]) x1 x2 -> ABinary ALT (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "="]) x1 x2 -> ABinary AEQ (extractScalarExpr x1) (extractScalarExpr x2)
-        BinaryOp _ (Name _ [Nmc "<>"]) x1 x2 -> AUnary ANot $ ABinary AEQ (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "!="]) x1 x2 -> AUnary ANot $ ABinary AEQ (extractScalarExpr x1) (extractScalarExpr x2)
-        BinaryOp _ (Name _ [Nmc ">"]) x1 x2 -> ABinary AGT (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc ">="]) x1 x2 -> ABinary AGE (extractScalarExpr x1) (extractScalarExpr x2)
+        BinaryOp _ (Name _ [Nmc ">"]) x1 x2 -> ABinary AGT (extractScalarExpr x1) (extractScalarExpr x2)
 
         BinaryOp _ (Name _ [Nmc "like"]) x1 x2 -> ABinary ALike (extractScalarExpr x1) (extractScalarExpr x2)
 
@@ -291,6 +292,7 @@ extractScalarExpr expr =
         BinaryOp _ (Name _ [Nmc "/"]) x1 x2 -> ABinary ADiv (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "+"]) x1 x2 -> ABinary AAdd (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "-"]) x1 x2 -> ABinary ASub (extractScalarExpr x1) (extractScalarExpr x2)
+
 
         BinaryOp _ (Name _ [Nmc "^"]) x1 x2 ->
             let z2 = extractScalarExpr x2 in
@@ -306,6 +308,7 @@ extractScalarExpr expr =
         App _ (Name _ [Nmc "exp"]) [x] -> AUnary (AExp 1.0) (extractScalarExpr x)
         App _ (Name _ [Nmc "least"])    xs -> AMins (map extractScalarExpr xs)
         App _ (Name _ [Nmc "greatest"]) xs -> AMaxs (map extractScalarExpr xs)
+        App _ (Name _ [Nmc "point"]) xs -> AVector (map extractScalarExpr xs)
 
         Star _ -> AConst 0.0
         Parens _ x -> extractScalarExpr x

@@ -1,0 +1,27 @@
+
+{-
+
+Some unfinished boilerplate for random statements. The typechecking
+for most non query statements is very limited.
+
+-}
+
+sem Statement
+  | QueryStatement DeclareStatement If
+    Assignment ExecStatement CreateIndexTSQL
+    DropSomething DropTrigger Into
+    ann.tpe = Left []
+
+  | QueryStatement
+    ex.expectedType = liftM (map snd) @ex.upType
+    --ex.expectedCast = True
+  | CreateTableAs CreateView
+    expr.expectedType = liftM (map snd) @expr.upType
+    --expr.expectedCast = True
+  | ReturnQuery ForQueryStatement
+    sel.expectedType = liftM (map snd) @sel.upType
+    --sel.expectedCast = True
+
+  | Assignment
+    target.tpe = Left []
+    value.downEnv = E.emptyEnvironment

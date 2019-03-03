@@ -49,6 +49,7 @@ error_queryExpr_missingAsgnVars t  = error_queryExpr t ++ ",\n the input has to 
 error_queryExpr_notAllInputVars t  = error_queryExpr t ++ ",\n all the inputs have to be input table columns."
 error_queryExpr_notAllAsgnVars t   = error_queryExpr t ++ ",\n all the inputs have to be expressions."
 error_queryExpr_repeatingVars t    = error_queryExpr t ++ ",\n variables are repeating in different args of the term."
+error_queryExpr_pointDistanceLen t = "ERROR: compared points need to have the same number of coordinates " ++ show t ++ "."
 
 error_noColNames = "ERROR: all columns of intermediate tables need to be named, use SELECT ... AS ..."
 error_typeDoesNotExist s = "ERROR: data type \'" ++ s ++ "\' is not supported."

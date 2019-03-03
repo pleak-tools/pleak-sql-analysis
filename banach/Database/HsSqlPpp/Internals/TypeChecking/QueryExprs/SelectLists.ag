@@ -1,0 +1,232 @@
+
+{-
+select lists:
+
+select lists have to gather the column names of the select items along
+with their types, this is to produce the type and environment to the
+parent
+
+also have to deal with optionally expanding stars and adding explicit
+aliases
+
+The main work is done in the scalarexpr nodes:
+each node produces:
+
+a column name which is used if the node appears directly in a
+selectitem that select item has no explicit alias
+
+a maybe type (this is just the uptype attr duplicated)
+
+a scalar expr copy
+
+but since we have to handle stars, which produce a list of these, it
+produces a list of (name,type,expr) triples (so this is why the type
+and the expr itself are duplicated)
+
+These lists of triples are only used by selectitems.
+
+-}
+
+
+attr ScalarExpr
+  syn colExprs :: {[(NameComponent,Maybe TypeExtra,ScalarExpr)]}
+
+
+sem ScalarExpr
+    | NumberLit StringLit NullLit BooleanLit TypedStringLit Interval
+      Extract PositionalArg Placeholder Cast ImplicitCast Identifier
+      Case CaseSimple Exists App AggregateApp
+      WindowApp InPredicate LiftApp ScalarSubQuery
+      BinaryOp PrefixOp PostfixOp SpecialOp
+      Star QStar Parens OdbcLiteral OdbcFunc
+      lhs.colExprs =
+          let a = @ann.originalTree --save the source position in the generated nodes
+              doStar is = -- todo: quote identifiers if needed
+                map (\((q,n),t) ->
+                      -- have to typecheck manually here since the generated nodes
+                      -- don't participate in the ag
+                  let a' = a {anType = Just t}
+                      -- expanded stars always output qualifier
+                  in (Nmc $ T.unpack n, Just t,
+                      Identifier a' $ Name a'
+                                    $ [Nmc q' | let q' = T.unpack q, not $ null q']
+                                      ++ [Nmc $ T.unpack n])
+                  ) is
+          in case @originalTree of
+              Star _ | Right is <- E.envExpandStar Nothing @lhs.downEnv ->
+                 doStar is
+              QStar _ q | Right is <- E.envExpandStar (Just q) @lhs.downEnv ->
+                 doStar is
+              -- for everything other than star and qstar, just lift
+              -- the single expr info into a list
+              _ -> --trace ("annotated tree in colExprs: " ++ show @annotatedTree)
+                     [(columnName @originalTree,@upType,@annotatedTree)]
+
+{-
+loc.annotatedTree stuff in ScalarExprs.ag:
+
+not sure how this should work in uuagc
+but asking for the @annotatedTree
+for an identifier this should be set to the qualified version
+which is picked up fine in the case of something like
+select a + 1 from t
+->
+select t.a + 1 from t
+
+but when it is just an identifier, it misses the altered annotated
+tree for the identifier:
+
+select a from t
+->
+select a from t
+(no added 't.')
+
+for some reason, changing
+lhs.annotatedTree = ...
+in the Identifier sem rule in ScalarExprs.ag
+to
+lhs.annotatedTree = @loc.annotatedTree
+loc.annotatedTree = ...
+has fixed it?
+
+Think this is because @annotatedTree refers to @loc.annotatedTree,
+which is given some default value from somewhere implicitly if not
+defined, and this is not the same as the lhs.annotatedTree being set
+in that node.
+
+-}
+
+{-
+select items:
+
+1. adjust the colExprs data if the select item has an explicit column
+alias
+
+2. add an explicit column alias if there isn't one and the option to
+add them is set
+
+-}
+
+sem SelectItem
+  | SelectItem
+      lhs.colExprs =
+        case @ex.colExprs of
+          [(_,t,e)] -> [(@name, t,e)]
+          x -> x --todo: error if there is an alias and more that one col
+  | SelExp
+      lhs.annotatedTree =
+        if tcfAddSelectItemAliases @lhs.flags
+        then case @ex.colExprs of
+               [(n,_,_)] -> SelectItem @ann.annotatedTree @ex.annotatedTree n
+               _ -> -- todo: is this possible? what should happen?
+                    @annotatedTree
+        else @annotatedTree
+{-
+select item list:
+
+this is where the expanded stars are spliced back into the annotated
+tree attributes if that option is enabled
+-}
+sem SelectItemList
+  | Nil lhs.annotatedTree = []
+  | Cons lhs.annotatedTree =
+      if tcfExpandStars @lhs.flags
+      then flip map @colExprs $ \(n,_t,e) ->
+          -- todos: add sourceposition annotation
+          -- this adds aliases for all columns
+          -- want to keep the original select items
+          -- for each col which doesn't come from a star expand
+          -- and when add column aliases option is off
+          -- hack currently used probably isn't accurate:
+          -- check if adding an explicit column name changes the
+          -- name of a column then add it, otherwise use implicit
+            if ncStr n == ncStr (columnName e) && not (tcfAddSelectItemAliases @lhs.flags)
+            then SelExp emptyAnnotation e
+            else SelectItem emptyAnnotation e n
+      else @annotatedTree
+
+
+attr SelectItem
+  syn colExprs :: {[(NameComponent,Maybe TypeExtra,ScalarExpr)]}
+  inh downEnv :: Environment
+  inh expectedType:: {Maybe TypeExtra}
+  inh expectedCast :: {Bool}
+
+attr SelectItemList SelectList
+  inh downEnv :: Environment
+  syn colExprs :: {[(NameComponent,Maybe TypeExtra,ScalarExpr)]}
+  syn upType :: {Maybe [(Text,TypeExtra)]}
+  inh expectedType :: {Maybe [TypeExtra]}
+  inh expectedCast :: {Bool}
+  syn upEnv :: Environment
+
+
+{-
+
+select item list: just concat the colExprs to produce the new colExprs
+used if this is the tail of a select item list
+
+create the uptype from the local colexprs used if this is the head of
+a select item list
+
+-}
+sem SelectItemList
+  | Nil lhs.colExprs = []
+        loc.upType = Nothing
+  | Cons
+        loc.colExprs = @hd.colExprs ++ @tl.colExprs
+        lhs.colExprs = @loc.colExprs
+        loc.upType = sequence $ flip map @loc.colExprs
+                     $ \(n,t,_) -> fmap (ncStrT n,) t
+        hd.expectedType = liftM fst $ splitTypeExtraList @lhs.expectedType
+        tl.expectedType = liftM snd $ splitTypeExtraList @lhs.expectedType
+        hd.expectedCast = @lhs.expectedCast
+        tl.expectedCast = @lhs.expectedCast
+  | Nil Cons
+      lhs.upType = @loc.upType
+      lhs.upEnv = case fmap E.envSelectListEnvironment @loc.upType of
+                    (Just (Right e)) -> e
+                    _ -> E.brokeEnvironment
+
+{
+splitTypeExtraList:: Maybe [TypeExtra] -> Maybe (TypeExtra,[TypeExtra])
+splitTypeExtraList mte = mte >>= f
+  where
+    f [] = Nothing
+    f (et:ets') = Just (et,ets')
+}
+
+-- temporary, lots of possible errors above which are currently
+-- dropped on the floor have to find their way into the tree
+
+sem SelectList
+    | SelectList
+      ann.tpe = Left []
+      items.expectedCast = True
+sem SelectItem
+    | SelectItem SelExp
+      ann.tpe = Left []
+      ex.expectedType = @lhs.expectedType
+      ex.expectedCast = @lhs.expectedCast
+
+{
+
+-- | thet name to choose for a column in a select list which doesn't
+-- have an explicit name - these are postgresql's rules
+columnName :: ScalarExpr -> NameComponent
+columnName (Identifier _ i) = last $ nameComponents i
+columnName (App _ (Name _ ncs) _) = last ncs
+columnName (Cast _ _ (SimpleTypeName _ (Name _ ncs))) = last ncs
+columnName (ImplicitCast _ e _) = columnName e
+columnName (WindowApp _ (App _ (Name _ ncs) _) _ _ _) = last ncs
+columnName (AggregateApp _ _ (App _ (Name _ ncs) _) _) = last ncs
+columnName _ = QNmc "?column?"
+}
+
+
+-- todo: not sure if this is right or it should be an error?
+-- maybe antiscalarexpr should be treated like a '?' for typechecking?
+-- which is more pragmatic than just erroring and not completely wrong
+
+sem ScalarExpr
+   | AntiScalarExpr lhs.colExprs = [(Nmc "?anti?",Nothing,@originalTree)]

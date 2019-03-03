@@ -1,0 +1,846 @@
+{-
+
+type checking scalar exprs
+
+annotations to get are the type and type errors, and the implicit cast
+The implicit cast is determined by the parent node and comes through
+in an attribute
+
+the implicit cast says if an implicit cast is used, what type is being
+cast to.
+
+not applicable: parameterizedstatementtype, catalog update
+
+plus also store the matched functionprototype for functions. Is this
+to help with getting the type of ? placeholders, and for inserting
+
+-}
+
+{-
+The expectedCast attribute will accompany expectedType.
+  It is not made part of expectedType for modularity reasons.
+For now, expectedCast is Bool, with the meaning of whether the nullability component
+    of the type can be cast in this context.
+  The other components (precision, scale, basic type) are always expected to be cast.
+  In the future, this can change, and the type of expectedCast will reflect the change.
+-}
+
+sem ScalarExpr
+    | NumberLit StringLit NullLit BooleanLit TypedStringLit Interval
+      Extract PositionalArg Placeholder Cast ImplicitCast Star QStar Identifier
+      Case CaseSimple Exists App AggregateApp
+      WindowApp InPredicate LiftApp ScalarSubQuery
+      BinaryOp PrefixOp PostfixOp SpecialOp
+      Parens OdbcLiteral OdbcFunc
+        ann.tpe = @loc.tpe
+        loc.upType = either (const Nothing) Just @loc.tpe
+        lhs.upType = @loc.upType
+        ann.imCast = case @loc.upType of
+                        Nothing -> @lhs.expectedType
+                        Just upType -> do
+                            expType <- @lhs.expectedType
+                            guard $ needsImplicitCast @lhs.expectedCast upType expType
+                            return $ implicitCastType @lhs.expectedCast upType expType
+        loc.dialectTypeName :: {Text -> Either [TypeError] Text}
+        loc.dialectTypeName = maybe (Left []) Right . ansiTypeNameToDialect (tcfDialect @lhs.flags)
+
+{
+needsImplicitCast:: Bool -> TypeExtra -> TypeExtra -> Bool
+needsImplicitCast expectedCast upType expType
+    = tePrecision upType /= tePrecision expType
+      || teScale upType /= teScale expType
+      || teNullable upType /= teNullable expType
+          && nullabilityCast
+      ||  teType upType /= teType expType
+          && (not . null) (nub [teType upType, teType expType] \\ [ScalarType "varchar", ScalarType "text",ScalarType "nvarchar"])
+  where
+    nullabilityCast = expectedCast
+-- this function appeared because nullability does not always influence the type to cast to
+implicitCastType:: Bool -> TypeExtra -> TypeExtra -> TypeExtra
+implicitCastType expectedCast upType expType
+    = expType{tePrecision = precision, teScale = scale, teNullable = nullability}
+  where
+    nullabilityCast = expectedCast
+    nullabilitySource = if nullabilityCast then expType else upType
+    precisionSource = expType
+    nullability = teNullable nullabilitySource
+    precision = tePrecision precisionSource
+    scale = teScale precisionSource
+}
+
+{-
+
+Additional error handling for unallowed casts:
+
+The cast context attribute says whether we are in a assignment context
+or implicit context. The assignment context is used for inserts,
+updates and actual assignment in procedural sql. The implicit cast
+context is for all other contexts.
+
+Each scalar expr node will check the expected type against the actual
+type, and if the current cast context doesn't allow that cast, there
+will be an error.
+
+Note that if you are in an operator-like context (e.g. actual
+operators, functions, etc), then the overload resolution will fail to
+match if there are not valid casts and you will get an error that the
+operator doesn't match instead of an invalid cast error on the
+individual argument. This could be done uniformly except that you
+might have multiple ambigious overloads matching, so there isn't an
+error which can be described by a single cast being unavailable.
+
+Almost every node must set the cast context to implicit, then we set
+it to assignment where needed. There is special handling for Values,
+which is treated like Union and uses the resolve result set algorithm
+in most cases, but in the most common case, in an insert, each row is
+resolved as an assignment cast separately.
+
+-}
+
+sem ScalarExpr
+    | AntiScalarExpr
+        lhs.upType = either (const Nothing) Just @loc.tpe
+
+attr ScalarExprRoot
+  inh downEnv:: Environment -- the initial environment
+
+attr ScalarExpr MaybeScalarExpr
+  inh downEnv :: Environment -- the environment from the parent
+  syn upType :: {Maybe TypeExtra} -- the type of this node made available to the parent node
+  inh expectedType :: {Maybe TypeExtra}
+  inh expectedCast :: {Bool}
+
+attr ScalarExpr MaybeScalarExpr QueryExpr
+     SelectList ScalarExprListList ScalarExprList
+     SelectItemList SelectItem
+  inh assignmentCastContext :: Bool -- set to true if assignment cast context
+                                    -- else set to false if implicit cast context
+
+sem MaybeScalarExpr
+    | Nothing lhs.upType = Nothing
+
+
+-- this is used to indicate the typechecking should rename
+-- a function in an odbc context, when we look up the function
+-- like this {fn f(...)} we change the name from "f" to
+-- "!odbc-f" so we can hack a different namespace for odbc functions
+attr ScalarExpr
+    inh odbcFunction :: Bool
+
+sem AlterColumnAction
+    | SetDefault def.odbcFunction = False
+
+sem CaseScalarExprListScalarExprPair
+    | Tuple x2.odbcFunction = False
+
+sem Constraint
+    | CheckConstraint expr.odbcFunction = False
+
+sem JoinExpr
+    | JoinOn expr.odbcFunction = False
+
+sem MaybeBoolExpr
+    | Just just.odbcFunction = False
+
+sem MaybeScalarExpr
+    | Just just.odbcFunction = False
+
+sem RowConstraint
+    | DefaultConstraint expr.odbcFunction = False
+    | RowCheckConstraint expr.odbcFunction = False
+
+sem ScalarExprDirectionPair
+    | Tuple x1.odbcFunction = False
+
+sem ScalarExprList
+    | Cons hd.odbcFunction = False
+
+sem ScalarExprRoot
+    | ScalarExprRoot expr.odbcFunction = False
+
+
+sem ScalarExprTransposedList
+    | Cons hd.odbcFunction = False
+
+sem SelectItem
+    | SelExp SelectItem ex.odbcFunction = False
+
+sem SetClause
+    | SetClause MultiSetClause ex.odbcFunction = False
+
+sem ScalarExpr
+    | Extract e.odbcFunction = False
+    | Cast expr.odbcFunction = False
+    | ImplicitCast expr.odbcFunction = False
+    | CaseSimple value.odbcFunction = False
+    | PrefixOp PostfixOp arg.odbcFunction = False
+    | BinaryOp arg0.odbcFunction = False
+               arg1.odbcFunction = False
+    | AggregateApp fn.odbcFunction = False
+    | WindowApp fn.odbcFunction = False
+    | InPredicate expr.odbcFunction = False
+    | Parens ex.odbcFunction = False
+    | OdbcFunc ex.odbcFunction = True -- meat!!
+
+
+
+-- collect the uptypes for a list of scalarexprs
+
+attr ScalarExprList
+  inh downEnv :: Environment
+  syn upTypes :: {[Maybe TypeExtra]}
+  inh expectedTypes :: {[TypeExtra]}
+  inh expectedCast :: {Bool}
+
+sem ScalarExprList
+    | Cons
+        lhs.upTypes = @hd.upType : @tl.upTypes
+        (hd.expectedType,tl.expectedTypes) =
+            case @lhs.expectedTypes of
+                (x:xs) -> (Just x,xs)
+                [] -> (Nothing,[])
+        hd.expectedCast = @lhs.expectedCast
+    | Nil lhs.upTypes = []
+
+-- stop errors in the node being duplicated in the x::Name children
+-- nodes
+sem ScalarExpr
+    | App
+        funName.tpe = Left []
+    | PrefixOp PostfixOp BinaryOp SpecialOp
+        opName.tpe = Left []
+
+{-
+each ctor has its own typechecking code
+
+this sets loc.tpe with either the succesfully determined type, or the
+type errors. The typechecking is shortcircuited so that if a node
+needs the type of another node which is unable to type check, then no
+additional type errors are produced, this is represented in the
+annotation for the type as Nothing, and in loc.tpe as Left []
+
+not sure it's worth the indirection of writing to loc.tpe then to
+ann.tpe
+
+-}
+
+{-
+
+------------------------------------------------
+
+simple literals
+
+-}
+
+sem ScalarExprRoot
+    | ScalarExprRoot
+        expr.downEnv = @lhs.downEnv
+
+sem ScalarExpr
+    | BooleanLit
+        loc.tpe = fmap (mkTypeExtraNN . ScalarType) $ @loc.dialectTypeName "boolean"
+
+    | NumberLit
+        -- numbers - a bit hacky, maybe should follow haskell
+        -- and represent as integers and rationals instead of strings
+        -- here just sets as int if there is no decimal place
+        -- probably the support for different syntax for numbers
+        -- needs to improve a lot then this won't be possible any
+        -- more (e.g. 10e-5)
+        loc.tpe = if all (`elem` @loc.digChars) @d
+                  then (mkTypeExtraNN . ScalarType) <$> classifyInteger (tcfDialect @lhs.flags) @d
+                  else (mkTypeExtraNN . ScalarType) <$> (@loc.dialectTypeName "numeric")
+
+        loc.digChars = concatMap show [(0::Int)..9]
+
+    | StringLit
+        -- string lit type comes from the context
+        loc.tpe = Right $ (mkTypeExtraNN UnknownType) {tePrecision = Just $ length @value}
+    -- I think a null has the same type resolution as an unknown string lit
+    | NullLit
+         loc.tpe = Right $ mkTypeExtra UnknownType
+
+{-
+
+----------------------------------
+simplish ctors
+
+-}
+
+    | TypedStringLit
+         loc.tpe = maybe (Left []) Right @tn.namedType
+    | Cast
+         loc.tpe =
+              let nullability = fromMaybe False $ teNullable <$> @expr.upType
+                  setNullability te = te{teNullable = nullability}
+              in maybe (Left []) (Right . setNullability) @tn.namedType
+         expr.expectedType = Nothing -- @tn.namedType
+         expr.expectedCast = False
+    | ImplicitCast
+        loc.tpe = Right @te
+        expr.expectedType = Nothing
+    | Interval
+        loc.tpe = Right $ mkTypeExtraNN $ ScalarType "interval"
+    | Extract
+        loc.tpe = -- check the argument is a date
+                   do
+                   x <- maybe (Left []) Right @e.upType
+                   if (teType x) `elem` (map ScalarType $ diDatetimeTypes $ tcfDialect @lhs.flags)
+                     then do
+                          i <- ScalarType <$> @loc.dialectTypeName "int"
+                          return $ TypeExtra i Nothing Nothing $ teNullable x
+                     else Left [NoMatchingOperator "extract" [teType x]]
+        e.expectedType =
+                   do
+                   x <- @e.upType
+                   either (const Nothing)
+                          (Just . TypeExtra (teType x) Nothing Nothing . teNullable)
+                          @loc.tpe
+        e.expectedCast = False
+    | Placeholder
+         loc.tpe = Right $ mkTypeExtraNN UnknownType
+
+      -- odbc literals: the tag gives the type
+      -- if we added checking the syntax inside the string literal
+      -- then we would do it here
+    | OdbcLiteral
+         loc.tpe = case @olt of
+                     OLDate -> (mkTypeExtra . ScalarType) <$> @loc.dialectTypeName "date"
+                     OLTime -> (mkTypeExtra . ScalarType) <$> @loc.dialectTypeName "time"
+                     OLTimestamp -> (mkTypeExtra . ScalarType) <$> @loc.dialectTypeName "timestamp"
+
+    | OdbcFunc
+         ex.cat = id @lhs.cat
+         loc.tpe = case @ex.originalTree of
+                     Extract {} -> maybe (Left []) Right @ex.upType
+                     App {} -> maybe (Left []) Right @ex.upType
+                     _ -> Left [OdbcFuncBadContent]
+
+{-
+
+---------------------------------------
+identifiers
+
+-}
+    | Identifier
+         loc.elkp = E.envLookupIdentifier (nameComponents @i.originalTree) @lhs.downEnv
+         loc.tpe = fmap snd @loc.elkp
+         -- weird workaround, see selectlists.ag
+         lhs.annotatedTree = @loc.annotatedTree
+         loc.annotatedTree =
+           -- reconstruct the Identifier to avoid cycles, not sure
+           -- what exactly is happening here with implicit rules
+           -- to do with loc.annotatedTree, lhs.annotatedTree and
+           -- references to @lhs.annotatedTree, @annotatedTree, etc.
+           let t = Identifier @ann.annotatedTree @i.annotatedTree
+           in fromMaybe t $ do
+               case tcfAddQualifiers @lhs.flags of
+                 False -> Nothing
+                 True -> do
+                        ((q,i),_) <- either (const Nothing) Just @loc.elkp
+                        -- small hack: select lists don't return qualifiers
+                        -- so this breaks the order by
+                        -- todo: fix this: if a qualifier in an order by
+                        -- comes from a tref then should be able to add a qualifier
+                        if q /= ""
+                          then -- todo: quote identifiers if needed
+                               return $ Identifier @ann.annotatedTree
+                                          (Name emptyAnnotation [Nmc $ T.unpack q, Nmc $ T.unpack i])
+                          else return t
+         i.tpe = Left []
+
+
+{-
+
+---------------------------------------
+
+op calls, fn calls, etc.
+
+-}
+
+
+    | App BinaryOp PrefixOp PostfixOp SpecialOp
+         loc.ttpe :: {Either [TypeError] ([TypeExtra],TypeExtra)}
+         loc.tpe :: {Either [TypeError] TypeExtra}
+         loc.tpe = fmap snd @loc.ttpe
+    | App
+         args.expectedTypes = either (const []) id $ fmap fst @loc.ttpe
+{-
+
+this is the hack for odbc functions
+
+if we are immediately inside an odbc {fn ...} node, then the
+odbcFunction attr will be set to true. If this is the case, we prefix
+the function name with !odbc- which simulates the fact that the odbc
+functions come from a different namespace to the non odbc functions. In the catalog, we have the odbc function entries under these modified names e.g
+{fn left(x,1)}
+is treated as:
+{fn "!odbc-left"(x,1)}
+
+-}
+         loc.funName = let y = if @lhs.odbcFunction
+                               then let f [] = []
+                                        f [Nmc x] = [Nmc $ "!odbc-" ++ x]
+                                        f [QNmc x] = [QNmc $ "!odbc-" ++ x]
+                                        f [x] = [x]
+                                        f (x:xs) = x:f xs
+                                    in (\(Name a nms) -> Name a (f nms)) @funName.originalTree
+                               else @funName.originalTree
+                       in {-trace (show y)-} y
+{-
+
+special case for odbc convert. this is here since we need to look at
+the value of the second arg which is a keyword to determine the result
+type. The proper solution should be:
+
+1. same sort of thing as for datepart, etc.: type check the identifier
+better using a proper special case
+
+2. pass the value of the literal keyword (which is basically an enum)
+to tcAppLike so that this function or one of the 20 wrappers and
+helpers inside it can determine the correct return type
+
+-}
+         loc.ttpe =
+           case @originalTree of
+             (App _ (Name _ [Nmc "count"]) [Star _]) ->
+                 tcAppLike (tcfDialect @lhs.flags)
+                           @lhs.cat (nameComponents @loc.funName)
+                           (getMaybeIntsFromLiterals @args.originalTree)
+                           [Just $ mkTypeExtraNN UnknownType]
+             --(App _ (Name _ [Nmc n]) [_,Identifier _ (Name _ [Nmc tyi])])
+             --    | trace (show n) False -> undefined
+             (App _ (Name _ [Nmc n]) [_,Identifier _ (Name _ [Nmc tyi])])
+                 | @lhs.odbcFunction && map toLower n == "convert" -> do
+                 (ts,_r) <- do
+                           t <- @loc.dialectTypeName "int"
+                           tcAppLike (tcfDialect @lhs.flags)
+                             @lhs.cat (nameComponents @loc.funName) (getMaybeIntsFromLiterals @args.originalTree)
+                             [Just $ mkTypeExtraNN UnknownType, Just $ mkTypeExtraNN $ ScalarType t]
+                 r' <- maybe (Left [UnrecognisedIdentifier $ T.pack tyi]) (Right . mkTypeExtra)
+                          $ lookup (map toLower tyi) odbcConvertTypes
+                 Right (ts, r')
+             _ -> tcAppLike (tcfDialect @lhs.flags)
+                            @lhs.cat (nameComponents @loc.funName) (getMaybeIntsFromLiterals @args.originalTree) @args.upTypes
+    | BinaryOp
+         loc.ttpe = tcAppLike (tcfDialect @lhs.flags)
+                              @lhs.cat (nameComponents @opName.originalTree) (getMaybeIntsFromLiterals [@arg0.originalTree,@arg1.originalTree])
+                              [@arg0.upType,@arg1.upType]
+         (arg0.expectedType,arg1.expectedType) =
+            case @loc.ttpe of
+              Right ([t0,t1],_) -> (Just t0,Just t1)
+              _ -> (Nothing,Nothing)
+    | PrefixOp PostfixOp
+         loc.ttpe = tcAppLike (tcfDialect @lhs.flags) @lhs.cat (nameComponents @opName.originalTree) (getMaybeIntsFromLiterals [@arg.originalTree]) [@arg.upType]
+         arg.expectedType =
+            case @loc.ttpe of
+              Right ([t],_) -> Just t
+              _ -> Nothing
+    | SpecialOp
+         loc.ttpe = tcAppLike (tcfDialect @lhs.flags) @lhs.cat (nameComponents @opName.originalTree) (getMaybeIntsFromLiterals @args.originalTree) @args.upTypes
+         args.expectedTypes = either (const []) id $ fmap fst @loc.ttpe
+    | AggregateApp
+         loc.tpe =
+           case @fn.originalTree of
+             (App _ fnm@(Name _ [Nmc "count"]) [Star _]) ->
+                  fmap snd $ tcAppLike (tcfDialect @lhs.flags) @lhs.cat (nameComponents fnm) [] [Just $ mkTypeExtraNN UnknownType]
+             _ -> maybe (Left []) Right @fn.upType
+    | WindowApp
+         loc.tpe = maybe (Left []) Right @fn.upType
+
+-- ImplicitCastToDo: incorrect for decode, but it is converted to Case earlier
+--    if there are other such functions, create a library function and call it here
+sem ScalarExpr
+    | App SpecialOp LiftApp
+        args.expectedCast = False
+    | PrefixOp PostfixOp
+        arg.expectedCast = False
+    | BinaryOp
+        arg0.expectedCast = False
+        arg1.expectedCast = False
+    | AggregateApp WindowApp
+        fn.expectedCast = False
+        --orderBy.expectedCast = False
+    | WindowApp
+        partitionBy.expectedCast = False
+
+{-
+tcAppLike:: Dialect -> Catalog -> [NameComponent]
+            -> [Maybe Int] -> [Maybe TypeExtra]
+            -> Either [TypeError] ([TypeExtra],TypeExtra)
+
+tcAppLike d cat anm@[Nmc dd] lits [_,a0,a1]
+    | map toLower dd == "datediff" = do
+  -- dodgy hack for datediff
+  tys <- mapM (maybe (Left []) Right) [a0,a1]
+  (ats,rt) <- matchAppExtra d cat anm lits (mkTypeExtraNN typeInt : tys)
+  return (ats,rt)
+tcAppLike d cat anm@[Nmc dd] lits [_,a0]
+    | map toLower dd == "datepart" = do
+  tys <- mapM (maybe (Left []) Right) [a0]
+  (ats,rt) <- matchAppExtra d cat anm lits (mkTypeExtraNN typeInt : tys)
+  return (ats,rt)
+tcAppLike d cat anm@[Nmc dd] lits [_,a0,a1]
+    | map toLower dd == "dateadd" = do
+  tys <- mapM (maybe (Left []) Right) [a0,a1]
+  (ats,rt) <- matchAppExtra d cat anm lits (mkTypeExtraNN typeInt : tys)
+  return (ats,rt)
+
+--tcAppLike d cat anm@(Name _ [Nmc dd]) a b
+--    |  trace ("xz: " ++ show (a,b)) False = undefined
+
+tcAppLike d cat anm@[Nmc dd] _ ts
+    | map toLower dd == "!odbc-convert" = do
+                 (tys :: [TypeExtra]) <- mapM (maybe (Left []) Right) ts
+                 (ats,rt) <- matchAppExtra d cat anm [] tys
+                 return (ats,rt)
+
+tcAppLike d cat anm@[Nmc dd] _ [_,a0,a1]
+    | map toLower dd `elem` ["!odbc-timestampadd","!odbc-timestampdiff"] = do
+  tys <- mapM (maybe (Left []) Right) [a0,a1]
+  (ats,rt) <- matchAppExtra d cat anm [] (mkTypeExtraNN typeInt : tys)
+  return (ats,rt)
+
+
+tcAppLike d cat anm lits teArgs = do
+  -- get the types of the arguments
+  -- then lookup in TypeConversion.matchAppExtra
+  tys <- mapM (maybe (Left []) Right) teArgs
+  (ats,rt) <- matchAppExtra d cat anm lits tys
+  return (ats,rt)
+-}
+
+{
+getMaybeIntsFromLiterals :: [ScalarExpr] -> MatchAppLiteralList
+getMaybeIntsFromLiterals sel = map extractor sel
+  where
+   extractor :: ScalarExpr -> Maybe Int
+   extractor (NumberLit _ s) = readMaybe s :: Maybe Int
+   extractor _ = Nothing
+}
+{-
+--------------------------------------------
+
+case
+
+for simple case, check all the when parts are compatible with the
+value to check against, and the check the then types are compatible
+
+for non simple, check all the when expression are bool, and check all
+the then types are compatible
+
+-}
+
+attr CaseScalarExprListScalarExprPairList
+  syn whenTypes :: {[[Maybe TypeExtra]]}
+     ,thenTypes :: {[Maybe TypeExtra]}
+
+sem CaseScalarExprListScalarExprPairList
+  | Cons lhs.whenTypes = @hd.whenTypes : @tl.whenTypes
+         lhs.thenTypes = @hd.thenType : @tl.thenTypes
+  | Nil lhs.whenTypes = []
+        lhs.thenTypes = []
+        lhs.upTypes = []
+
+attr CaseScalarExprListScalarExprPair
+  syn whenTypes :: {[Maybe TypeExtra]}
+     ,thenType :: {Maybe TypeExtra}
+
+sem CaseScalarExprListScalarExprPair
+    | Tuple lhs.whenTypes = @x1.upTypes
+            lhs.thenType = @x2.upType
+
+attr CaseScalarExprListScalarExprPairList CaseScalarExprListScalarExprPair
+  inh downEnv :: Environment
+  syn upTypes :: {[Maybe TypeExtra]}
+
+sem ScalarExpr
+    | Case CaseSimple
+        loc.whenTypes = @cases.whenTypes
+        loc.thenTypes = @cases.thenTypes ++ maybe [] ((:[]) . Just) @els.upType
+    | Case
+        loc.tpe = do
+                  wt <- mapM (maybe (Left []) Right) $ concat @loc.whenTypes
+                  -- probably the when types should be checked inside each when node
+                  -- and type errors attach there, and ignored here
+                  bt <- ScalarType <$> @loc.dialectTypeName "boolean"
+                  when (any ((/= bt) . teType) wt)
+                      $ Left [WrongTypes bt $ map teType wt]
+                  tt <- mapM (maybe (Left []) Right) @loc.thenTypes
+                  tse <- resolveResultSetTypeExtra @lhs.cat tt
+                  return $ if isNothing @els.originalTree
+                           then tse{teNullable=True}
+                           else tse
+        cases.whenExpectedType =
+            do
+            ws <- sequence $ concat @loc.whenTypes
+            w <- either (const Nothing) Just $ resolveResultSetTypeExtra @lhs.cat ws
+            bt <- ScalarType <$> either (const Nothing) Just (@loc.dialectTypeName "boolean")
+            Just $ TypeExtra bt Nothing Nothing $ teNullable w
+        cases.thenExpectedType = either (const Nothing) Just @loc.tpe
+        els.expectedType = either (const Nothing) Just @loc.tpe
+        els.expectedCast = True
+    | CaseSimple
+        loc.whent =
+          do
+          wt <- mapM (maybe (Left []) Right) $ concat @loc.whenTypes
+          vt <- maybe (Left []) Right @value.upType
+          resolveResultSetTypeExtra @lhs.cat (vt : wt)
+        loc.tpe =
+          do
+          _ <- @loc.whent
+          tt <- mapM (maybe (Left []) Right) @loc.thenTypes
+          resolveResultSetTypeExtra @lhs.cat tt
+        cases.whenExpectedType = either (const Nothing) Just @loc.whent
+        value.expectedType = either (const Nothing) Just @loc.whent
+        value.expectedCast = False
+        cases.thenExpectedType = either (const Nothing) Just @loc.tpe
+        els.expectedType = either (const Nothing) Just @loc.tpe
+        els.expectedCast = True
+
+attr CaseScalarExprListScalarExprPairList CaseScalarExprListScalarExprPair
+  inh thenExpectedType :: {Maybe TypeExtra}
+  inh whenExpectedType :: {Maybe TypeExtra}
+
+sem CaseScalarExprListScalarExprPair
+  | Tuple x1.expectedTypes = maybe [] repeat @lhs.whenExpectedType
+          x1.expectedCast = False
+          x2.expectedType = @lhs.thenExpectedType
+          x2.expectedCast = True
+
+
+
+sem ScalarExpr
+  | Parens
+    loc.tpe = maybe (Left []) Right @ex.upType
+
+
+{-
+---------------------------------
+
+subqueries
+
+-}
+
+-- exists: will work on any subselect so no checking needed
+sem ScalarExpr
+    | Exists
+        loc.tpe = (mkTypeExtraNN . ScalarType) <$> (@loc.dialectTypeName "boolean")
+
+{-
+== scalarsubquery
+1 col -> type of that col
+2 + cols -> row type with those components
+-}
+
+sem ScalarExpr
+    | ScalarSubQuery
+        loc.tpe =
+            do
+            selType <- maybe (Left []) Right @sel.upType
+            case length selType of
+              0 -> Left [InternalError "no columns in scalar subquery?"]
+              1 -> Right $ snd $ head selType
+              _ -> Right $ mkTypeExtra $ AnonymousCompositeType
+                      $ map (teType . snd) selType
+
+        -- support for correlated subqueries
+        sel.outerDownEnv = Just @lhs.downEnv
+    | Exists
+        sel.outerDownEnv = Just @lhs.downEnv
+    | ScalarSubQuery Exists
+        sel.expectedType = liftM (map snd) @sel.upType
+        --sel.expectedCast = True
+
+{-
+== inlist
+todo: make the ast and typechecking a special case of lifted operator
+-}
+
+attr InList
+  inh expectedType :: {Maybe TypeExtra}
+  inh expectedCast :: {Bool}
+  syn listType :: {Either [TypeError] TypeExtra}
+
+
+sem ScalarExpr
+    | InPredicate
+        loc.rt :: {Either [TypeError] TypeExtra}
+        loc.rt = do
+                 lt <- @list.listType
+                 expt <- maybe (Left []) Right @expr.upType
+                 resolveResultSetTypeExtra @lhs.cat [expt, lt]
+        loc.tpe = do
+                  r <- @loc.rt
+                  bt <- ScalarType <$> @loc.dialectTypeName "boolean"
+                  return $ TypeExtra bt Nothing Nothing $ teNullable r
+        list.expectedType = either (const Nothing) Just @loc.rt
+        expr.expectedType = either (const Nothing) Just @loc.rt
+
+sem InList
+    | InList
+        lhs.listType = mapM (maybe (Left []) Right) @exprs.upTypes
+                       >>= resolveResultSetTypeExtra @lhs.cat
+        exprs.expectedTypes = maybe [] repeat @lhs.expectedType
+        -- ImplicitCastToDo: not sure; but this is comparison semantics
+        exprs.expectedCast = False
+
+    | InQueryExpr
+        lhs.listType =
+            do
+            st <- maybe (Left []) Right (map snd <$> @sel.upType)
+            case length st of
+                      0 -> Left [InternalError
+                                 "got subquery with no columns? in inselect"]
+                      1 -> Right $ head st
+                            -- ImplicitCastToDo: probably, TypeExtra goes inside, like in CompositeType
+                      _ -> Right $ mkTypeExtra $ AnonymousCompositeType
+                              $ map teType st
+        sel.expectedType = liftM (map snd) @sel.upType
+        --sel.expectedCast = True
+
+{-
+----------------------------------------------------
+bit hacky: for star and qstar, when expand stars isn't on
+want to annotated the star or qstar with a type, so
+get the cols and wrap in composite type
+TODO: the envExpandStar is shared with the select list stuff
+want to put the proper error from the catalog in the tpe here
+instead of ignoring it and setting left badstarexpand
+-}
+sem ScalarExpr
+    | Star QStar
+        loc.tpe :: {Either [TypeError] TypeExtra}
+        loc.tpe = case @originalTree of
+                    Star _ ->
+                      E.envExpandStar Nothing @lhs.downEnv
+                      >>= @loc.starCS
+                    QStar _ q -> do
+                      E.envExpandStar (Just q) @lhs.downEnv
+                      >>= @loc.starCS
+                    _ -> Left [InternalError "wrong ctor in sem rule for star, qstar in scalarexprs.ag"]
+
+        loc.starCS = Right . mkTypeExtraNN . CompositeType . map (\((_q,n),t) -> (n,t))
+
+
+{-
+-----------------------------------------------
+fallback for unimplemented ctors
+
+-}
+
+-- temp
+sem ScalarExpr
+    | PositionalArg LiftApp AntiScalarExpr
+        loc.tpe = Left []
+
+
+--------------------------------
+
+sem ScalarExprRoot
+  | ScalarExprRoot expr.expectedType = Nothing
+
+-- ImplicitCastToDo: which handling is proper: this or that of MaybeBoolExpr?
+sem JoinExpr
+  | JoinOn
+      expr.expectedType = do
+                          bt <- ansiTypeNameToDialect (tcfDialect @lhs.flags) "boolean"
+                          Just $ TypeExtra (ScalarType bt) Nothing Nothing
+                               $ maybe False teNullable @expr.upType
+      expr.expectedCast = False
+
+sem ScalarExpr
+  | AggregateApp WindowApp fn.expectedType = Nothing
+
+--inpredicate
+
+sem ScalarExprDirectionPair
+  | Tuple x1.expectedType = Nothing
+
+sem MaybeBoolExpr
+  | Just
+      just.expectedType = Nothing -- Just $ mkTypeExtra typeBool
+      just.expectedCast = False
+
+sem QueryExpr
+  | Select
+      selGroupBy.expectedTypes = []
+      selLimit.expectedType = Nothing
+      selOffset.expectedType = Nothing
+
+sem ScalarExpr
+  | LiftApp args.expectedTypes = []
+
+sem ScalarExpr
+  | WindowApp partitionBy.expectedTypes = []
+
+{-sem Root
+   | Root
+       loc.imCast = Nothing
+-}
+sem InList
+  | InList ann.imCast = Nothing
+  | InQueryExpr ann.imCast = Nothing
+
+{-sem JoinExpr
+    | JoinOn JoinUsing ann.imCast = Nothing
+
+sem Name
+    | Name ann.imCast = Nothing
+sem QueryExpr
+    | Select ann.imCast = Nothing
+
+
+-}
+
+{
+classifyInteger :: Dialect -> String -> Either [TypeError] Text
+classifyInteger d s = maybe (Left []) Right $ case (readMaybe s :: Maybe Integer) of
+                      -- assuming number literals are always positive
+                      Just n | n < (2 ^ (31 :: Integer)) -> ansiTypeNameToDialect d "int"
+                             | n < (2 ^ (63 :: Integer)) -> ansiTypeNameToDialect d "bigint"
+                      _ -> ansiTypeNameToDialect d "numeric"
+}
+
+-- boilerplate for cast contexts
+
+sem AlterColumnAction | SetDefault def.assignmentCastContext = False
+sem CaseScalarExprListScalarExprPair | Tuple x1.assignmentCastContext = False
+sem CaseScalarExprListScalarExprPair | Tuple x2.assignmentCastContext = False
+sem Constraint | CheckConstraint expr.assignmentCastContext = False
+sem InList | InList exprs.assignmentCastContext = False
+sem InList | InQueryExpr sel.assignmentCastContext = False
+sem JoinExpr | JoinOn expr.assignmentCastContext = False
+sem MaybeBoolExpr | Just just.assignmentCastContext = False
+sem MaybeSelectList | Just just.assignmentCastContext = False
+sem RowConstraint | DefaultConstraint expr.assignmentCastContext = False
+sem RowConstraint | RowCheckConstraint expr.assignmentCastContext = False
+sem ScalarExprDirectionPair | Tuple x1.assignmentCastContext = False
+sem ScalarExprListStatementListTriple | Tuple x1.assignmentCastContext = False
+sem ScalarExprRoot | ScalarExprRoot expr.assignmentCastContext = False
+sem ScalarExprStatementListPair | Tuple x1.assignmentCastContext = False
+sem ScalarExprTransposedList | Cons hd.assignmentCastContext = False
+sem SetClause | MultiSetClause ex.assignmentCastContext = False
+sem SetClause | SetClause ex.assignmentCastContext = False
+sem Statement | AlterView expr.assignmentCastContext = False
+sem Statement | Assignment value.assignmentCastContext = False
+sem Statement | CaseStatementSimple val.assignmentCastContext = False
+sem Statement | CreateTableAs expr.assignmentCastContext = False
+sem Statement | CreateTrigger fnArgs.assignmentCastContext = False
+sem Statement | CreateView expr.assignmentCastContext = False
+sem Statement | ExecStatement args.assignmentCastContext = False
+sem Statement | Execute expr.assignmentCastContext = False
+sem Statement | ForIntegerStatement from.assignmentCastContext = False
+sem Statement | ForIntegerStatement to.assignmentCastContext = False
+sem Statement | ForQueryStatement sel.assignmentCastContext = False
+sem Statement | Insert insData.assignmentCastContext = False
+sem Statement | Perform expr.assignmentCastContext = False
+sem Statement | QueryStatement ex.assignmentCastContext = False
+sem Statement | Raise args.assignmentCastContext = False
+sem Statement | Return value.assignmentCastContext = False
+sem Statement | ReturnNext expr.assignmentCastContext = False
+sem Statement | ReturnQuery sel.assignmentCastContext = False
+sem Statement | WhileStatement expr.assignmentCastContext = False
+sem TableRef | FunTref fn.assignmentCastContext = False
+sem TableRef | SubTref sel.assignmentCastContext = False
+sem WithQuery | WithQuery ex.assignmentCastContext = False

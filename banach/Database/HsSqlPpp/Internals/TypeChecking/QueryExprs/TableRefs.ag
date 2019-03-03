@@ -1,0 +1,166 @@
+
+-- upenv is the environment produced by the tablerefs
+
+attr TableRefList
+     syn upEnv :: Environment
+
+attr TableRef
+     syn upEnv :: Environment
+
+-- support for passing environment down into onexprs
+attr OnExpr
+  inh downEnv :: Environment
+
+
+-- combine a tref list using cross joins
+
+sem TableRefList
+  | Nil lhs.upEnv = E.emptyEnvironment
+  | Cons
+      lhs.upEnv = if E.isEmptyEnv @tl.upEnv
+                  then @hd.upEnv
+                  else --problem: where to put the error?
+                         either (error . show) id $
+                         E.createJoinTrefEnvironment @lhs.cat @hd.upEnv @tl.upEnv E.Inner $ Just []
+
+-- boilerplate: pass any error from the env to the annotation
+-- pass any successful env in the upEnv
+-- Alex: default precision and nullable values that mkTypeExtra produces
+--        above the TrefType ctor are not used; the information is inside TrefType
+sem TableRef
+  | Tref FunTref SubTref JoinTref TableAlias FullAlias TableRefParens OdbcTableRef
+      loc.eEnv :: {Either [TypeError] Environment}
+      ann.tpe = either Left (Right . mkTypeExtraNN . TrefType)
+                (@loc.eEnv >>= E.envExpandStar Nothing)
+      -- todo: what to do here?
+      lhs.upEnv = either (const E.brokeEnvironment) id @loc.eEnv
+
+  | Tref
+      -- if the referenced table doesn't exist, want to attach the error
+      -- only to the name node. So this code should be fixed to get a Maybe [NameComponent]
+      -- attribute from the @tbl or something
+      loc.eEnv = E.envCreateTrefEnvironment @lhs.cat (nameComponents @tbl.originalTree)
+      tbl.tpe = Left []
+
+  | JoinTref
+      loc.eEnv = E.createJoinTrefEnvironment @lhs.cat
+                   @tref0.upEnv @tref1.upEnv (convertJoinType @joinType)
+                   $ case (@joinType,@onExpr.originalTree) of
+                      -- natural join
+                      (x,Nothing) | x /= Cross -> Nothing
+                      -- using join
+                      (_,Just (JoinUsing _ nms)) -> Just nms
+                      -- cross join
+                      _ -> Just []
+      -- this triggers uuagcs cycle detection, not sure why
+      onExpr.downEnv = either (const E.brokeEnvironment) id @loc.eEnv
+  | SubTref
+      loc.eEnv = maybe (Left []) id
+                 $ fmap E.envSelectListEnvironment @sel.upType
+      sel.expectedType = liftM (map snd) @sel.upType
+      --sel.expectedCast = True
+  | TableRefParens OdbcTableRef
+      loc.eEnv = Right $ @tref.upEnv
+  | FullAlias
+      loc.eEnv = Right $ E.createTrefAliasedEnvironment
+                         (ncStrT @tb) (Just $ map ncStrT @cols) @tref.upEnv
+  | TableAlias
+      loc.eEnv = Right $ E.createTrefAliasedEnvironment
+                         (ncStrT @tb) Nothing @tref.upEnv
+  | FunTref
+      loc.eEnv = Left []
+
+sem TableRef
+  | Tref FunTref JoinTref TableRefParens SubTref OdbcTableRef
+      lhs.annotatedTree =
+          let mk (q,is) = FullAlias emptyAnnotation
+                                   (Nmc q)
+                                   (map Nmc is)
+                                   $ wrapIfJoin @annotatedTree
+              wrapIfJoin tr = case tr of
+                                 JoinTref {} -> TableRefParens emptyAnnotation tr
+                                 _ -> tr
+          in maybe @loc.annotatedTree mk @loc.newAlias
+{-
+fixing up isn't working
+
+new approach:
+
+use inh attrs to signal whether there is a alias already, and what
+kind it is then have to do something extra to deal when there is a
+table alias only
+this will remove the need for the fixups above using mk
+will still be quite complicated
+
+
+-}
+
+
+  | FullAlias
+      -- full alias with another alias underneath, get rid of
+      -- the superfluous one. This mostly avoids adding a second
+      -- alias to a subtref. Quite hacky.
+      lhs.annotatedTree =
+          case @tref.annotatedTree of
+            -- hack: when an alias is auto added to a subtref,
+            -- end up with an invalid fullalias with the
+            -- qualifier being ""
+            -- a subtref is required to have an alias
+            -- when this is just a table alias
+            -- then have to take the table name out of this
+            -- to add to the full alias
+            -- haven't checked what happens if there is already a full
+            -- alias
+            FullAlias _ t _ tr -> FullAlias emptyAnnotation
+                                    (if @tb == Nmc "" then t else @tb) @cols {-$ @loc.wrapIfJoin-} tr
+            TableAlias _ _ tr -> FullAlias emptyAnnotation @tb @cols {-$ @loc.wrapIfJoin -} tr
+            -- also check: if alias of join, then need to add parens
+            -- otherwise will produce invalid syntax
+            --tr@(JoinTref {}) -> FullAlias emptyAnnotation @tb @cols tr
+                                -- $ @loc.wrapIfJoin tr
+            _ -> @annotatedTree
+
+  | TableAlias
+      lhs.annotatedTree =
+          case @tref.annotatedTree of
+            FullAlias _ _ c tr -> FullAlias emptyAnnotation @tb c tr -- $ @loc.wrapIfJoin tr
+            TableAlias _ _ tr -> TableAlias emptyAnnotation @tb tr -- $ @loc.wrapIfJoin tr
+            --tr@(JoinTref {}) -> TableAlias emptyAnnotation @tb $ @loc.wrapIfJoin tr
+            _ -> @annotatedTree
+
+sem TableRef
+  | JoinTref FunTref TableRefParens SubTref OdbcTableRef
+      -- try to add a full table alias if possible
+      -- not possible for some joins
+      loc.newAlias =
+        if tcfAddFullTablerefAliases @lhs.flags
+        then do
+          env <- either (const Nothing) Just @loc.eEnv
+          cs <- either (const Nothing) Just $ E.envExpandStar Nothing env
+          let qs = map (fst . fst) cs
+          if all (== head qs) qs
+            then return (T.unpack $ head qs, map (T.unpack . snd . fst) cs)
+            else {-trace ("not all same:" ++ show qs
+                       ++ "\n" ++ ppShow @originalTree
+                       ++ "\n" ++ ppShow env) -} Nothing
+        else Nothing
+  | Tref
+      -- special case for tref, the expand star will give the
+      -- system columns too, which we don't want
+      loc.newAlias =
+        if tcfAddFullTablerefAliases @lhs.flags
+        then do
+          --FIXME (_,n)
+          ((_,n),cs,_) <- either (const Nothing) Just
+                        $ catLookupTableAndAttrs @lhs.cat
+                        (nameComponents @tbl.originalTree)
+          return (T.unpack n, (map (T.unpack . fst) cs))
+        else Nothing
+
+{
+convertJoinType:: JoinType -> E.JoinType
+convertJoinType LeftOuter = E.LeftOuter
+convertJoinType RightOuter = E.RightOuter
+convertJoinType FullOuter = E.FullOuter
+convertJoinType _ = E.Inner
+}

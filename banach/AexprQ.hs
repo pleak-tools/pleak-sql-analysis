@@ -567,6 +567,9 @@ aexprToString aexpr =
         ABinary AGTint x1 x2 -> "(" ++ aexprToString x1 ++ " > " ++ aexprToString x2 ++ ")"
         ABinary AEQstr x1 x2 -> "(" ++ aexprToString x1 ++ " = " ++ aexprToString x2 ++ ")"
         ABinary ALike x1 x2 -> "(" ++ aexprToString x1 ++ " LIKE " ++ aexprToString x2 ++ ")"
+        -- we have this complicated workaroud since <@> is a strange operation that is not supported by default
+        ABinary ADistance (AVector xs1) (AVector xs2) -> "(" ++ (intercalate "+" ts) ++ ")^0.5"
+            where ts = zipWith (\x1 x2 -> "((" ++ aexprToString x1 ++ ") - (" ++ aexprToString x2 ++ "))^2") xs1 xs2
         ABinary ADistance x1 x2 -> "(" ++ aexprToString x1 ++ " <@> " ++ aexprToString x2 ++ ")"
 
 ------------------------------------------------------------------------------------

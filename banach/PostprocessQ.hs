@@ -211,12 +211,12 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let expectedCost = delta * cost
   traceIOIfDebug debug ("params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
 
-  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show finalError]
+  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (finalError * 100.0)]
   -- TODO we want to output more values to the user
   --putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0),
   --                                                                                  show (pr_post * 100.0),
   --                                                                                  show expectedCost,
-  --                                                                                  show (finalError * 100),
+  --                                                                                  show (finalError * 100.0),
   --                                                                                  show epsilon,
   --                                                                                  show finalBeta,
   --                                                                                  show finalSds]

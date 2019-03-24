@@ -56,3 +56,10 @@ sendStringsDoublesQueryToDb args q' = do
   let q = replaceImproperSymbols q'
   results <- sendQueryToDb args q
   return $ map (\ [res1,res2] -> (if res1 == SqlNull then "" else fromSql res1, if res2 == SqlNull then 0.0 else fromSql res2)) results
+
+-- execute a query that returns a list of 'string list and a floating-point value' pairs
+sendStringListsDoublesQueryToDb :: ProgramOptions -> String -> IO [([String],Double)]
+sendStringListsDoublesQueryToDb args q' = do
+  let q = replaceImproperSymbols q'
+  results <- sendQueryToDb args q
+  return $ map (\ res -> (map (\r -> if r == SqlNull then "" else fromSql r) (init res), if (last res) == SqlNull then 0.0 else fromSql (last res))) results

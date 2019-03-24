@@ -1,3 +1,4 @@
 cat.cat_id exact;
-cat.gender set 'male' 'female';
-cat.color set 'black' 'gray' 'white';
+cat.gender setPrior ('male', 0.5) ('female',0.5);
+cat.color setPrior ('black',0.5) ('white',0.5);
+catfood.color set 'black' 'white';

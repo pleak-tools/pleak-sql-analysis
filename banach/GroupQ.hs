@@ -8,7 +8,7 @@ import Data.List.Split
 -------------------------------
 
 data GroupData = GR String [String] [String] [[String]] | NoGR deriving Show
-data OneGroupData = OneGR [String] [String] deriving Show
+data OneGroupData = OneGR [String] [String] deriving (Show, Eq, Ord)
 
 getGroupTableName (GR x _ _ _) = x
 getGroupTableName NoGR = defaultGroupTable

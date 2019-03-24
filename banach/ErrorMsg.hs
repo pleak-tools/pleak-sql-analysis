@@ -18,6 +18,12 @@ at2 xs x = if x < length xs then xs !! x else error $ error_arrElem x "(an unsho
 equal :: (Ord a) => a -> a -> Bool
 equal x y = (x == y)
 
+notequal :: (Ord a) => a -> a -> Bool
+notequal x y = (x /= y)
+
+divide :: (Fractional a) => a -> a -> a
+divide x y = x / y
+
 --------------------------------------------------------
 -- some hardcoded error message
 error_negativeNoise = "ERROR: NEGATIVE NOISE LEVEL - differential privacy could not be achieved, try to increase epsilon!"
@@ -39,6 +45,7 @@ error_queryExpr t   = "ERROR: Unsupported term in the expression " ++ show t
 error_queryExpr_prefices           = "ERROR: Need to add a prefix to the columns, i.e. write \'tableName.x\' for the column \'x\' and the corresponding \'tableName\'."
 error_queryExpr_unnamed t          = "ERROR: Need to define an alias for intermediate query column " ++ show t
 error_queryExpr_syntax t           = "ERROR: Unsupported query syntax " ++ show t
+error_queryExpr_compStr t          = "ERROR: We cannot yet compare two sensitive strings and analyse " ++ show t
 error_queryExpr_groupBy            = "ERROR: GROUP BY is allowed only for queries of the form SELECT x1,...,xn, y FROM t GROUP BY x1,...,xn"
 error_queryExpr_aggrInterm t       = "ERROR: Aggregator " ++ show t ++ " not supported in the intermediate tables."
 error_queryExpr_aggrFinal t        = "ERROR: Aggregator " ++ show t ++ " not supported in the final query."
@@ -65,10 +72,12 @@ error_internal_queryExprFilter t       = error_internal ++ "\n query expression 
 error_internal_normRegroup             = error_internal ++ "\n norm regroup problem."
 error_internal_extractScaling t        = error_internal ++ "\n cannot extract scaling from " ++ show t
 error_internal_sensitivityMatrix n1 n2 = error_internal ++ "\n " ++ show n2 ++ " tables, but " ++ show n1 ++ " columns in sensitivity matrix."
-error_internal_fillMissing x i xs      = "case x < i in fillMissing: " ++ show x ++ " < " ++ show i ++ " in " ++ show xs
+error_internal_fillMissing x i xs      = error_internal ++ "case x < i in fillMissing: " ++ show x ++ " < " ++ show i ++ " in " ++ show xs
+error_internal_badlength z xs ys       = error_internal ++ " the following data in " ++ show z ++ " should be of equal length: " ++ show xs ++ " and " ++ show ys
 
 error_mapElem x xs     = "INTERNAL ERROR: Element " ++ show x ++ " is not in " ++ show xs
 error_arrElem x xs     = "INTERNAL ERROR: Index " ++ show x ++ " is out of bounds in array " ++ show xs
+
 error_badNorm   t sens = "ERROR: could not match the query norm " ++ show t ++ " agaist the variable " ++ show sens ++ ", which should be declared as numeric (i.e. be of type INT8 or FLOAT8 in the schema, and not embedded by \'l0\' in the database norm)."
 error_badLNNorm t sens = "ERROR: could not match the query norm " ++ show t ++ " agaist the variable " ++ show sens ++ ", which should be declared as logarithmic (i.e. be of type INT8 or FLOAT8 in the schema, and embedded into \'ln\' construction in the database norm)."
 error_badLZNorm t sens = "ERROR: could not match the query norm " ++ show t ++ " agaist the variable " ++ show sens ++ ", which should be declared as discrete (i.e. be of type \'TEXT\' datatype in the schema, and embedded by \'l0\' construction the database norm)."

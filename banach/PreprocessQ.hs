@@ -582,7 +582,7 @@ constructQueryData initialSubQueryDataMap (queryName:qs) =
 
     -- all direct column names need to be preficed, since our analyser does not check which columns come from which table
     let goodVars = map (\x -> if elem tsep x then True else False) directColNames in
-    if not (foldr (&&) True goodVars) then error $ error_queryExpr_prefices  else 
+    if not (foldr (&&) True goodVars) then error $ error_queryExpr_prefices directColNames else
 
     let subExprsQ = (\ (F aexpr _) -> getAllSubExprs False aexpr) query in
     let subExprsF = foldr S.union S.empty $ map (getAllSubExprs False) filterAexprs in

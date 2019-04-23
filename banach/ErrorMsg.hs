@@ -42,7 +42,7 @@ error_filterExpr ord b   = "ERROR: Unsupported filter for relation " ++ show ord
 error_filterExprConstr t = "ERROR: Unknown filter construction " ++ show t
 
 error_queryExpr t   = "ERROR: Unsupported term in the expression " ++ show t
-error_queryExpr_prefices           = "ERROR: Need to add a prefix to the columns, i.e. write \'tableName.x\' for the column \'x\' and the corresponding \'tableName\'."
+error_queryExpr_prefices t         = "ERROR: Need to add a prefix to the columns, i.e. write \'tableName.x\' for the column \'x\' and the corresponding \'tableName\'. We see " ++ show t ++ " and do not know the source table."
 error_queryExpr_unnamed t          = "ERROR: Need to define an alias for intermediate query column " ++ show t
 error_queryExpr_syntax t           = "ERROR: Unsupported query syntax " ++ show t
 error_queryExpr_compStr t          = "ERROR: We cannot yet compare two sensitive strings and analyse " ++ show t
@@ -94,7 +94,7 @@ error_attackerBreaksEverything = "ERROR: impossible to enforce policy against cu
 error_badAttackerPolicyCombination attState plcState = "ERROR: the combination of attacker state " ++ show attState ++ " and sensittive data state " ++ show plcState ++ " is not supported."
 err_badAttackerPolicy_n x     = "ERROR: negative number of choices in " ++ show x
 err_badAttackerPolicy_range x = "ERROR: lower bound is smaller than upper bound in " ++ show x
-err_badAttackerPolicy_Pr x    = "ERROR: the probbailities should be nonnegative and sum up to 1 in " ++ show x
+err_badAttackerPolicy_Pr x    = "ERROR: the probabilities should be nonnegative and sum up to 1 in " ++ show x
 err_badAttackerPolicy x       = "ERROR: unsupported attacker state " ++ show x
 err_badPolicy_r x             = "ERROR: negative radius in sensitive data state " ++ show x
 err_badPolicy x               = "ERROR: unsupported sensitive data state " ++ show x

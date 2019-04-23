@@ -56,7 +56,7 @@ isBadAttState x =
             RangeUn lb ub -> if lb <= ub then (False,"") else (True, err_badAttackerPolicy_range x)
             RangePr lb mp -> let prs = M.elems mp in
                              let ubs = M.keys  mp in
-                             if length (filter (< 0) prs) == 0 && sum prs == 1 then
+                             if length (filter (< 0) prs) == 0 && abs(sum prs - 1) < 0.000001 then
                                  if length (filter (< lb) ubs) == 0 then (False,"")
                                  else (True, err_badAttackerPolicy_range x)
                              else (True, err_badAttackerPolicy_Pr x)
@@ -64,13 +64,13 @@ isBadAttState x =
             SubSet _       -> (False,"")
             SubSetUn _     -> (False,"")
             SubSetPr mp    -> let prs = M.elems mp in
-                              if length (filter (< 0) prs) == 0 && sum prs == 1 then (False,"")
+                              if length (filter (< 0) prs) == 0 && abs(sum prs - 1) < 0.000001 then (False,"")
                               else (True, err_badAttackerPolicy_Pr x)
 
             IntSubSet _    -> (False,"")
             IntSubSetUn _  -> (False,"")
             IntSubSetPr mp -> let prs = M.elems mp in
-                              if length (filter (< 0) prs) == 0 && sum prs == 1 then (False,"")
+                              if length (filter (< 0) prs) == 0 && abs(sum prs - 1) < 0.000001 then (False,"")
                               else (True, err_badAttackerPolicy_Pr x)
 
             _ -> (True, err_badAttackerPolicy x)

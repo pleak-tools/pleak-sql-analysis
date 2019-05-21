@@ -75,6 +75,8 @@ error_internal_sensitivityMatrix n1 n2 = error_internal ++ "\n " ++ show n2 ++ "
 error_internal_fillMissing x i xs      = error_internal ++ "case x < i in fillMissing: " ++ show x ++ " < " ++ show i ++ " in " ++ show xs
 error_internal_badlength z xs ys       = error_internal ++ " the following data in " ++ show z ++ " should be of equal length: " ++ show xs ++ " and " ++ show ys
 
+error_internal_empty_taskname t        = error_internal ++ " the name of the output table " ++ t ++ " was not found in the query map."
+
 error_mapElem x xs     = "INTERNAL ERROR: Element " ++ show x ++ " is not in " ++ show xs
 error_arrElem x xs     = "INTERNAL ERROR: Index " ++ show x ++ " is out of bounds in array " ++ show xs
 

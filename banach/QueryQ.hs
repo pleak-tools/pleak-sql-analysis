@@ -128,7 +128,7 @@ insertZeroSens :: (S.Set B.Var) -> B.TableExpr -> (B.Expr, B.TableExpr)
 insertZeroSens tableSensitiveCols tableExpr =
     markTableExprCols tableSensitiveCols tableExpr
 
-normToExpr :: (Show a, Ord a) => String -> (M.Map VarName a) -> NormFunction -> (Norm a, ADouble)
+normToExpr :: (Show a, Ord a) => String -> (VarName -> a) -> NormFunction -> (Norm a, ADouble)
 normToExpr prefix inputMap (NF asgnMap y) =
     let x = getVarNameFromTableExpr y in
     let z = exprToNorm prefix inputMap asgnMap (asgnMap ! x) in

@@ -8,6 +8,7 @@ import ProgramOptions
 import CreateTablesQ
 import DatabaseQ
 import GroupQ
+import NormsQ hiding ((!!))
 import PolicyQ (VarState(..))
 import ErrorMsg
 import RangeUtils
@@ -44,9 +45,12 @@ data TaskMap = TM [(String,Bool)] deriving Show
 getMap :: TaskMap -> M.Map String Bool
 getMap (TM xs) = M.fromList xs
 
-data DataWrtTables = DWT [(String, String, OneGroupData, B.TableExpr,(String,String,String), [String])] deriving Show
-getData :: DataWrtTables -> [(String, String, OneGroupData, B.TableExpr,(String,String,String), [String])]
-getData (DWT xs) = xs
+data DataWrtTable = DWT String String OneGroupData B.TableExpr (String,String,String) [String] (String, Norm String, ADouble) deriving Show
+getData :: [DataWrtTable] -> [(String, String, OneGroupData, B.TableExpr,(String,String,String), [String])]
+getData xs = map (\(DWT x1 x2 x3 x4 x5 x6 _) -> (x1, x2, x3, x4, x5, x6)) xs
+
+getExtra :: DataWrtTable -> (String, Norm String, ADouble)
+getExtra (DWT _ _ _ _ _ _ x7) = x7
 
 data ExprQ = Q Double                -- a constant
            | VarQ String             -- a variable
@@ -1104,7 +1108,7 @@ analyzeTableExprQ fr wh srt colNames sensitiveVarSet varStates colTableCounts co
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens srt subQueryMap te in
   AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
-performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> DataWrtTables -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
 performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
   let debug = not (alternative args)
   let tableGmap = M.fromList tableGs
@@ -1314,7 +1318,7 @@ cleankey xs =
 
 
 -- find the minimum value of beta that is allowed for all tables
-findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> DataWrtTables -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
+findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
 findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
     let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
     -- ######################
@@ -1348,7 +1352,7 @@ findMinimumBeta1 args fromPart wherePart tableName taskName group colNames varSt
 
 
 -- find the maximum value of gsens over all tables
-findMaximumGsens :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> DataWrtTables -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
+findMaximumGsens :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
 findMaximumGsens args epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
     let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
     -- ######################

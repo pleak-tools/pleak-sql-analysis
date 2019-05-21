@@ -1,12 +1,21 @@
+{-# LANGUAGE MultiParamTypeClasses#-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+
 module PostprocessQ where
 
 import Debug.Trace
 
+import Control.Monad
 import Data.List
 import Data.Maybe
 import qualified Data.Map as M
 import qualified Data.Set as S
 import ProgramOptions
+import Text.PrettyPrint.Tabulate
+import qualified Text.PrettyPrint.Tabulate as T
+import qualified GHC.Generics as G
+import Data.Data
 import Text.Printf
 import ErrorMsg
 
@@ -20,10 +29,19 @@ traceIOIfDebug debug msg = do
     if debug then traceIO msg
     else return ()
 
-filterWith [] [] = []
-filterWith (b:bs) (x:xs) =
-    let ys = filterWith bs xs in
-    if b then (x:ys) else ys
+-- this is used only for nice output printing
+data RR = RR {sensitivity :: String, query_result :: String, cauchy_noise :: String, cauchy_relative_err :: String,
+              beta :: String, delta :: String, laplace_noise :: String, laplace_relative_err :: String, norm :: String} deriving (Data, G.Generic, Show)
+
+constructRR [v2,v3,v4,v5,v6,v7,v8,v9,v10] = RR {sensitivity = v2,
+                                            query_result = v3,
+                                            cauchy_noise = v4,
+                                            cauchy_relative_err = v5,
+                                            beta = v6,
+                                            delta = v7,
+                                            laplace_noise = v8,
+                                            laplace_relative_err = v9,
+                                            norm = v10}
 
 -- finds y such that y * exp(y) = x
 lambert x 0 = 1
@@ -111,7 +129,7 @@ optimal_a_epsilon delta r gss dss rss rrss a epsilon q p k n nq =
     optimal_a_epsilon delta r gss dss rss rrss a'' epsilon'' q'' p'' (k-1) n nq
 
 -- TODO if we want to look for an optimal beta here using binary search, we will also need outputTableName here
-performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> BQ.DataWrtTables -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
+performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
 performDPAnalysis args outputTableName dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   let debug = not (alternative args)
@@ -122,7 +140,7 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
   (qmap,taskAggrMap) <- case beta of
           Just _  -> performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
           Nothing -> do
-                         (_,q,tm,_) <- findBestBeta args outputTableName epsilon beta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts
+                         (_,q,tm,_,_) <- findBestBeta args outputTableName epsilon beta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts
                          return (q,tm)
 
   traceIOIfDebug debug ("===============================")
@@ -133,31 +151,63 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
   let outList = map (\((taskName,tableName), zs) -> (taskName,[(tableName,zs)])) $ M.toList outMap
   let taskList = M.toList $ M.fromListWith (++) outList
 
-  let taskStr = 
+  let sep1 = if alternative args then [B.unitSeparator] else "\n"
+  let sep2 = if alternative args then [B.unitSeparator2] else "\n\n"
+  let sep3 = if alternative args then [B.unitSeparator] else "\t"
+  let printFloatL = if alternative args then show else printf "%0.6f"
+  let printFloatS = if alternative args then show else printf "%0.2f"
+
+  let (_,normsExprs,normsAggrs) = unzip3 $ map BQ.getExtra tableExprData
+  let inputTableNames = map (\(x,_,_,_,_,_) -> x) $ BQ.getData tableExprData
+  let normMap = M.fromList $ zip inputTableNames $ zip normsExprs normsAggrs
+
+  traceIOIfDebug debug ("===============================")
+  traceIOIfDebug debug ("Cauchy noise distribution:  add noise 'Cauchy  noise'*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)")
+  traceIOIfDebug debug ("Laplace noise distribution: add noise 'Laplace noise'*z, where z ~ 1 / 2 * exp(-x)")
+  --traceIOIfDebug debug ("")
+  --traceIOIfDebug debug "table name               \tsensitivity\tquery result\tCauchy noise\tCauchy err(%)\tbeta\tdelta\tLaplace noise\tLaplace err(%)"
+
+  let taskStr =
           map (\(taskName,res) ->
-               if alternative args then
-                  taskName ++ [B.unitSeparator] ++ (intercalate [B.unitSeparator] $ concat $ map (\ (tableName, zs) ->
+
+                  (taskName, (map (\ (tableName, zs) ->
                       let (_,qrs,bs,sdss) = unzip4 zs in
-                      let qr  = if length qrs == 1 then show (head qrs) else show qrs in
-                      let err = combinedErrs qrs bs sdss in
-                      let eta = if length qrs == 1 then show (head (combinedEtas bs sdss)) else show (combinedEtas bs sdss) in
-                      let sds = combinedSdss sdss in
-                      [tableName, show sds, qr, eta, show (err * 100)]) res)
-               else
-                 taskName ++ "\n" ++ (intercalate "\n" $ map (\ (tableName, zs) ->
-                      let (_,qrs,bs,sdss) = unzip4 zs in
-                      let qr = if length qrs == 1 then printf "%0.6f" (head qrs) else show qrs in
-                      let err = combinedErrs qrs bs sdss in
-                      let eta = if length qrs == 1 then printf "%0.6f" (head (combinedEtas bs sdss)) else show (combinedEtas bs sdss) in
-                      let sds = combinedSdss sdss in
-                      printf "%s: %0.6f\t %s\t %s\t %0.3f" tableName sds qr eta (err * 100)) res)
+                      let qr  = if length qrs == 1 then printFloatS (head qrs) else "[" ++ intercalate ", " (map printFloatS qrs) ++ "]" in
+                      let cauchyError = printFloatL $ (combinedErrs qrs bs sdss) * 100 in
+                      let cauchyNoise = (let xs = combinedEtas bs sdss in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+                      let sds = printFloatL $ combinedSdss sdss in
+                      let norm = if tableName == B.resultForAllTables then
+                                      "an l_1-norm of norms w.r.t. all input tables"
+                                      -- TODO the following is precise, but is less readable. we also need to remove intermediate tables from the list.
+                                      -- "|| " ++ (intercalate "," $ map (\(normExpr,normAggr) -> niceNormPrint normExpr ++ ", rows l_" ++ show normAggr) $ M.elems normMap) ++ " ||_1"
+                                 else
+                                      let (normExpr,normAggr) = (normMap ! tableName) in
+                                      let mainNorm = niceNormPrint normExpr in
+                                      if mainNorm == "" then "--" else niceNormPrint normExpr ++ ", rows l_" ++ niceADoublePrint normAggr
+                      in
 
-          ) taskList
+                      -- these betas should all be the same in our implementation, otherwise DP w.r.t. several outputs is not well-defined
+                      let preciseBetas = map (\b -> epsilon / (4 + 1) - b) bs in
+                      let finalBeta    = printFloatL $ foldr max 0 preciseBetas in
+                      let laplaceBs = map (\beta -> epsilon - beta) preciseBetas in
+                      let laplaceDeltas = zipWith (\beta b -> if beta == 0 then exp(-2) else 2*exp(epsilon-(1 + (epsilon - b) / beta))) preciseBetas laplaceBs in
+                      let laplaceDelta = printFloatL $ foldr max 0 laplaceDeltas in
+                      let laplaceError = printFloatL $ (combinedErrs qrs laplaceBs sdss) * 100 in
+                      let laplaceNoise = (let xs = map (* 1.515) (combinedEtas laplaceBs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
 
-  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") taskStr
+                      [tableName,sds,qr,cauchyNoise,cauchyError,finalBeta,laplaceDelta,laplaceNoise,laplaceError,norm]) res)
+
+          )) taskList
+
+  when (alternative args) $ putStrLn $ intercalate sep2 $ map (\(taskName, xss) -> taskName ++ sep1 ++ intercalate sep1 (map (\xs -> intercalate sep3 xs) xss)) taskStr
+  forM taskStr $ \(taskName,tableMap) -> do
+          when debug $ putStrLn ("-------------------------\nTask: " ++ taskName)
+          let tableResultMap = M.fromList $ map (\(v : vs) -> (v, constructRR vs)) tableMap
+          when debug $ T.printTable tableResultMap
+  putStr ""
 
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> BQ.DataWrtTables -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
 performPolicyAnalysis args outputTableName dataPath separator initialQuery colNames typeMap taskMap tableExprData plcMaps attMap colTableCounts = do
 
   -- the input epsilon now works as delta, the upper bound on attacker's advantage
@@ -182,6 +232,9 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let dss    = zipWith filterWith bss $ map (extract_ds attMap) plcMapData
   let rss    = zipWith filterWith bss $ map (extract_rs attMap) plcMapData
   let rrss'  = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap) plcMapData
+
+  -- this norm is used only to show it in the output
+  let norm = deriveDbNorm attMap plcMapData
 
   -- further, we assume r = 1 everywhere in each dimension
   let rrss = zipWith (zipWith (/)) rrss' rss --rescaled R
@@ -230,7 +283,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let pr_pre  = p
   let pr_post = 1 / (1 + exp(- a * epsilon * (fromIntegral nq)) * (q-p) / p)
 
-  (finalBeta,finalQmap,finalTaskAggr,finalError) <- findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts
+  (finalBeta,finalQmap,finalTaskAggr,finalError,_) <- findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts
 
   traceIOIfDebug debug ("===============================")
   traceIOIfDebug debug ("final qmap: " ++ (show finalQmap))
@@ -239,47 +292,74 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let expectedCost = delta * cost
   traceIOIfDebug debug ("params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
 
-  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (finalError * 100.0)]
-  {-
-  -- TODO we want to output more values to the user in later UI versions
-  putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0),
-                                                                                    show (pr_post * 100.0),
-                                                                                    show expectedCost,
-                                                                                    show (finalError * 100.0),
-                                                                                    show epsilon,
-                                                                                    show finalBeta,
-                                                                                    show finalSds]
-  -}
+  -- additional outputs
+  let (finalQrs, finalBs, finalSdss) = unzip3 $ map (\key -> extractFinalResult (finalQmap ! key) (finalTaskAggr ! key) B.resultForAllTables outputTableName) (M.keys finalQmap)
+  let cauchyNoise = combinedEtas finalBs finalSdss
+  --let cauchyError = combinedErrs finalQrs finalBs finalSdss -- we already have this
+
+  -- TODO we would like to compute epsilon for Laplace noise, which is different since there is epsilon-delta DP
+  -- we need to find a way of converting GA to epsilon and delta
+  --let preciseBetas = map (\b -> epsilon / (4.0 + 1) - b) finalBs
+  --let laplaceBs = map (\beta -> epsilon - beta) preciseBetas
+  --let laplaceDeltas = zipWith (\beta b -> exp(-(1 + (epsilon - b) / beta))) preciseBetas laplaceBs
+  --let laplaceDelta = foldr max 0 laplaceDeltas
+  --let laplaceError = combinedErrs finalQrs laplaceBs finalSdss
+  --let laplaceNoise = combinedEtas laplaceBs finalSdss
+
+  --putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (finalError * 100.0)]
+  traceIOIfDebug debug ("===============================")
+  let outputList = [("prior: ",                         show (pr_pre * 100.0)),
+                    ("posterior: ",                     show (pr_post * 100.0)),
+                    ("expected cost: ",                 show expectedCost),
+                    ("78%-realtive error (Cauchy noise): ", show (finalError * 100.0)),
+                    ("Cauchy noise magnitude: a <- ",        show cauchyNoise),
+                    ("Cauchy noise distribution: ",     "add noise a*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
+
+                    -- the scaling by 1.515 is needed to get a 78% error as in Cauchy case
+                    --("78%-realtive error (Laplace noise): ", show (laplaceError * 100.0 * 1.515)),
+                    --("Laplace noise magnitude (a): ",    show (map (* 1.515) laplaceNoise)),
+                    --("Laplace noise distribution:",      "add noise a*z, where z ~ 1 / 2 * exp(-x)"),
+                    --("delta (Laplace only): ",      show laplaceDelta),
+
+                    ("DP epsilon: ",                   show epsilon),
+                    ("smoothness beta: ",                      show finalBeta),
+                    ("sensitivity w.r.t. norm N: ", show finalSdss),
+                    ("norm N: ",                    niceNormPrint norm)]
+
+  let sep = if alternative args then [B.unitSeparator2] else "\n"
+  let out = if alternative args then map snd outputList else map (\(x,y) -> x ++ y) outputList
+  putStrLn $ intercalate sep out
 
 
-findBestBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> BQ.DataWrtTables -> M.Map String VarState -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+-- TODO it seems that we can remove sds (and maybe something else) since this is already a part of qmap
+findBestBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> M.Map String VarState -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
 findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts = do
 
   let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
-  (finalBeta,finalQmap,finaltaskAggr,finalError) <- case fixedBeta of
+  (finalBeta,finalQmap,finaltaskAggr,finalError,finalSds) <- case fixedBeta of
                     Nothing -> do
                         initialBeta <- BQ.findMinimumBeta args epsilon Nothing dataPath separator initialQuery colNames typeMap [] tableExprData attMap [] colTableCounts
-                        (initialQmap,initialTaskAggr,initialError) <- step (Just initialBeta)
-                        repeatUntilGetBestError step initialError initialBeta (epsilon / 5.0) initialBeta initialQmap initialTaskAggr initialError
+                        (initialQmap,initialTaskAggr,initialError,initialSds) <- step (Just initialBeta)
+                        repeatUntilGetBestError step initialError initialBeta (epsilon / 5.0) initialBeta initialQmap initialTaskAggr initialError initialSds
                     Just beta' -> do
-                        (qmap',taskAggr',err') <- step (Just beta')
-                        return (beta', qmap',taskAggr', err')
-  return (finalBeta,finalQmap,finaltaskAggr,finalError)
+                        (qmap',taskAggr',err',sds') <- step (Just beta')
+                        return (beta', qmap',taskAggr', err',sds')
+  return (finalBeta,finalQmap,finaltaskAggr,finalError,finalSds)
 
-repeatUntilGetBestError :: (Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
-repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestQmap bestTaskAggr bestError = do
+repeatUntilGetBestError :: (Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double, [Double])) -> Double -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> [Double] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
+repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestQmap bestTaskAggr bestError bestSds = do
     let nextBeta = (betaMax + betaMin) / 2.0
-    (nextQmap, nextTaskAggr, nextError) <- step (Just nextBeta)
-    let (bestBeta', bestQmap', bestTaskAggr', bestError') = if nextError < bestError then (nextBeta, nextQmap, nextTaskAggr, nextError) else (bestBeta, bestQmap, bestTaskAggr, bestError)
+    (nextQmap, nextTaskAggr, nextError, nextSds) <- step (Just nextBeta)
+    let (bestBeta', bestQmap', bestTaskAggr', bestError', bestSds') = if nextError < bestError then (nextBeta, nextQmap, nextTaskAggr, nextError, nextSds) else (bestBeta, bestQmap, bestTaskAggr, bestError, bestSds)
     if (betaMax - betaMin > 0.01) && (betaMax > 0.01) && (betaMin /= 1/0) && (betaMax /= 1/0)
       then do
         --do binary search
         if (prevError <= nextError) then do
-            repeatUntilGetBestError step prevError betaMin nextBeta bestBeta' bestQmap' bestTaskAggr' bestError'
+            repeatUntilGetBestError step prevError betaMin nextBeta bestBeta' bestQmap' bestTaskAggr' bestError' bestSds'
         else do
-            repeatUntilGetBestError step nextError nextBeta betaMax bestBeta' bestQmap' bestTaskAggr' bestError'
+            repeatUntilGetBestError step nextError nextBeta betaMax bestBeta' bestQmap' bestTaskAggr' bestError' bestSds'
       else do
-        return (bestBeta', bestQmap', bestTaskAggr', bestError')
+        return (bestBeta', bestQmap', bestTaskAggr', bestError', bestSds')
 
 -- if we have several final groups, we combine errors into an l2-norm of errors
 extractFinalResults :: Double -> [(String, [(String, (Double, Double))])] -> [String] -> [((String,String),[([String], Double, Double, Double)])]
@@ -293,8 +373,6 @@ extractFinalResult qr taskAggr taskName tableName =
   let (b, sds) = resultMap ! taskName in
   (qr, b, sds)
 
--- let the sensitivity of a group-by query be the sum of sensitivities of its groups (to show why we increase epsilon), we use it only as a GA analysis output
--- let the error of a group-by query be the l2 norm of all errors
 combinedSdss :: [Double] -> Double
 combinedSdss sdss = sum sdss
 
@@ -302,20 +380,23 @@ combinedEtas :: [Double] -> [Double] -> [Double]
 combinedEtas bs sdss = zipWith (\b sds -> (sds / b)) bs sdss
 
 combinedErrs :: [Double] -> [Double] -> [Double] -> Double
-combinedErrs qrs bs sdss = sqrt $ sum $ zipWith3 (\qr b sds -> ((sds / b) / qr) ^ 2) qrs bs sdss
+combinedErrs qrs bs sdss =
+    let qnorm   = sqrt $ sum $ map (^2) qrs in
+    let errnorm = sqrt $ sum $ map (^2) $ combinedEtas bs sdss in
+    errnorm / qnorm
+    --sqrt $ sum $ zipWith3 (\qr b sds -> ((sds / b) / qr) ^ 2) qrs bs sdss
 
-
-performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> BQ.DataWrtTables -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
 performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
 
   (qmap,taskAggrMap) <- performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
   let (qrs, bs, sdss) = unzip3 $ map (\key -> extractFinalResult (qmap ! key) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys qmap)
   let err = combinedErrs qrs bs sdss
 
-  return (qmap,taskAggrMap,err)
+  return (qmap,taskAggrMap,err,sdss)
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> BQ.DataWrtTables -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
 performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   (qmap,taskAggrMap') <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts

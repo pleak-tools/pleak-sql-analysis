@@ -29,6 +29,12 @@ data VarState
 
 reservedSensRowsKeyword = "sensRows"
 
+niceNormPrint :: (Show a) => Norm a -> String
+niceNormPrint = niceNorm
+
+niceADoublePrint :: ADouble -> String
+niceADoublePrint = niceADouble
+
 getUb :: Double -> M.Map Double Double -> Double
 getUb lb mp = foldr max lb (M.keys mp)
 
@@ -148,6 +154,10 @@ verifyVarSecrecy attMap plcMap preficedVar =
     in
 
     (prefix, (1, leakedVar,sensVar,normVar))
+
+-- extract variable names
+extract_vars :: M.Map String VarState -> [String]
+extract_vars plcMap = M.keys plcMap
 
 -- check whether sensitivity w.r.t. that variable needs to be analysed at all
 extract_bs :: M.Map String VarState -> M.Map String VarState -> [Bool]
@@ -290,6 +300,26 @@ extractRanges indexSet key (plcMap:ps) =
     else
         extractRanges indexSet key ps
 
+filterWith [] [] = []
+filterWith (b:bs) (x:xs) =
+    let ys = filterWith bs xs in
+    if b then (x:ys) else ys
+
+-- construct the norm w.r.t. which we compute sensitivity (used only for the output; this is the 'database norm' that should be understandable to the user)
+-- TODO should we apply bss filter, or leave everything as it is?
+deriveDbNorm :: M.Map String VarState -> [M.Map String VarState] -> Norm String
+deriveDbNorm attMap plcMapData =
+
+    let bss = map (extract_bs attMap) plcMapData in
+
+    let xss = zipWith filterWith bss $ map extract_vars plcMapData in
+    let dss = zipWith filterWith bss $ map (extract_ds attMap) plcMapData in
+    let rss = zipWith filterWith bss $ map (extract_rs attMap) plcMapData in
+
+    let ys  = concat $ zipWith3 (\rs ds xs -> zipWith3 (\r d x -> if d then NormLZero (Col x) else NormScale (1/r) (Col x)) rs ds xs) rss dss xss in
+    NormL (Exactly 1.0) ys
+
+-- construct the norm w.r.t. which we compute sensitivity -- the constriction that we actually use in the analysis, with optimizations
 constructNormData :: [TableName] -> M.Map String VarState -> [(M.Map String VarState, Double)] -> [(([Int], [VarName]), NormFunction, Maybe Double)]
 constructNormData tableNames attMap plcMaps =
 
@@ -306,8 +336,6 @@ constructNormData tableNames attMap plcMaps =
     let temp = map (constructNormDataSet tableNames attMap . fst) plcMaps in
     let combinedDataMap = foldr (M.unionWith combineSets) M.empty temp in
 
-    --extract the special variables for row sensitivity
-    let kwlen = length reservedSensRowsKeyword in
     let tableSensRows = map (extractRange plcMaps) tableNames in
 
     zipWith (normsFromCombinedData combinedDataMap) tableNames tableSensRows

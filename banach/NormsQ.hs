@@ -26,12 +26,39 @@ data ADouble = Exactly Double | Any
 -- the composite norm w.r.t. which we compute our sensitivities
 -- in the norms, we can use expressions as well as variables
 data Norm a = Col a                     -- a variable, if it is toplevel, is treated as its norm (which can be arbitrary)
-          | NormLN    (Norm a)          -- ln-norm |ln x|
+          | NormLN    (Norm a)          -- ln-norm |ln x|; is a norm iff x is a column variable
           | NormLZero (Norm a)          -- l0-norm |x|
           | NormL     ADouble [Norm a]  -- lp-norm
           | NormScale Double (Norm a)   -- scaled norm a * N
           | NormZero                    -- the same as NormScale with a -> infinity
   deriving (Show,Ord,Eq)
+
+niceNorm :: (Show a) => Norm a -> String
+niceNorm (Col x) = show x
+niceNorm (NormLN z) = if y == "" then "" else "|LN " ++ y ++ " |"
+    where y = niceNorm z
+
+niceNorm (NormLZero z) = if y == "" then "" else "|| " ++ y ++ " ||_0"
+    where y = niceNorm z
+
+niceNorm (NormL (Exactly p) zs) = if y == "" then "" else  "|| " ++ y ++ " ||_" ++ show p
+    where
+        ys = filter (/= "") (map niceNorm zs)
+        y = intercalate "," ys
+
+niceNorm (NormL Any zs) = if y == "" then "" else  "|| " ++ y ++ " ||_inf"
+    where
+        ys = filter (/= "") (map niceNorm zs)
+        y = intercalate "," ys
+
+niceNorm (NormScale a z) = if y == "" then "" else (if a == 1.0 then y else show a ++ "* (" ++ y ++ ")")
+    where y = niceNorm z
+
+niceNorm NormZero = ""
+
+niceADouble (Exactly p) = show p
+niceADouble Any = "inf"
+
 
 -- default norm variable for automatized norm constructions
 -- we assume that noone actually uses this kind of variable

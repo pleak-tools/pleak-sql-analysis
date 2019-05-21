@@ -31,6 +31,9 @@ import SchemaQ
 import SelectQueryQ
 import System.IO.Unsafe
 
+---------------------------------------------------------
+---- Preprocessing a Query for Banach Analyser input ----
+---------------------------------------------------------
 
 -- this outputs a trace message only if the flag debug=True is set
 traceIfDebug :: Bool -> String -> (a -> a)
@@ -43,11 +46,10 @@ traceIOIfDebug debug msg = do
     if debug then traceIO msg
     else return ()
 
--------------------------------------------------------
----- Converting a Query to Banach Analyser input   ----
--------------------------------------------------------
-isAggrQuery (F _ b) = case b of {SelectPlain _ -> False; SelectGroup _ -> False; _ -> True}
+-- different types of queries
+isAggrQuery   (F _ b) = case b of {SelectPlain _ -> False; SelectGroup _ -> False; _ -> True}
 isCommonQuery (F _ b) = case b of {SelectGroup _ -> False; _ -> True}
+isPlainQuery  (F _ b) = case b of {SelectPlain _ -> True;  _ -> False}
 
 -- substitute expressions of fs into aexpr
 mergeQueryFuns :: [Function] -> AExpr VarName -> AExpr VarName
@@ -66,172 +68,104 @@ mergeQueryFuns fs aexpr =
                                 ) fs in
     aexprSubstitute aexprMap aexpr
 
--- this checks that the subqueries are all of select-type
---badQFuns :: [Function] -> (Bool, String)
---badQFuns [] = (False,"")
---badQFuns (F _ b : qs) =
---    case b of
---        SelectPlain _ -> badQFuns qs
---        _        -> (True, error_queryExpr_aggrInterm b)
+-- adjust the query norm to the db norm (w.r.t. the given input table)
+adjustQueryNormToDbNorm :: Bool -> Double -> (M.Map VarName B.Var) -> S.Set B.Var -> TableAlias -> NormFunction -> B.Expr -> B.TableExpr -> B.TableExpr
+adjustQueryNormToDbNorm debug sigmoidPrecision inputMap sensitiveCols tableAlias tableNormFun queryExpr queryAggr =
 
-badQFun (F _ b) =
-    case b of
-        SelectPlain _ -> True
-        _             -> False
-
-deriveExprNorm :: Bool -> Double -> (M.Map VarName B.Var) -> S.Set B.Var -> [TableAlias] -> [NormFunction] -> B.Expr -> B.TableExpr -> B.TableExpr
-deriveExprNorm debug sigmoidPrecision inputMap sensitiveCols dbNormTableAliases dbNormFuns queryExpr queryAggr =
-
-    let namePrefices = map (\tableAlias -> if tableAlias == "" then tableAlias else tableAlias ++ [tsep]) dbNormTableAliases in
-    let (dbNorms1,dbAggrNorms) = unzip $ zipWith (\x y -> normToExpr x inputMap y) namePrefices dbNormFuns in
-    let dbNorms = map (markNormCols sensitiveCols) dbNorms1 in
-
-    -- if there are several tables, we assume that we compute sensitivity w.r.t. max of them
-    -- since the same row can be used multiple times in the cross product, we need max here for the correctness of result w.r.t. all tables
-    -- let dbExprNorm = NormL Any dbNorms in
-    -- BanachQ will use linf-norm in the places where the same row repeats, and leaves dbAggrNorm in the other places
-    let dbAggrNorm = foldr takeFiner (Exactly 1.0) dbAggrNorms in
+    let namePrefix = if tableAlias == "" then tableAlias else tableAlias ++ [tsep] in
+    let (dbNorm', dbAggrNorm) = normToExpr namePrefix (inputMap !) tableNormFun in
+    let dbNorm = markNormCols sensitiveCols dbNorm' in
 
     let orderedVars = [0..M.size inputMap - 1] in
     let queryExprNorm = deriveNorm orderedVars queryExpr in
     let queryAggrNorm = deriveTableNorm queryAggr in
 
-    -- adjust the query to the database norm
-    -- let (mapCol,mapLN,mapLZ) = normalizeAndVerify queryExprNorm dbExprNorm in
-    -- since we compute w.r.t. each table separately anyway, it is sufficient to add the scalings for each table norm separately
-    let (mapCol,mapLN,mapLZ) = foldr (\x (y1,y2,y3) -> let (z1,z2,z3) = normalizeAndVerify queryExprNorm x in (M.unionWith min y1 z1, M.unionWith min y2 z2, M.unionWith min y3 z3)) (M.empty,M.empty,M.empty) dbNorms in
+    -- find the necessary norm scaling to match the query norm and the table norm
+    let (mapCol,mapLN,mapLZ) = normalizeAndVerify queryExprNorm dbNorm in
 
+    -- apply scaling to the query
     let adjustedQuery = updateTableExpr sigmoidPrecision queryAggr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm in
 
+    -- these are needed only for debugging
     let newQueryNorm = deriveNorm orderedVars $ head (getExprFromTableExpr adjustedQuery) in
     let newAggrNorm  = deriveTableNorm adjustedQuery in
 
     traceIfDebug debug ("----------------") $
-    traceIfDebug debug (show dbAggrNorms) $
-    traceIfDebug debug ("database norms    = Rows: " ++ show dbAggrNorm    ++ " | Cols: "  ++ show (map normalizeNorm dbNorms)) $
+    traceIfDebug debug ("database norm     = Rows: " ++ show dbAggrNorm    ++ " | Cols: "  ++ show (normalizeNorm dbNorm)) $
     traceIfDebug debug ("intial query norm = Rows: " ++ show queryAggrNorm ++ " | Cols: "  ++ show (normalizeNorm queryExprNorm)) $
     traceIfDebug debug ("adjust query norm = Rows: " ++ show newAggrNorm   ++ " | Cols: "  ++ show (normalizeNorm newQueryNorm)) $
-    traceIfDebug debug ("scaling: " ++ show mapCol ++ "\n\t " ++ show mapLN ++ "\n\t " ++ show mapLZ ++ "\n\n") $
+    traceIfDebug debug ("scaling: floats -- " ++ show mapCol ++ "\n\t float ln -- " ++ show mapLN ++ "\n\t discrete -- " ++ show mapLZ ++ "\n\n") $
     traceIfDebug debug ("----------------") $
     adjustedQuery
 
+-- compute data for Banach analysis w.r.t. one set of sensitive variables, i.e. one input table or one intermediate table
+dataWrtOneSensVarSet :: Bool -> Double -> (M.Map VarName B.Var) -> TableName -> TableAlias -> TableAlias ->
+                        B.TableExpr -> (String,String,String) -> String ->
+                        NormFunction -> (S.Set B.Var)
+                        -> (TableName, TableName, B.TableExpr, (String,String,String), NormFunction)
+dataWrtOneSensVarSet debug sigmoidPrecision inputMap tableName tableAlias tablePrefix filtQuery (sel,fr,wh) queryName tableNormFun tableSensCols =
 
-getTableExprDataWrtOneSensVarSet :: Bool -> Bool -> Double -> (M.Map VarName B.Var) -> TableName -> TableAlias
-                                    -> B.TableExpr -> (String,String,String) -> String ->
-                                    Int -> NormFunction -> (S.Set B.Var) ->
-                                    (TableName, TableName, B.TableExpr, (String,String,String))
-getTableExprDataWrtOneSensVarSet debug policy sigmoidPrecision inputMap tableName tableAlias filtQuery (sel,fr,wh) queryName index tableNorm tableSensCols =
-
-    -- now transform the main query to a banach expression, now it is fine to use only the current table's sensitive columns
+    -- transform the main query to a banach expression; it is fine to use only the current table's sensitive columns
     let (queryExpr,  queryAggr)  = insertZeroSens tableSensCols filtQuery in
 
     -- the query will also take into account sensitive rows of the current sensitive table
     let sensRowTable  = tableName ++ "_sensRows" in
     let sensRowFilter = tableName ++ "_sensRows.ID = " ++ tableAlias ++ ".ID" in
 
-    -- a query that creates the large cross product table
+    -- a query that creates the large cross product table now includes the filtering over sensitive rows
+    -- TODO we should exclude these when computing results for intermediate queries!
     let fr1  = fr ++ ", " ++ sensRowTable in
     let wh1  = wh ++ " AND " ++ sensRowFilter in
 
-    traceIfDebug debug (show tableSensCols) $
-    traceIfDebug debug (show queryExpr) $
-    traceIfDebug debug (show tableNorm) $
-    traceIfDebug debug ("---") $
-
     -- the query expressions defined over the large cross product table
-    let adjTableExpr = deriveExprNorm debug sigmoidPrecision inputMap tableSensCols [tableAlias] [tableNorm] queryExpr queryAggr in
-    (tableName, queryName, adjTableExpr, (sel, fr1, wh1))
+    let adjTableExpr = adjustQueryNormToDbNorm debug sigmoidPrecision inputMap tableSensCols tablePrefix tableNormFun queryExpr queryAggr in
+    (tableName, queryName, adjTableExpr, (sel, fr1, wh1), tableNormFun)
 
 
-getTableExprDataWrtIntermTable :: Bool -> Bool -> Double -> (M.Map VarName B.Var)
-                                  -> B.TableExpr -> (String,String,String) -> String
-                                  -> VarName -> B.Var
-                                  -> (TableName, TableName, B.TableExpr, (String,String,String))
-getTableExprDataWrtIntermTable debug policy sigmoidPrecision inputMap filtQuery (sel,fr,wh) queryName intermediateSensVar intermediateSensCol =
+-- compute data for Banach analysis w.r.t. some intermediate aggregation, whose output we treat as a sensitive variable
+dataWrtIntermTable :: Bool -> Double -> (M.Map VarName B.Var) ->
+                      B.TableExpr -> (String,String,String) -> String ->
+                      VarName -> B.Var
+                      -> (TableName, TableName, B.TableExpr, (String,String,String), NormFunction)
+dataWrtIntermTable debug sigmoidPrecision inputMap filtQuery (sel,fr,wh) queryName intermediateSensVar intermediateSensCol =
 
     -- we treat the column that is an output of some aggregation as sensitive
     let inputTableName = varNameToTableName intermediateSensVar in
     let intermediateSensCols = S.singleton intermediateSensCol in
-
-    -- now transform the main query to a banach expression, now it is fine to use only the current table's sensitive columns
-    -- since the aggregation column is copied in the large cross product table, we apply linf-norm to the rows (i.e. SelectMax)
-    let (queryExpr,  queryAggr)  = insertZeroSens intermediateSensCols filtQuery in
-    let tableNorm = (NF (M.fromList [(defaultNormVariable ++ intermediateSensVar, Id intermediateSensVar)]) (SelectMax (defaultNormVariable ++ intermediateSensVar))) in
-
-    -- the query will also take into account sensitive rows of the aggragation table
-    let sensRowTable  = inputTableName ++ "_sensRows" in
-    let sensRowFilter = inputTableName ++ "_sensRows.ID = " ++ inputTableName ++ ".ID" in
-
-    -- a query that creates the large cross product table
-    let fr1  = fr ++ ", " ++ sensRowTable in
-    let wh1  = wh ++ " AND " ++ sensRowFilter in
-
-    traceIfDebug debug (show intermediateSensCols) $
-    traceIfDebug debug (show queryExpr) $
-    traceIfDebug debug (show tableNorm) $
-    traceIfDebug debug ("---") $
-
-    -- the query expressions defined over the large cross product table
-    let adjTableExpr = deriveExprNorm debug sigmoidPrecision inputMap intermediateSensCols [""] [tableNorm] queryExpr queryAggr in
-    (inputTableName, queryName, adjTableExpr, (sel, fr1, wh1))
-
-
-
+    let tableNormFun = NF (M.fromList [(defaultNormVariable ++ intermediateSensVar, Id intermediateSensVar)]) $ SelectMax (defaultNormVariable ++ intermediateSensVar) in
+    dataWrtOneSensVarSet debug sigmoidPrecision inputMap inputTableName inputTableName "" filtQuery (sel,fr,wh) queryName tableNormFun intermediateSensCols
 
 -- construct input for multitable Banach analyser
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
-inputWrtEachTable   :: Bool -> Bool -> Double -> (M.Map VarName B.Var) ->
-                       [TableAlias] -> B.TableExpr -> (String,String,String) -> String -> (M.Map TableAlias TableData) ->
-                       [(TableName, TableName, B.TableExpr, (String,String,String))]
-inputWrtEachTable _ _ _ _ [] _ _ _ _ = []
-inputWrtEachTable debug policy sigmoidPrecision inputMap (tableAlias : ts) filtQuery (sel,fr,wh) queryName tableMap =
+dataWrtOneInputTable :: Bool -> Double -> (M.Map VarName B.Var) ->
+                        B.TableExpr -> (String,String,String) -> String -> (M.Map TableAlias TableData) -> TableAlias
+                        -> (TableName, TableName, B.TableExpr, (String,String,String), NormFunction)
+dataWrtOneInputTable debug sigmoidPrecision inputMap filtQuery (sel,fr,wh) queryName tableMap tableAlias =
 
     let tableData     = tableMap ! tableAlias in
-
-    let tableNorm     = getNorm          tableData in
+    let tableNormFun  = getNorm          tableData in
     let tableName     = getTableName     tableData in
     let tableSensVars = getSensCols      tableData in
+    let tableSensCols = S.fromList $ map (inputMap ! ) tableSensVars in
+    dataWrtOneSensVarSet debug sigmoidPrecision inputMap tableName tableAlias tableAlias filtQuery (sel,fr,wh) queryName tableNormFun tableSensCols
 
-    --let tableNorms1   = if policy then (let (NF as _) = tableNorm in
-    --                                    let L 1.0 varNames = as ! "_nv" in
-    --                                    let elems = filter (\x -> case x of {ZeroSens _ -> False ; _ -> True}) (map (as !) varNames) in
-    --                                    map (\x -> NF (M.fromList [("_nv",x)]) (SelectL 1.0 "_nv")) elems)
-    --                    else [tableNorm] in
-    --let tableSensCols1 = if policy then map (\x -> S.singleton (inputMap ! x)) tableSensVars else [S.fromList $ map (inputMap ! ) tableSensVars] in
-    let tableNorms1 = [tableNorm] in
-    let tableSensCols1 = [S.fromList $ map (inputMap ! ) tableSensVars] in
-
-    -- if there are no sensitive vars at all, we still compute the "default" norm NormZero
-    let (tableSensCols, tableNorms) = if (length tableNorms1 == 0) then ([S.empty],[tableNorm]) else (tableSensCols1, tableNorms1) in 
-
-    -- if we use policy settings, we need a separate query for each sensitive variable, even in the same table
-    -- we index the table names to distinguish the queries
-    let indices = [0..(length tableSensCols - 1)] in
-    let entries = zipWith3 (getTableExprDataWrtOneSensVarSet debug policy sigmoidPrecision inputMap tableName tableAlias filtQuery (sel,fr,wh) queryName) indices tableNorms tableSensCols in
-    entries ++ inputWrtEachTable debug policy sigmoidPrecision inputMap ts filtQuery (sel,fr,wh) queryName tableMap
-
+-- extract Gs of the tables (combined sensitivity only)
 getTableGs tableMap =
     let tableAliases = M.keys tableMap in
     let tableGsMap   = M.fromList (map (\tableAlias -> let tableData = tableMap ! tableAlias in (getTableName tableData, getGG tableData)) tableAliases) in
-    M.toList tableGsMap    
+    M.toList tableGsMap
 
-addGroupToQuery :: String -> Function -> Function
-addGroupToQuery grName (F as b) =
-    let x  = getVarNameFromTableExpr b in
-    let b' = setVarNameToTableExpr b (x ++ [grsep] ++ grName) in
-    (F as b')
-
-
--- TODO we also want to extract the table names and aliases of intermediate tables for the type map
-processQuery :: TableName -> (M.Map TableName Query) -> (M.Map String VarState) -> TableName -> TableAlias -> TableName -> 
-                ([[[String]]], [[TableAlias]],[[TableName]], [(TableAlias,TableName)], [GroupData], [(Function,String)], [[AExpr VarName]])
+-- generate dependencies between queries and input tables
+processQuery :: TableName -> (M.Map TableName Query) -> (M.Map String VarState) -> 
+                TableName -> TableAlias -> TableName
+                -> ([[[String]]], [[TableAlias]],[[TableName]], [(TableAlias,TableName)], [GroupData], [(Function,String)], [[AExpr VarName]])
 processQuery outputTableName queryMap attMap taskName tableAlias tableName =
 
     -- if the table is not in the query map, then it is an input table
     -- define the list of tasks [taskName] that depend on the pair (tableAlias,tableName)
     if not (M.member tableName queryMap) then
-        if taskName == "" then error "INTERNAL ERROR: the name of the output table was not found in the query map" else
-        ([[[taskName]]], [[tableAlias]], [[tableName]], [], [NoGR], [(F (AVar tableName) (SelectPlain tableName), tableName)], [[]])
+        if taskName == "" then error $ error_internal_empty_taskname tableName
+        else ([[[taskName]]], [[tableAlias]], [[tableName]], [], [NoGR], [(F (AVar tableName) (SelectPlain tableName), tableName)], [[]])
     else
         -- collect all used tables of this query
         let query@(P groupVarNames queryFuns' usedAliasMap filterFuns') = queryMap ! tableName in
@@ -246,7 +180,7 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
                                      let groupVarValues = map (getStateValues attMap) groupVarNames in
                                      let qs = map (\(F as b) -> F as (let x = getVarNameFromTableExpr b in SelectGroup x)) (init queryFuns') in
                                      let q  = (last queryFuns') in
-                                     if badQFun q then error $ error_queryExpr_groupBy else
+                                     if isPlainQuery q then error $ error_queryExpr_groupBy else
                                      let gr = GR "" groupColNames groupVarNames groupVarValues in
                                      let fs = filterFuns' in
                                      (q : qs, replicate (ng + 1) gr, replicate (ng + 1) fs)
@@ -307,9 +241,12 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
         (outputUsedTaskNames, outputAliases, outputNames, (tableAlias,tableName) : map (\(x,y) -> (prefix ++ x, y)) tableAliasesNamesSub, outputGroupNames, zip outputQueryFuns outputTaskNames, outputFilters)
         where aggrQueryType ((F _ b),_,_,_,_,_,_) = case b of {SelectPlain _ -> False; _ -> True}
 
--- assume that the tables are located in the same place where the query is
-readTableData :: Bool -> String -> M.Map String VarState -> [(M.Map String VarState, Double)] -> M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias] -> IO (M.Map TableAlias TableData)
-readTableData policy queryPath attMap plcMaps typeMap tableNames tableAliases = do
+-- construct table data
+-- assume that the db norm files are located in 'dataPath'
+readTableData :: Bool -> String -> M.Map String VarState -> [(M.Map String VarState, Double)]->
+                 M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias]
+                 -> IO (M.Map TableAlias TableData)
+readTableData policy dataPath attMap plcMaps typeMap tableNames tableAliases = do
 
     -- collect all norm-related table data
     -- read table sensitivities from corresponding files
@@ -317,7 +254,7 @@ readTableData policy queryPath attMap plcMaps typeMap tableNames tableAliases = 
     let dbNormData = if policy then
             return (constructNormData tableNames attMap plcMaps)
         else
-            mapM (\tableName -> parseNormFromFile (typeMap ! tableName) $ queryPath ++ tableName ++ ".nrm") tableNames
+            mapM (\tableName -> parseNormFromFile (typeMap ! tableName) $ dataPath ++ tableName ++ ".nrm") tableNames
 
     let badNames = filter (\t -> not (M.member t typeMap)) tableNames
     when (length badNames > 0) $ error (error_schema (M.keys typeMap) badNames)
@@ -350,14 +287,21 @@ getColTableCounts colNames tableNames tableAliases =
       -- we only need to insert some arbitrary value to maintain proper indexation
       map (\x -> if M.member x aliasToCountMap then aliasToCountMap M.! x else 1) colTableAliases
 
+
+-- given a list of sublists, find all combinations of different sublist elements
+allCombsOfLists [] = [[]]
+allCombsOfLists (xs:xss) =
+    [(y:ys) | y <- xs, ys <- allCombsOfLists xss]
+
 -- putting everything together
-getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String -> IO (String,[(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], BQ.TaskMap, [String], BQ.DataWrtTables,[(String, Maybe Double)],[Int])
+getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String
+                          -> IO (String,[(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
 getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
 
     let debug = not (alternative args)
     let policy = policyAnalysis args
 
-    -- used for generating CSF benchmarks
+    -- used for generating benchmarks
     --putStrLn $ "\\echo ##" ++ inputQuery
 
     let dataPath = reverse $ dropWhile (/= '/') (reverse inputSchema)
@@ -366,8 +310,10 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     (outputTableName,queryMap) <- parseQueryMap defaultOutputTableName queryFileContents
     traceIOIfDebug debug $ "queryMap:   " ++ show queryMap
 
-    queryFileContents <- readInput inputSchema
-    schemas <- parseSchemas queryFileContents
+    schemaFileContents <- readInput inputSchema
+    schemas <- parseSchemas schemaFileContents
+
+    -- TODO it seems that we are not using intermediate table type map yet, and we should do it somewhere in processQuery
     let typeList = map extractTypes schemas
     let typeListTrimmedTypenames  = map (\(x,ys) -> (x, map (\(y1,y2) -> (y1, takeWhile (\z -> ord(z) >= 65) (map toLower y2) )) ys)) typeList
     let typeMap  = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) typeListTrimmedTypenames
@@ -494,10 +440,10 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "----------------"
 
 
-    let (qd1,qd2,qd3,qd4,qd5,qd6,qd7) = unzip7 $ concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) inputMap inputTableMap fullTypeMap subQueryDataMap sensitiveVarList) (reverse commonOrderedQueryNames)
+    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) inputMap inputTableMap fullTypeMap subQueryDataMap sensitiveVarList) (reverse commonOrderedQueryNames)
 
-    let dataWrtEachTable = zip6 qd1 qd2 qd3 qd4 qd5 qd6
-    let taskMap = BQ.TM $ nub $ map (\t -> if t == outputTableName then (t,True) else (t,False)) qd7
+    let (tableNameList,_,_) = unzip3 $ map BQ.getExtra dataWrtEachTable
+    let taskMap = BQ.TM $ nub $ map (\t -> if t == outputTableName then (t,True) else (t,False)) tableNameList
 
     -- additional parameters
     let tableGs = getTableGs inputTableMap
@@ -510,12 +456,11 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- the last column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let tableExprData = (outputTableName,plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, BQ.DWT dataWrtEachTable, tableGs, colTableCounts)
+    let tableExprData = (outputTableName,plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
 
     -- TODO is it a proper place for table Gs if groups are used? we decide it when extend the groups to combined sensitivity
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Task Map: " ++ show taskMap
-    traceIOIfDebug debug $ "Used Tasks: " ++ show qd6
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Table Names:" ++ show allInputTableNames
     traceIOIfDebug debug $ "Table Aliases:" ++ show allInputTableAliases
@@ -630,10 +575,11 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     --(mainSelect ++ " FROM " ++ mainFrom ++ (if length subFroms > 0 then "," ++ intercalate "," subFroms else "") ++ " WHERE " ++ mainWhere ++ groupBy)
 
 
-getQueryData :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String
-                -> M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) -> [VarName]
-                -> String
-                -> [(TableName, TableName, OneGroupData, B.TableExpr, (String,String,String), [String], String)]
+-- TODO check if grouping by several values works properly
+getQueryData :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String ->
+                M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
+                [VarName]-> String
+                -> [BQ.DataWrtTable]
 getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName =
 
     let (_,_,_,_,_,gr,_,_,_,_) = queryDataMap ! queryName in
@@ -644,17 +590,11 @@ getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fu
 
     concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName groupVarName groupColName) (allCombsOfLists groupList)
 
--- given a list of sublists, find all combinations of different sublist elements
-allCombsOfLists [] = [[]]
-allCombsOfLists (xs:xss) =
-    [(y:ys) | y <- xs, ys <- allCombsOfLists xss]
-
-
-getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String
-                        -> M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String)
-                        -> [VarName]
-                        -> String -> [String] -> [String] -> [String]
-                        -> [(TableName, TableName, OneGroupData, B.TableExpr, (String,String,String), [String], String)]
+getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String ->
+                        M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
+                        [VarName] ->
+                        String -> [String] -> [String] -> [String]
+                        -> [BQ.DataWrtTable]
 getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName groupVarNames groupColNames groupValues =
 
     let (directTableAliases,subqueryTableAliases,intermediateVarList,intermediateIsCommonList,directColNames,gr,query,filterAexprs',usedTaskNames,taskName) = queryDataMap ! queryName in
@@ -708,9 +648,8 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     let commonIntermediateVarList = map snd $ filter (\(b,_) -> b) $ zip intermediateIsCommonList intermediateVarList in
     let commonIntermediateColList = map (inputMap ! ) commonIntermediateVarList in
 
-    traceIfDebug debug ("\n=== Processing subquery " ++ queryName ++ " ===") $
-
     {-
+    traceIfDebug debug ("\n=== Processing subquery " ++ queryName ++ " ===") $
     traceIfDebug debug ("----------------") $
     traceIfDebug debug ("Query (w/o filter) = " ++ queryStr) $
     traceIfDebug debug ("Number of Filters: " ++ show (length filterAexprs)) $
@@ -743,22 +682,26 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
                           B.SelectMax _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
                           _             -> ""
     in
-
+    let initQueryParts = (sel,fr ++ minmaxQuery,wh) in
 
     -- construct tableExprData for both main query and all the subqueries
-    let dataWrtEachTable' = inputWrtEachTable debug policy sigmoidPrecision inputMap directTableAliases queryAggr (sel,fr ++ minmaxQuery,wh) newQueryName inputTableMap
-           ++ zipWith (getTableExprDataWrtIntermTable debug policy sigmoidPrecision inputMap queryAggr (sel,fr ++ minmaxQuery,wh) newQueryName) commonIntermediateVarList commonIntermediateColList in
+    let dataWrtEachTable' = map (dataWrtOneInputTable debug sigmoidPrecision inputMap queryAggr initQueryParts newQueryName inputTableMap) directTableAliases
+           ++ zipWith (dataWrtIntermTable debug sigmoidPrecision inputMap queryAggr initQueryParts newQueryName) commonIntermediateVarList commonIntermediateColList in
 
     -- for each intermediate variable (a subquery), collect all tasks that depend on that subquery
     let internalUsedTaskNames = map (\cv -> let (_,_,_,_,_,_,_,_,usedTasks,_) = queryDataMap ! (varNameToQueryName cv) in concat usedTasks) commonIntermediateVarList in
     let allUsedTaskNames = usedTaskNames ++ internalUsedTaskNames in
+    let (allInputTableNames, allOutputTableNames, finalTableExpr, sqlQueries, normFuns) = unzip5 dataWrtEachTable' in
 
-    let (allInputTableNames, allOutputTableNames, finalTableExpr, sqlQueries) = unzip4 dataWrtEachTable' in
+    -- construct a norm where variable names are used, not variable Id-s, these norms will be output to the user
+    let idMap = M.fromList $ zip (M.keys inputMap) (M.keys inputMap) in
+    let (normExprs,normAggrs) = unzip $ map (normToExpr "" id) normFuns in
 
     let groupList = replicate (length sqlQueries) group in
     let taskNames = replicate (length sqlQueries) taskName in
 
-    let dataWrtEachTable = zip7 allInputTableNames allOutputTableNames groupList finalTableExpr sqlQueries allUsedTaskNames taskNames in
+    let extra = zip3 taskNames normExprs normAggrs in
+    let dataWrtEachTable = zipWith7 BQ.DWT allInputTableNames allOutputTableNames groupList finalTableExpr sqlQueries allUsedTaskNames extra in
 
     {-
     traceIfDebug debug ("----------------") $

@@ -523,7 +523,7 @@ updateTableExpr sigmoidPrecision expr mapCol mapLN mapLZ queryAggrNorm dbAggrNor
     where f x = case x of {Exactly c -> show (round c); Any -> "inf"}
 
 
-exprToNorm :: (Show a) => String -> M.Map VarName a -> M.Map VarName Expr -> Expr -> Norm a
+exprToNorm :: (Show a) => String -> (VarName -> a) -> M.Map VarName Expr -> Expr -> Norm a
 exprToNorm prefix inputMap asgnMap t =
     case t of
         PowerLN x c      -> NormLN (processRec x)
@@ -534,7 +534,7 @@ exprToNorm prefix inputMap asgnMap t =
         LInf xs          -> NormL Any (map processRec xs)
         Id x             -> NormL (Exactly 1.0) [processRec x]
     where
-        processRec x = if M.member x asgnMap then exprToNorm prefix inputMap asgnMap (asgnMap ! x) else Col (inputMap ! (prefix ++ x))
+        processRec x = if M.member x asgnMap then exprToNorm prefix inputMap asgnMap (asgnMap ! x) else Col (inputMap (prefix ++ x))
 
 tableExprToADouble :: TableExpr -> ADouble
 tableExprToADouble t =

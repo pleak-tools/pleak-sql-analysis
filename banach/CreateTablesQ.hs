@@ -103,7 +103,8 @@ createTableSqlTyped policy dataPath separator tableName sR types = do
     --              return sR'
 
     let sensRowsSet = S.fromList (take numRows sR)
-    let colTypes = map (\col -> typeMap ! tableName ! col) colNames
+    let colTypes = map (\col -> let tm = typeMap ! tableName in
+                                if M.member col tm then tm ! col else error $ error_schema_bad_var tableName col (M.keys tm)) colNames
     return [
       "DROP TABLE IF EXISTS " ++ tableName,
       "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (col,t) -> col ++ " " ++ t ++", ") (zip colNames colTypes) ++ "ID int8)",

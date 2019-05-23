@@ -50,6 +50,7 @@ traceIOIfDebug debug msg = do
 isAggrQuery   (F _ b) = case b of {SelectPlain _ -> False; SelectGroup _ -> False; _ -> True}
 isCommonQuery (F _ b) = case b of {SelectGroup _ -> False; _ -> True}
 isPlainQuery  (F _ b) = case b of {SelectPlain _ -> True;  _ -> False}
+isMinMaxQuery (F _ b) = case b of {SelectMin _ -> True; SelectMax _ -> True; _ -> False}
 
 -- substitute expressions of fs into aexpr
 mergeQueryFuns :: [Function] -> AExpr VarName -> AExpr VarName
@@ -80,8 +81,11 @@ adjustQueryNormToDbNorm debug sigmoidPrecision inputMap sensitiveCols tableAlias
     let queryExprNorm = deriveNorm orderedVars queryExpr in
     let queryAggrNorm = deriveTableNorm queryAggr in
 
+    -- we use inverse input map to make norm-related error messages readable
+    let invInputMap = M.fromList $ map (\(x,y) -> (y,queryNameToVarName x)) (M.toList inputMap) in
+
     -- find the necessary norm scaling to match the query norm and the table norm
-    let (mapCol,mapLN,mapLZ) = normalizeAndVerify queryExprNorm dbNorm in
+    let (mapCol,mapLN,mapLZ) = normalizeAndVerify invInputMap queryExprNorm dbNorm in
 
     -- apply scaling to the query
     let adjustedQuery = updateTableExpr sigmoidPrecision queryAggr mapCol mapLN mapLZ queryAggrNorm dbAggrNorm in
@@ -113,7 +117,7 @@ dataWrtOneSensVarSet debug sigmoidPrecision inputMap tableName tableAlias tableP
     let sensRowFilter = tableName ++ "_sensRows.ID = " ++ tableAlias ++ ".ID" in
 
     -- a query that creates the large cross product table now includes the filtering over sensitive rows
-    -- TODO we should exclude these when computing results for intermediate queries!
+    -- TODO we should exclude these when computing results for intermediate queries
     let fr1  = fr ++ ", " ++ sensRowTable in
     let wh1  = wh ++ " AND " ++ sensRowFilter in
 
@@ -181,7 +185,8 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
                                      let qs = map (\(F as b) -> F as (let x = getVarNameFromTableExpr b in SelectGroup x)) (init queryFuns') in
                                      let q  = (last queryFuns') in
                                      if isPlainQuery q then error $ error_queryExpr_groupBy else
-                                     let gr = GR "" groupColNames groupVarNames groupVarValues in
+                                     let gr' = GR "" groupColNames groupVarNames groupVarValues in
+                                     let gr = if isMinMaxQuery q then trace warning_minMaxSubQueries gr' else gr' in
                                      let fs = filterFuns' in
                                      (q : qs, replicate (ng + 1) gr, replicate (ng + 1) fs)
                                  else
@@ -321,6 +326,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     plcMaps <- parsePolicyFromFile inputPolicy
     attMap <- parseAttackerFromFile inputAttacker
 
+
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
     let (usedTaskNames', inputTableAliases', inputTableNames', subTableAliases, outputGroups, outputQueryFuns', filterAexprs') = processQuery outputTableName queryMap attMap "" outputTableName outputTableName
@@ -400,12 +406,21 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- assign a unique integer to each column name, which is the order of this column in the cross product table
     let inputMap        = M.fromList $ zip colNames [0..length colNames - 1]
-    let sensitiveColSet = S.fromList $ map (inputMap ! ) sensitiveVarList
+    let sensitiveColSet = S.fromList $ map (\x -> if M.member x inputMap then
+                                                      inputMap ! x
+                                                  else
+                                                      error $ error_badNormVariable policy (queryNameToVarName x) (map queryNameToVarName $ M.keys inputMap)
+                                           ) sensitiveVarList
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "All input variables:    " ++ show inputMap
     traceIOIfDebug debug $ "All sensitive vars:     " ++ show sensitiveVarList
     traceIOIfDebug debug $ "All sensitive cols:     " ++ show sensitiveColSet
+
+    -- verify that all columns in the attMap do exist (to prevent attacker knowledge loss due to typos)
+    let inputVarList = map queryNameToVarName (M.keys inputMap)
+    let badAttMapVars = foldr (\x ys -> if elem x inputVarList then ys else (x : ys) ) [] $ M.keys attMap
+    when (length badAttMapVars > 0) $ traceIO (warning_badAttackerVars badAttMapVars)
 
     let filterAexprs = map (map (snd . applyAexprTypes fullTypeMap)) filterAexprs'
 
@@ -610,7 +625,7 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
                 let x1 = zipWith (\groupVarName groupValue -> 
                              if fullTypeMap ! groupVarName == "int" || fullTypeMap ! groupVarName == "double" then
                                  -- TODO it is better to do conversion the other way around and turn int to string only
-                                 -- for this, we will need type information when reading attPlc file, and it is a larger change
+                                 -- for this, we will need type information when reading attMap file, and it is a larger change
                                  ABinary AEQint (AVar groupVarName) (AConst $ unsafePerformIO (intToString groupValue))
                              else
                                  ABinary AEQstr (AVar groupVarName) (AText groupValue)

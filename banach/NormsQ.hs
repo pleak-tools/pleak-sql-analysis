@@ -335,8 +335,8 @@ verifyNorm k n1 (NormScale a2 n2) =
 verifyNorm _ NormZero _ = Just NormZero
 verifyNorm _ x y = Nothing --trace (show x ++ "\n" ++ show y ++ "\n---") $ Nothing
 
-normalizeAndVerify :: (Show a, Eq a, Ord a) => Norm a -> Norm a -> (M.Map a Double, M.Map a Double, M.Map a Double)
-normalizeAndVerify nx ny = 
+normalizeAndVerify :: (Show a, Show b, Eq a, Ord a) => (M.Map a b) -> Norm a -> Norm a -> (M.Map a Double, M.Map a Double, M.Map a Double)
+normalizeAndVerify invInputMap nx ny =
     -- normalize the norms
     let nnx = normalizeNorm nx in
     let nny = normalizeNorm ny in
@@ -362,9 +362,9 @@ normalizeAndVerify nx ny =
               -- scale the variables of nx to match ny, scale with sqrt[p](2) if some variable is used both as x ans lnx in the query
               -- we assume that lzero(x) is not used together with lp(x) and ln(x) since it is categorical vs numerical data
               let scale = 2**(-proot) in
-              let listMapCol = matchScalings         nnx (M.toList mapColx) mapColy in
-              let listMapLN  = matchLNScalings scale nnx (M.toList mapLNx)  mapColx mapColy mapLNy in
-              let listMapLZ  = matchLZScalings scale nnx (M.toList mapLZx)  mapLZy in
+              let listMapCol = map (matchScalings   invInputMap       nnx mapColy)                (M.toList mapColx) in
+              let listMapLN  = map (matchLNScalings invInputMap scale nnx mapColx mapColy mapLNy) (M.toList mapLNx)  in
+              let listMapLZ  = map (matchLZScalings invInputMap scale nnx mapLZy)                 (M.toList mapLZx)  in
 
               -- additional scaling is needed in the case px < py
               let n = fromIntegral $ length (listMapCol ++ listMapLN ++ listMapLZ) in
@@ -373,40 +373,36 @@ normalizeAndVerify nx ny =
                M.fromList $ map (\(x,xa) -> (x,xa * a)) listMapLN,
                M.fromList $ map (\(x,xa) -> (x,xa * a)) listMapLZ)
 
--- TODO outputting t may be confusing since it in general does contain the missing variable
-matchScalings :: (Show a, Ord a) => Norm a -> [(a,Double)] -> (M.Map a Double) -> [(a,Double)]
-matchScalings _ [] _ = []
-matchScalings t ((x,a):xs) mapColy =
+matchScalings :: (Show a, Show b, Ord a) => (M.Map a b) -> Norm a -> (M.Map a Double) -> (a,Double) -> (a,Double)
+matchScalings invInputMap t mapColy (x,a) =
     if M.member x mapColy then
         let b = mapColy ! x in
-        (x, (min a b) / a) : matchScalings t xs mapColy
-    else error $ error_badNorm t x
+        (x, (min a b) / a)
+    else error $ error_badNorm t (invInputMap ! x)
 
-matchLNScalings :: (Show a, Ord a) => Double -> Norm a -> [(a,Double)] -> (M.Map a Double) -> (M.Map a Double) -> (M.Map a Double) -> [(a,Double)]
-matchLNScalings _ _ [] _ _ _ = []
-matchLNScalings scale t ((x,a):xs) mapColx mapColy mapLNy =
+matchLNScalings :: (Show a, Show b, Ord a) => (M.Map a b) -> Double -> Norm a -> (M.Map a Double) -> (M.Map a Double) -> (M.Map a Double) -> (a,Double) -> (a,Double)
+matchLNScalings invInputMap scale t mapColx mapColy mapLNy (x,a) =
     -- if mapLNy also contains x, everything is fine
     if M.member x mapLNy then
         let b = mapLNy ! x in
-        (x, (min a b) / a) : matchLNScalings scale t xs mapColx mapColy mapLNy
+        (x, (min a b) / a)
     -- we may still take x from mapColy
     else if  M.member x mapColy && not (M.member x mapColx) then
         let b = mapColy ! x in
-        (x, (min a b) / a) : matchLNScalings scale t xs mapColx mapColy mapLNy
+        (x, (min a b) / a)
     -- we need additional scaling by sqrt[p](2) if mapColx also contained x, to handle two copies
     else if  M.member x mapColy && M.member x mapColx then
         let b = mapColy ! x in
-        (x, scale * (min a b) / a) : matchLNScalings scale t xs mapColx mapColy mapLNy
-    else error $ error_badLNNorm t x
+        (x, scale * (min a b) / a)
+    else error $ error_badLNNorm t (invInputMap ! x)
 
-matchLZScalings :: (Show a, Ord a) => Double -> Norm a -> [(a,Double)] -> (M.Map a Double) -> [(a,Double)]
-matchLZScalings _ _ [] _ = []
-matchLZScalings scale t ((x,a):xs) mapLZy =
+matchLZScalings :: (Show a, Show b, Ord a) => (M.Map a b) -> Double -> Norm a -> (M.Map a Double) -> (a,Double) -> (a,Double)
+matchLZScalings invInputMap scale t mapLZy (x,a) =
     -- if mapLZy also contains x, everything is fine
     if M.member x mapLZy then
         let b = mapLZy ! x in
-        (x, (min a b) / a) : matchLZScalings scale t xs mapLZy
-    else error $ error_badLZNorm t x
+        (x, (min a b) / a)
+    else error $ error_badLZNorm t (invInputMap ! x)
 
 -- assume that the norm has already been normalized
 findMaxP :: Norm a -> ADouble

@@ -74,8 +74,9 @@ error_badTypes x y = errorTag ++ " cannot compare the types " ++ show x ++ " and
 error_schema good bad = errorTag ++ " need to provide schemas for input tables " ++ show bad ++ ", found schemas only for " ++ show good ++ "."
 error_schema_bad_var t x xs = errorTag ++ " the data file of table " ++ t ++ " contains variable " ++ x ++ ", but its schema only contains columns " ++ show xs ++ "."
 
--- attacker knoledge related errors
+-- attacker knowledge related errors
 warning_badAttackerVars xs = warningTag ++ " the variables " ++ show xs ++ " specified in attacker knowledge file are not used by the query, so they will be ignored."
+error_badAttackerTypes  xs = errorTag   ++ " the types of variables " ++ show xs ++ " specified in attacker knowledge are not compatible with the schema."
 
 -- internall errors that may come due to bugs in the analyser itself
 error_internal                         = inErrTag ++ " Some internal analyser problem: "
@@ -127,6 +128,7 @@ error_badSetPolicyFormat xs1 xs2 = errorTag ++ " policy format error, should not
 error_badPolicySensRows vs    = errorTag ++ " the sensitive rows should be listed as \'Range a b\', but we got " ++ show vs ++ " instead."
 
 -- groupBy-related messages
+error_badGroupType groupName groupValue groupType = errorTag ++ " bad group by " ++ groupName ++ " the value " ++ groupValue ++ " is not of type " ++ groupType ++ "."
 error_noAttMapBounds x = errorTag ++ " no set of possible values is specified for " ++ x ++ ", which is essential for GROUP BY queries. Specify \'set x1 ... xn\' or \'range x y\' in the attacker file."
 error_badAttMapBounds x t = errorTag ++ " bad set of possible values " ++ show t ++ " for " ++ x ++ ", which is essential for GROUP BY queries. Use \'set x1 ... xn\' or \'range x y\' in the attacker file. Note that GROUP BY variables need to have table name prefices."
 error_noCSGroupSupport = errorTag ++ " GROUP BY is not support in combined sensitivity. Use plain derivative sensitivity (i.e. without \'-c\' parameter)."

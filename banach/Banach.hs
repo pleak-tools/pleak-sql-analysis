@@ -504,22 +504,8 @@ performAnalyses args rows outputTableName qr taskMap tableExprData = do
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "=== Analyzing table " ++ tableName ++ " of " ++ tableAlias ++ " ==="
 
-    -- TODO this is a temporary cheating place for demo, let us remove it
-    if (outputTableName == "ship_arrival_to_port") then
-        do
-            let result = case (tableName, tableAlias) of
-                             ("berth","berth") -> (0.1, 0.2167948)--(0.1, 0.006909)
-                             ("port","fport.port") -> (0.1, 2.167948)--(0.1, 0.25049)
-                             ("ship","fport_reachable_ports_ship") -> (0.1, 0.108397)
-                             ("port","port") -> (0.1, 2.167948)--(0.1, 0.109113)
-                             ("ship","rport.ship") -> (0.1, 0.316795)--(0.1, 0.014286)
-                             ("ship","ship") -> (0.1, 0.2167948)--(0.1, 0.006909)
-                             _               -> (0.1, 0.0)--(0.1, 0.0)
-            return (tableName, result)
-    else
-        do
-            result <- performAnalysis args rows cs te
-            return (tableName, result)
+    result <- performAnalysis args rows cs te
+    return (tableName, result)
 
   --let res = sumGroupsWith sum res0
   when debug $ putStrLn ""

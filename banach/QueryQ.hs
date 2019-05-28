@@ -140,17 +140,17 @@ normToExpr prefix inputMap (NF asgnMap y) =
 -- applies the list of filters to a table (computes AND of all filters for each row)
 -- if all variables that are used in the filter are non-sensitive, add the filter directly to the initial SQL query
 -- if at least one variable is sensitive, use a sigmoid or something similar, it depends on the filter and the aggregating function
-addFiltersToQueries :: [Function] -> [AExpr VarName] -> [S.Set B.Var] -> ([Function], [AExpr VarName])
-addFiltersToQueries queries filts fvars = 
+addFiltersToQuery :: Function -> [AExpr VarName] -> [S.Set B.Var] -> (Function, [AExpr VarName])
+addFiltersToQuery query filts fvars = 
     let (pubPart, privPart) = partition (\ (_,fvar) -> S.size fvar == 0) (zip filts fvars) in
     let pubFilters  = map fst pubPart in
     let privFilters = map fst privPart in
-    let newQueries = if length privFilters > 0 then
+    let newQuery = if length privFilters > 0 then
                          let privFilter = if length privFilters > 1 then AAnds privFilters else head privFilters in
-                         map (rewriteQuery privFilter) queries
+                         rewriteQuery privFilter query
                      else
-                         queries
-    in (newQueries, pubFilters)
+                         query
+    in (newQuery, pubFilters)
 
 rewriteQuery :: AExpr VarName -> Function -> Function
 rewriteQuery faexpr (F qaexpr qaggr) =

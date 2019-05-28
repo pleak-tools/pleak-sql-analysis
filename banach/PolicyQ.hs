@@ -2,6 +2,7 @@ module PolicyQ where
 
 import Control.Monad (void)
 import Data.Bits
+import Data.Char
 import Data.Either
 import Data.List
 import qualified Data.Map as M
@@ -82,22 +83,22 @@ isBadAttState x =
             _ -> (True, err_badAttackerPolicy x)
 
 -- get all possible values from a state description
-getStateValues :: M.Map String VarState -> String -> [String]
+getStateValues :: M.Map String VarState -> String -> [Either Int String]
 getStateValues attMap varName =
     if M.member varName attMap then
         let varState = (attMap ! varName) in
             case varState of
-                Range   x y  -> map show [x..(y-1)]
-                RangeUn x y  -> map show [x..(y-1)]
-                RangePr x mp -> let y = getUb x mp in map show [x..(y-1)]
+                Range   x y  -> map (Left . round) [x..(y-1)]
+                RangeUn x y  -> map (Left . round) [x..(y-1)]
+                RangePr x mp -> let y = getUb x mp in map (Left . round) [x..(y-1)]
 
-                SubSet   xs -> xs
-                SubSetUn xs -> xs
-                SubSetPr mp -> M.keys mp
+                SubSet   xs -> map Right xs
+                SubSetUn xs -> map Right xs
+                SubSetPr mp -> map Right $ M.keys mp
 
-                IntSubSet   xs -> map show xs
-                IntSubSetUn xs -> map show xs
-                IntSubSetPr mp -> map show $ M.keys mp
+                IntSubSet   xs -> map Left xs
+                IntSubSetUn xs -> map Left xs
+                IntSubSetPr mp -> map Left $ M.keys mp
 
                 _ -> error $ error_badAttMapBounds varName varState
     else error $ error_noAttMapBounds varName
@@ -257,12 +258,10 @@ extract_R attMap plcMap typeMap var =
     case (attState, plcState) of
             (Exact,_)       -> 1.0 -- compatible with L0-norm
             (None, Exact)   -> 1.0 -- compatible with L0-norm
-            (None, _)       -> let dataType = typeMap ! var in
+            (None, _)       -> let dataType = map toLower $ typeMap ! var in
                                    case dataType of
-                                       "int8"   -> 2^64
+                                       "int"   -> 2^64
                                        "bool"   -> 2.0
-                                       "INT8"   -> 2^64
-                                       "BOOL"   -> 2.0
                                        _        -> 1/0
 
             (Total n, _)       -> fromIntegral $ n
@@ -299,6 +298,56 @@ extractRanges indexSet key (plcMap:ps) =
         in extractRanges (S.union indexSet newRange) key ps
     else
         extractRanges indexSet key ps
+
+-- update varstates of the attacker file if their type is not compatible with the schema
+update_varStates :: M.Map String VarState -> M.Map String String -> M.Map String VarState
+update_varStates attMap typeMap =
+    let newAttMap   = map (update_varState attMap typeMap) (M.keys attMap) in
+    let badTypeVars = filter (\(x,t) -> case t of Nothing -> True; _ -> False) newAttMap in
+    if (length badTypeVars > 0) then error $ error_badAttackerTypes badTypeVars
+    else M.fromList $ map (\(x, Just t) -> (x, t)) newAttMap
+
+update_varState :: M.Map String VarState -> M.Map String String -> String -> (String, Maybe VarState)
+update_varState attMap typeMap var =
+    let attState = attMap ! var in
+    if not (M.member var typeMap) then (var, Just attState)
+    else
+        case (attState, map toLower (typeMap ! var)) of
+            (Exact,_)   -> (var, Just attState)
+            (None, _)   -> (var, Just attState)
+
+            -- a discrete set of size more than 2 is not compatible with booleans
+            (Total n,   t)     -> if t == "bool" && n > 2 then (var, Nothing) else (var, Just attState)
+            (TotalUn n, t)     -> if t == "bool" && n > 2 then (var, Nothing) else (var, Just attState)
+
+            -- we do not check how exactly the set elements are named in a discrete set
+            (SubSet   xs,t)    -> if t == "bool" && (length xs) > 2 then (var, Nothing)
+                                  else (var, Just attState)
+
+            (SubSetUn xs,t)    -> if t == "bool" && (length xs) > 2 then (var, Nothing)
+                                  else (var, Just attState)
+
+            (SubSetPr mp,t)    -> if t == "bool" && (M.size mp) > 2 then (var, Nothing)
+                                  else (var, Just attState)
+
+            -- an integer discrete set is compatible with int and float
+            (IntSubSet   xs,t) -> if t == "bool" && (length xs) > 2 then (var, Nothing)
+                                  else if t == "int" || t == "float" then (var, Just attState)
+                                  else (var, Just $ SubSet   $ map show xs)
+
+            (IntSubSetUn xs,t) -> if t == "bool" && (length xs) > 2 then (var, Nothing)
+                                  else if t == "int" || t == "float" then (var, Just attState)
+                                  else (var, Just $ SubSetUn $ map show xs)
+
+            (IntSubSetPr mp,t) -> if t == "bool" && (M.size mp) > 2 then (var, Nothing)
+                                  else if t == "int" || t == "float" then (var, Just attState)
+                                  else (var, Just $ SubSetPr $ M.mapKeys show mp)
+
+            -- a range is compatible with int and float
+            (Range   lb ub,t)  -> if t == "int" || t == "float" then (var, Just attState) else (var, Nothing)
+            (RangeUn lb ub,t)  -> if t == "int" || t == "float" then (var, Just attState) else (var, Nothing)
+            (RangePr lb mp,t)  -> if t == "int" || t == "float" then (var, Just attState) else (var, Nothing)
+            _ -> error $ err_badAttackerPolicy attState
 
 filterWith [] [] = []
 filterWith (b:bs) (x:xs) =

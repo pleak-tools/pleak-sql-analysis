@@ -15,7 +15,7 @@ import NormsQ
 type VarName = String
 
 ------------------------------------------------------------------------------------------------------
--- TODO: all transformations of Expr and TableExpr are being synchronized with B.Expr and B.TableExpr
+-- all transformations of Expr and TableExpr are being synchronized with B.Expr and B.TableExpr
 
 -- these are single-step Banach expressions, all 'Expr' and 'Var' substituted with 'VarName'
 data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm N
@@ -146,7 +146,7 @@ markExprCols sensitiveVars expr =
         B.Sump p es        -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Sump p     t2s)
         B.SumInf es        -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.SumInf     t2s)
         B.Sum2 es          -> let (t1s,t2s) = unzip $ map (markExprCols sensitiveVars) es in (concat t1s, B.Sum2       t2s)
-        -- TODO we actually do not want ZeroSens in front of it!
+         -- we do not need to collect sensitive variables here since its sensitivity is computed separately
         B.Prec ar          -> ([], B.Prec ar)
         B.StringCond s         -> ([], B.StringCond s)
 
@@ -299,7 +299,7 @@ pairwiseDisjoint (vs:vss) =
     let n = length $ filter (\vs' -> not (S.null (S.intersection vs vs'))) vss in
     if (n == 0) then pairwiseDisjoint vss else False
 
--- TODO this is for testing, use 1.0 by default
+-- this is for testing, use 1.0 by default
 scInt :: Double
 scInt = 1.0
 
@@ -506,7 +506,7 @@ updateTableExpr sigmoidPrecision expr mapCol mapLN mapLZ queryAggrNorm dbAggrNor
     case expr of
         B.SelectProd es    -> if (queryAggrNorm < dbAggrNorm) then error $ error_badAggrNorm expr (f queryAggrNorm) (f dbAggrNorm)
                               else B.SelectProd $ map g es
-        -- TODO change p = 0.0 if we decide to use some other marker
+        -- change p = 0.0 if we decide to use some other marker for SelectSumBin
         B.SelectL 0.0  es  -> case dbAggrNorm of
                                       Any         -> B.SelectSumInf $ map g es
                                       Exactly 1.0 -> B.SelectL 1.0 $ map g es

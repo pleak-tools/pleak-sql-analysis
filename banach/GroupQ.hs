@@ -7,17 +7,17 @@ import Data.List.Split
 ---- policy data structures ----
 -------------------------------
 
-data GroupData = GR String [String] [String] [[String]] | NoGR deriving Show
+data GroupData = GR String [String] [String] [[Either Int String]] | NoGR deriving Show
 data OneGroupData = OneGR [String] [String] deriving (Show, Eq, Ord)
 
 getGroupTableName (GR x _ _ _) = x
 getGroupTableName NoGR = defaultGroupTable
 
 getGroupColName (GR _ x _ _) = x
-getGroupColName NoGR = [defaultGroupColumn]
+getGroupColName NoGR = []
 
 getGroupVarName (GR _ _ x _) = x
-getGroupVarName NoGR = [defaultGroupVarName]
+getGroupVarName NoGR = []
 
 addPrefixToGroupVar p (GR t x ys z) = GR t x (map (p++) ys) z
 addPrefixToGroupVar _ NoGR       = NoGR
@@ -26,7 +26,7 @@ addPrefixToGroupTable p (GR t x y z) = GR (p++t) x y z
 addPrefixToGroupTable _ NoGR       = NoGR
 
 getGroupValues  (GR _ _ _ x) = x
-getGroupValues  NoGR = [[defaultGroupValue]]
+getGroupValues  NoGR = []
 
 hasGroups  (GR _ _ _ _) = True
 hasGroups  NoGR = False
@@ -35,9 +35,9 @@ getOneGroupColName (OneGR x _) = x
 getOneGroupValue   (OneGR _ x) = x
 
 defaultGroupTable   = "dummy"
-defaultGroupColumn  = "groupid"
-defaultGroupVarName = "default"
-defaultGroupValue   = "\'default\'"
+--defaultGroupColumn  = "groupid"
+--defaultGroupVarName = "default"
+--defaultGroupValue   = "\'default\'"
 
 -- the default separator between a table name and a variable in subqueries
 tsep = '.'
@@ -72,4 +72,4 @@ queryNameToGroupAggrName x = (queryNameToGroupName x, queryNameToAggrName x)
 
 preficedVarName t x = t ++ [tsep] ++ x
 connectedVarName t x = t ++ [csep] ++ x
-addGroupToQName t x = t ++ [grsep] ++ (intercalate [grsep] x)
+addGroupToQName t x = intercalate [grsep] (t:x)

@@ -49,19 +49,23 @@ lambert x n =
     let an = lambert x (n - 1) in
     an - (an * exp(an) - x) / ((an + 1) * exp(an))
 
-compute_epsilon :: Double -> Double -> Double -> Double -> Int -> Double
-compute_epsilon delta a q p nq =
+compute_epsilon :: Bool -> Double -> Double -> Double -> Double -> Int -> Double
+compute_epsilon pos delta a q p nq =
 
     -- we know that the probability cannot grow above 100%
-    let d = min (1 - p) delta in
-    - (log (p / (q - p) * (1 / (d + p) - 1))) / (a * fromIntegral nq)
+    if pos then
+        let d = min (1 - p) delta in
+        - (log (p / (q - p) * (1 / (d + p) - 1))) / (a * fromIntegral nq)
+    else
+        let d = min (1 - (q - p)) delta in
+        - (log ((q - p) / p * (1 / (d + (q - p)) - 1))) / (a * fromIntegral nq)
 
 compute_worst_epsilon :: Double -> Double -> Double -> Int -> Double
 compute_worst_epsilon delta a q nq =
     2 / (a * fromIntegral nq) * (log ((sqrt q + sqrt (delta*(delta + q - 1))) / (1 - delta)))
 
-compute_one_comb_data :: Int -> Double -> [[Double]] -> [[Bool]] -> [[Double]] -> [Maybe Double] -> [Maybe Double] -> (Double,Double,Double,Double)
-compute_one_comb_data nq delta ass dss rrss qs' ps =
+compute_one_comb_data :: Bool -> Int -> Double -> [[Double]] -> [[Bool]] -> [[Double]] -> [Maybe Double] -> [Maybe Double] -> (Double,Double,Double,Double)
+compute_one_comb_data pos nq delta ass dss rrss qs' ps =
 
     -- compute data for each AND
     -- we take 2a as distance since X' may be located somewhere in a corner, except the discrete case
@@ -82,15 +86,15 @@ compute_one_comb_data nq delta ass dss rrss qs' ps =
         (a,eps,q,p)
     else
         let p   = (product qs) - (product $ zipWith (-) qs (map fromJust ps)) in
-        let eps = compute_epsilon delta a q p nq in
+        let eps = compute_epsilon pos delta a q p nq in
         --trace (show qs) $
         --trace (show ps) $
         --trace (show (a,eps,q,p)) $
         --trace ("-------------") $
         (a,eps,q,p)
 
-compute_data :: Double -> Double -> [[Double -> Maybe [Double]]] -> [[Bool]] -> [[Double]] -> [[Double]] -> Int -> (Double,Double,Double,Double)
-compute_data delta starting_a gss dss rss rrss nq =
+compute_data :: Bool -> Double -> Double -> [[Double -> Maybe [Double]]] -> [[Bool]] -> [[Double]] -> [[Double]] -> Int -> (Double,Double,Double,Double)
+compute_data pos delta starting_a gss dss rss rrss nq =
 
     -- adjust proposed a to the actual bounds R
     let ass = zipWith (zipWith (\d rr -> if d then rr else min rr starting_a)) dss rrss in
@@ -102,7 +106,7 @@ compute_data delta starting_a gss dss rss rrss nq =
     -- collect all possible variants of q and p
     let cqss = (map (map (\qs -> if elem Nothing qs then Nothing else Just $ product (map fromJust qs))) . allCombsOfLists . map allCombsOfMaybeLists) qss in
     let cpss = (map (map (\ps -> if elem Nothing ps then Nothing else Just $ product (map fromJust ps))) . allCombsOfLists . map allCombsOfMaybeLists) pss in
-    let eps  = zipWith (compute_one_comb_data nq delta ass dss rrss) cqss cpss in
+    let eps  = zipWith (compute_one_comb_data pos nq delta ass dss rrss) cqss cpss in
 
     let (a,epsilon,q,p) = foldr (\x1@(_,e1,_,_) x2@(_,e2,_,_) -> if e1 < e2 then x1 else x2) (head eps) (tail eps) in
     --trace ("ass: " ++ show ass) $
@@ -114,19 +118,19 @@ compute_data delta starting_a gss dss rss rrss nq =
     --trace ("-------------") $
     (a,epsilon,q,p)
 
-optimal_a_epsilon :: Double -> Double -> [[Double -> Maybe [Double]]] -> [[Bool]] -> [[Double]] -> [[Double]] -> Double -> Double -> Double -> Double
+optimal_a_epsilon :: Bool -> Double -> Double -> [[Double -> Maybe [Double]]] -> [[Bool]] -> [[Double]] -> [[Double]] -> Double -> Double -> Double -> Double
                      -> Double -> Double -> Int -> (Double,Double,Double,Double)
-optimal_a_epsilon _ _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
-optimal_a_epsilon delta r gss dss rss rrss a epsilon q p k n nq =
+optimal_a_epsilon _ _ _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
+optimal_a_epsilon pos delta r gss dss rss rrss a epsilon q p k n nq =
 
     -- compute the initial value for a
     let rr = foldr max 0 (concat rrss) in
     let starting_a = r + k * (rr - r) / n in
-    let (a',epsilon',q',p') = compute_data delta starting_a gss dss rss rrss nq in
+    let (a',epsilon',q',p') = compute_data pos delta starting_a gss dss rss rrss nq in
 
     --take the best values found so far
     let (a'',epsilon'',q'',p'') = if (epsilon' > epsilon) then (a',epsilon',q',p') else (a,epsilon,q,p) in
-    optimal_a_epsilon delta r gss dss rss rrss a'' epsilon'' q'' p'' (k-1) n nq
+    optimal_a_epsilon pos delta r gss dss rss rrss a'' epsilon'' q'' p'' (k-1) n nq
 
 -- TODO if we want to look for an optimal beta here using binary search, we will also need outputTableName here
 performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
@@ -158,7 +162,7 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
   let printFloatS = if alternative args then show else printf "%0.2f"
 
   let (_,normsExprs,normsAggrs) = unzip3 $ map BQ.getExtra tableExprData
-  let inputTableNames = map (\(x,_,_,_,_,_) -> x) $ BQ.getData tableExprData
+  let inputTableNames = BQ.getTableNames tableExprData
   let normMap = M.fromList $ zip inputTableNames $ zip normsExprs normsAggrs
 
   traceIOIfDebug debug ("===============================")
@@ -217,7 +221,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let nq = numOfQueries args -- this basically scales epsilon nq times, assuming that up to nq queries may be run on the same data
 
   -- process the policy and the attacker knowledge
-  let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (tname ++ [tsep] ++ x,y)) tmap) typeMap
+  let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (preficedVarName tname x,y)) tmap) typeMap
   let plainTypeMap  = M.fromList $ concat plainTypeMaps
 
   -- we rather assume that there is one leak-statement per policy, but if there are many, all of them have the same delta and can be summed up
@@ -248,9 +252,16 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
 
   -- it seems that brute-forcing optimal epsilon and a works quite well
   -- we consider multidimensional space, where the radius is linf-norm
-  let (init_a, init_epsilon, init_q, init_p) = compute_data delta (foldr max 0 (concat rrss)) gss dss rss rrss nq
   let num_of_tries = 10000
-  let (a,epsilon,q,p) = optimal_a_epsilon delta r gss dss rss rrss init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
+
+  -- since 'a' is only an estimation parameter, we find the noise separately for the positive and the negative guess, and then take the largest noise
+  let (init_a, init_epsilon, init_q, init_p) = compute_data True delta (foldr max 0 (concat rrss)) gss dss rss rrss nq
+  let (a1,epsilon1,q1,p1) = optimal_a_epsilon True delta r gss dss rss rrss init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
+
+  let (init_a, init_epsilon, init_q, init_p) = compute_data False delta (foldr max 0 (concat rrss)) gss dss rss rrss nq
+  let (a0,epsilon0,q0,p0) = optimal_a_epsilon False delta r gss dss rss rrss init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
+
+  let epsilon = min epsilon0 epsilon1
 
   {-
   -- this computation works only for uniform distribtions
@@ -275,13 +286,19 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   traceIOIfDebug debug ("rrss: " ++ (show rrss))
   traceIOIfDebug debug ("r: " ++ (show r))
   traceIOIfDebug debug ("--------")
-  traceIOIfDebug debug ("a: " ++ (show a))
-  traceIOIfDebug debug ("eps: " ++ (show epsilon))
-  traceIOIfDebug debug ("q: " ++ (show q))
-  traceIOIfDebug debug ("p: " ++ (show p))
+  traceIOIfDebug debug ("a0: " ++ (show a0))
+  traceIOIfDebug debug ("eps0: " ++ (show epsilon0))
+  traceIOIfDebug debug ("q0: " ++ (show q0))
+  traceIOIfDebug debug ("p0: " ++ (show p0))
+  traceIOIfDebug debug ("--------")
+  traceIOIfDebug debug ("a1: " ++ (show a1))
+  traceIOIfDebug debug ("eps1: " ++ (show epsilon1))
+  traceIOIfDebug debug ("q1: " ++ (show q1))
+  traceIOIfDebug debug ("p1: " ++ (show p1))
 
-  let pr_pre  = p
-  let pr_post = 1 / (1 + exp(- a * epsilon * (fromIntegral nq)) * (q-p) / p)
+  -- if delta < prior, then the lower bound may be negative, and we take the bound 0 in this case
+  let pr_pre  = p1 * 100
+  let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
 
   (finalBeta,finalQmap,finalTaskAggr,finalError,_) <- findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts
 
@@ -308,8 +325,8 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
 
   --putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (finalError * 100.0)]
   traceIOIfDebug debug ("===============================")
-  let outputList = [("prior: ",                         show (pr_pre * 100.0)),
-                    ("posterior: ",                     show (pr_post * 100.0)),
+  let outputList = [("prior: ",                         show pr_pre),
+                    ("posterior: ",                     show pr_post),
                     ("expected cost: ",                 show expectedCost),
                     ("78%-realtive error (Cauchy noise): ", show (finalError * 100.0)),
                     ("Cauchy noise magnitude: a <- ",        show cauchyNoise),

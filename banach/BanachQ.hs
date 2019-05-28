@@ -30,6 +30,8 @@ sqlsaExecutablePathQuiet = "./sqlsa-quiet"
 sqlsaExecutablePathVerbose = "./sqlsa-verbose"
 combinedSensitivityTmpFileName = "_combined_sensitivity.tmp"
 
+temporaryTableName = "_temp"
+
 readTableToSensitivityMap :: IO (M.Map String Double)
 readTableToSensitivityMap = do
   s <- StrictIO.readFile combinedSensitivityTmpFileName
@@ -45,12 +47,18 @@ data TaskMap = TM [(String,Bool)] deriving Show
 getMap :: TaskMap -> M.Map String Bool
 getMap (TM xs) = M.fromList xs
 
-data DataWrtTable = DWT String String OneGroupData B.TableExpr (String,String,String) [String] (String, Norm String, ADouble) deriving Show
-getData :: [DataWrtTable] -> [(String, String, OneGroupData, B.TableExpr,(String,String,String), [String])]
-getData xs = map (\(DWT x1 x2 x3 x4 x5 x6 _) -> (x1, x2, x3, x4, x5, x6)) xs
+-- the main data needed for banach analysis (without groups and task names)
+data AnalysisDataWrtTable = ADWT String String B.TableExpr (String,String,String) deriving Show
+
+data DataWrtTable = DWT AnalysisDataWrtTable OneGroupData [String] String (String, Norm String, ADouble) deriving Show
+getData :: [DataWrtTable] -> [(String, String, OneGroupData, B.TableExpr,(String,String,String), [String], String)]
+getData xs = map (\(DWT (ADWT x1 x2 x3 x4) x5 x6 x7 _) -> (x1, x2, x5, x3, x4, x6, x7)) xs
+
+getTableNames :: [DataWrtTable] -> [String]
+getTableNames xs = map (\(DWT (ADWT x1 _ _ _) _ _ _ _) -> x1) xs
 
 getExtra :: DataWrtTable -> (String, Norm String, ADouble)
-getExtra (DWT _ _ _ _ _ _ x7) = x7
+getExtra (DWT _ _ _ _ x8) = x8
 
 data ExprQ = Q Double                -- a constant
            | VarQ String             -- a variable
@@ -1131,8 +1139,10 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames
   when debug $ putStrLn "================================="
   qmapList <- if (dbSensitivity args) then sendStringListsDoublesQueryToDb args initialQuery else (do return [([],0)])
   when debug $ putStrLn "================================="
+
   let qmap = M.fromList qmapList
-  let numOfQueries = length qmap
+  let numOfQueries = length qmapList
+
   -- scale epsilon according to the number of outputs
   let epsilon = divide epsilon' (fromIntegral numOfQueries)
 
@@ -1175,16 +1185,24 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames
   -- here we converted forM to foldM to keep track of subexpression map that collects intermediate AR-s
   -- res00 <- forM tableExprData $ \ (tableName, taskName, te, (_,fromPart,wherePart)) -> do
   let tableExprData = getData tableExprData'
-  (_,res00,taskNames,groupNames,usedTaskNames) <- foldM (\ (subQueryMap',results',taskNames',groupNames',usedTaskNames') (tableName, taskName, group, te, (_,fromPart,wherePart), usedTaskNames) -> do
+  (_,res00,taskNames,groupNames,usedTaskNames) <- foldM (\ (subQueryMap',results',taskNames',groupNames',usedTaskNames') (tableName, taskName, group, te, (_,fromPart,wherePart), usedTaskNames, queryStr) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " in task " ++ taskName ++ " ==="
     when debug $ print te
     --let pa = performSubExprAnalysis args epsilon (Just beta) fromPart wherePart tableName taskName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subQueryMap'
 
-    -- TODO think how to assign qr for intermediate queries (we actually do not need it too much), let us take qr = 0 for now
-    let groupkey = map cleankey $ getOneGroupValue group
-    let qr = if M.member groupkey qmap then qmap ! groupkey else 0
+    let groupvars = getOneGroupColName group
+    let groupkeys = getOneGroupValue group
+
+    -- the group names returned by psql may be formatted differently
+    -- we ensure that the group keys will be the same as in qmap
+    let groupMatchings = concat $ zipWith (\x y -> " AND " ++ x ++ " = " ++ y) groupvars groupkeys
+    let initQueryGroup = "SELECT * FROM (" ++ queryStr ++ ") AS " ++ temporaryTableName ++ " WHERE true" ++ groupMatchings
+
+    qrs <- if (dbSensitivity args) then sendStringListsDoublesQueryToDb args initQueryGroup else (do return [([],1/0)])
+    let (groupStrings,qr) = if equal (length qrs) (round 0) then ([], 1/0) else head qrs
+
     let f v x y z w = performAnalysis args epsilon (Just beta) qr x y tableName z taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts w v
     let pa v = performSubExprAnalysis args fromPart wherePart tableName taskName group subQueryMap' (f v)
 
@@ -1193,7 +1211,7 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames
         (newSubQueryMap,results) <- pa (getG args)
         -- let us remember for which task we computed these analyses
         let taskNames      = replicate (length results) taskName
-        let groupNames     = replicate (length results) group
+        let groupNames     = replicate (length results) groupStrings
         let usedTaskNamess = replicate (length results) usedTaskNames
 
         --return (tableName, result)
@@ -1201,12 +1219,12 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames
       Just Nothing ->
         -- this table is considered insensitive, so computing its sensitivity is skipped
         -- return (tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))
-        return (subQueryMap', results' ++ [(tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))], taskNames' ++ [taskName], groupNames' ++ [group], usedTaskNames' ++ [usedTaskNames])
+        return (subQueryMap', results' ++ [(tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))], taskNames' ++ [taskName], groupNames' ++ [groupStrings], usedTaskNames' ++ [usedTaskNames])
       Just tableG -> do
         (newSubQueryMap,results)  <- pa tableG
         -- let us remember for which task we computed these analyses
         let taskNames      = replicate (length results) taskName
-        let groupNames     = replicate (length results) group
+        let groupNames     = replicate (length results) groupStrings
         let usedTaskNamess = replicate (length results) usedTaskNames
         --return (tableName, result)
         return (newSubQueryMap, results' ++ results,  taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)) (M.empty,[],[],[],[]) tableExprData
@@ -1219,7 +1237,7 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames
 
   -- set the flag to 0 for output table tasks, since we construct "all tables together" reuslt for them
   let taskNameMap = getMap taskNameList
-  let taskMap' = map (\((t,gr),is) -> let b = (if M.member t taskNameMap then taskNameMap ! t else False) in ((t,getOneGroupValue gr,b),is)
+  let taskMap' = map (\((t,gr),is) -> let b = (if M.member t taskNameMap then taskNameMap ! t else False) in ((t,gr,b),is)
                  ) $ taskMaps
   let taskMap  = map (\((t,gr,b),is) -> (t,is,gr,b)) $ M.toList $ M.fromListWith (++) taskMap'
 
@@ -1292,9 +1310,7 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames
                              (gr,[(taskName,vs1)])
                      ) taskAggr0
 
-  -- by construction, a non-group query has group [], so we substitute default group with []
-  -- TODO we could as well define [] as default group in PreprocessQ.hs
-  let taskAggr = M.fromListWith (++) $ map (\(k,v) -> if equal k [defaultGroupValue] then ([],v) else (map cleankey k,v)) taskAggr'
+  let taskAggr = M.fromListWith (++) $ taskAggr'
 
   when debug $ putStrLn ("--- ")
   when debug $ putStrLn ("qmapKeys: " ++ (show qmap))
@@ -1308,15 +1324,6 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames
   when debug $ putStrLn ("usedTaskNames: " ++ (show usedTaskNames))
   return (qmap, taskAggr)
 
--- TODO instead of matching types manually, we need to do something clever
-cleankey :: String -> String
-cleankey xs =
-    -- remove from ' around strings
-    if equal (head xs) (last xs) && equal (head xs) '\'' then init (tail xs) else
-    -- turn integers to floats
-    if elem '.' xs then xs else xs ++ ".0"
-
-
 -- find the minimum value of beta that is allowed for all tables
 findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
 findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
@@ -1326,7 +1333,7 @@ findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeM
     --minBetas <- forM tableExprData $ \ (tableName, _, te, (_,fromPart,wherePart),_) ->
     --  findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveVarList M.empty te colTableCounts
     let tableExprData = getData tableExprData'
-    (_,minBetas) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (_,fromPart,wherePart),_) -> do
+    (_,minBetas) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (_,fromPart,wherePart),_, _) -> do
         (newSubQueryMap,result) <- findMinimumBeta1 args fromPart wherePart tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
         return (newSubQueryMap, results' ++ [result])) (M.empty,[]) tableExprData
     -- ######################
@@ -1358,7 +1365,7 @@ findMaximumGsens args epsilon beta dataPath separator initialQuery colNames type
     -- ######################
     -- subqueries are taken into account for computation of beta
     let tableExprData = getData tableExprData'
-    (_,maxGsenss) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (_,fromPart,wherePart),_) -> do
+    (_,maxGsenss) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (_,fromPart,wherePart),_, _) -> do
         (newSubQueryMap,result) <- findMaximumGsens1 args fromPart wherePart tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
         return (newSubQueryMap, results' ++ [result])) (M.empty,[]) tableExprData
     -- ######################
@@ -1538,7 +1545,7 @@ performSubExprAnalysis args fromPart wherePart tableName taskName group subExprM
 
     -- if there are several aggregations for the same table name, all of them use the same grouping
     -- TODO we do not support several aggregations yet
-    let groupColumns = if equal goodVarNames [] then [defaultGroupColumn] else head $ map (\x -> getOneGroupColName (fst (subExprMap M.! x))) goodVarNames
+    let groupColumns = if equal goodVarNames [] then [] else head $ map (\x -> getOneGroupColName (fst (subExprMap M.! x))) goodVarNames
 
     let temp = case goodVarNames of
                    [] -> [([tableName],M.empty)]

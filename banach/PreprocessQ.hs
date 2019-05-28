@@ -29,7 +29,6 @@ import QueryQ
 import ReaderQ
 import SchemaQ
 import SelectQueryQ
-import System.IO.Unsafe
 
 ---------------------------------------------------------
 ---- Preprocessing a Query for Banach Analyser input ----
@@ -106,7 +105,7 @@ adjustQueryNormToDbNorm debug sigmoidPrecision inputMap sensitiveCols tableAlias
 dataWrtOneSensVarSet :: Bool -> Double -> (M.Map VarName B.Var) -> TableName -> TableAlias -> TableAlias ->
                         B.TableExpr -> (String,String,String) -> String ->
                         NormFunction -> (S.Set B.Var)
-                        -> (TableName, TableName, B.TableExpr, (String,String,String), NormFunction)
+                        -> (BQ.AnalysisDataWrtTable, NormFunction)
 dataWrtOneSensVarSet debug sigmoidPrecision inputMap tableName tableAlias tablePrefix filtQuery (sel,fr,wh) queryName tableNormFun tableSensCols =
 
     -- transform the main query to a banach expression; it is fine to use only the current table's sensitive columns
@@ -116,21 +115,20 @@ dataWrtOneSensVarSet debug sigmoidPrecision inputMap tableName tableAlias tableP
     let sensRowTable  = tableName ++ "_sensRows" in
     let sensRowFilter = tableName ++ "_sensRows.ID = " ++ tableAlias ++ ".ID" in
 
-    -- a query that creates the large cross product table now includes the filtering over sensitive rows
-    -- TODO we should exclude these when computing results for intermediate queries
+    -- the large cross product table now includes the bit denoting whether the row is sensitive
     let fr1  = fr ++ ", " ++ sensRowTable in
     let wh1  = wh ++ " AND " ++ sensRowFilter in
 
     -- the query expressions defined over the large cross product table
     let adjTableExpr = adjustQueryNormToDbNorm debug sigmoidPrecision inputMap tableSensCols tablePrefix tableNormFun queryExpr queryAggr in
-    (tableName, queryName, adjTableExpr, (sel, fr1, wh1), tableNormFun)
+    (BQ.ADWT tableName queryName adjTableExpr (sel, fr1, wh1), tableNormFun)
 
 
 -- compute data for Banach analysis w.r.t. some intermediate aggregation, whose output we treat as a sensitive variable
 dataWrtIntermTable :: Bool -> Double -> (M.Map VarName B.Var) ->
                       B.TableExpr -> (String,String,String) -> String ->
                       VarName -> B.Var
-                      -> (TableName, TableName, B.TableExpr, (String,String,String), NormFunction)
+                      -> (BQ.AnalysisDataWrtTable, NormFunction)
 dataWrtIntermTable debug sigmoidPrecision inputMap filtQuery (sel,fr,wh) queryName intermediateSensVar intermediateSensCol =
 
     -- we treat the column that is an output of some aggregation as sensitive
@@ -143,7 +141,7 @@ dataWrtIntermTable debug sigmoidPrecision inputMap filtQuery (sel,fr,wh) queryNa
 -- we read the columns in the order they are given in allTableNorms, since it matches the cross product table itself
 dataWrtOneInputTable :: Bool -> Double -> (M.Map VarName B.Var) ->
                         B.TableExpr -> (String,String,String) -> String -> (M.Map TableAlias TableData) -> TableAlias
-                        -> (TableName, TableName, B.TableExpr, (String,String,String), NormFunction)
+                        -> (BQ.AnalysisDataWrtTable, NormFunction)
 dataWrtOneInputTable debug sigmoidPrecision inputMap filtQuery (sel,fr,wh) queryName tableMap tableAlias =
 
     let tableData     = tableMap ! tableAlias in
@@ -313,18 +311,33 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     queryFileContents <- readInput inputQuery
     (outputTableName,queryMap) <- parseQueryMap defaultOutputTableName queryFileContents
-    traceIOIfDebug debug $ "queryMap:   " ++ show queryMap
+    traceIOIfDebug debug $ "Query map: " ++ show queryMap
 
     schemaFileContents <- readInput inputSchema
     schemas <- parseSchemas schemaFileContents
 
-    -- TODO it seems that we are not using intermediate table type map yet, and we should do it somewhere in processQuery
-    let typeList = map extractTypes schemas
-    let typeListTrimmedTypenames  = map (\(x,ys) -> (x, map (\(y1,y2) -> (y1, takeWhile (\z -> ord(z) >= 65) (map toLower y2) )) ys)) typeList
-    let typeMap  = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) typeListTrimmedTypenames
+    let typeList' = map extractTypes schemas
+    let typeList  = map (\(x,ys) -> (x, map (\(y1,y2) -> (y1, takeWhile (\z -> ord(z) >= 65) (map toLower y2) )) ys)) typeList'
+    let typeMap  = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) typeList
+
+    traceIOIfDebug debug $ "Type map:  " ++ show typeMap
+
+    let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (preficedVarName tname x,y)) tmap) typeList
+    let plainTypeMap  = M.fromList $ concat plainTypeMaps
 
     plcMaps <- parsePolicyFromFile inputPolicy
-    attMap <- parseAttackerFromFile inputAttacker
+    attMap' <- parseAttackerFromFile inputAttacker
+
+    -- verify that the types of attMap and the schema match
+    let attMap = update_varStates attMap' plainTypeMap
+
+    traceIOIfDebug debug $ "Att map:   " ++ show attMap
+    traceIOIfDebug debug $ "Plc map:   " ++ show plcMaps
+
+    -- verify that all columns in the attMap do exist (to prevent attacker knowledge loss due to typos)
+    let badAttMapVars = foldr (\x ys -> if  M.member x plainTypeMap then ys else (x : ys)) [] $ M.keys attMap
+    when (length badAttMapVars > 0) $ traceIO (warning_badAttackerVars badAttMapVars)
+
 
 
     -- extract the tables that should be read from input files, take into account copies
@@ -349,9 +362,6 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "Input table aliases: " ++ show allInputTableAliases
     traceIOIfDebug debug $ "Subtable aliases:    " ++ show subTableAliases
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Type map:            " ++ show typeMap
-    traceIOIfDebug debug $ "Att map:            " ++ show attMap
-    traceIOIfDebug debug $ "Plc map:            " ++ show plcMaps
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
     inputTableMap <- readTableData policy dataPath attMap plcMaps typeMap allInputTableNames allInputTableAliases
@@ -417,10 +427,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "All sensitive vars:     " ++ show sensitiveVarList
     traceIOIfDebug debug $ "All sensitive cols:     " ++ show sensitiveColSet
 
-    -- verify that all columns in the attMap do exist (to prevent attacker knowledge loss due to typos)
-    let inputVarList = map queryNameToVarName (M.keys inputMap)
-    let badAttMapVars = foldr (\x ys -> if elem x inputVarList then ys else (x : ys) ) [] $ M.keys attMap
-    when (length badAttMapVars > 0) $ traceIO (warning_badAttackerVars badAttMapVars)
+
 
     let filterAexprs = map (map (snd . applyAexprTypes fullTypeMap)) filterAexprs'
 
@@ -449,13 +456,14 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "----------------"
 
     -- reconstruct the initial query
-    let initialQuery = constructInitialQuery subQueryDataMap' inputTableMap (getQueryName $ head outputQueryFuns)
+    let allQueryStrs = M.fromList $ map (\f -> let qn = getQueryName f in (qn, constructInitialQuery subQueryDataMap' inputTableMap qn)) outputQueryFuns
+    let initialQuery = allQueryStrs ! (getQueryName $ head outputQueryFuns)
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Initial query: " ++ initialQuery
     traceIOIfDebug debug $ "----------------"
 
 
-    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) inputMap inputTableMap fullTypeMap subQueryDataMap sensitiveVarList) (reverse commonOrderedQueryNames)
+    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) inputMap inputTableMap fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
 
     let (tableNameList,_,_) = unzip3 $ map BQ.getExtra dataWrtEachTable
     let taskMap = BQ.TM $ nub $ map (\t -> if t == outputTableName then (t,True) else (t,False)) tableNameList
@@ -585,17 +593,15 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     let subFroms = map (\x -> "(" ++ constructInitialQuery subQueryDataMap inputTableMap (varNameToQueryName x) ++ ") AS " ++ (varNameToTableName x)) subIntermediateVarList in
 
     -- add the subqueries to the FROM list
-
     (mainSelect ++ " FROM " ++ (intercalate ", " (directTables ++ subFroms)) ++ " WHERE " ++ mainWhere ++ groupBy)
-    --(mainSelect ++ " FROM " ++ mainFrom ++ (if length subFroms > 0 then "," ++ intercalate "," subFroms else "") ++ " WHERE " ++ mainWhere ++ groupBy)
 
 
--- TODO check if grouping by several values works properly
 getQueryData :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String ->
                 M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
-                [VarName]-> String
+                [VarName]-> M.Map String String ->
+                String
                 -> [BQ.DataWrtTable]
-getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName =
+getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList allQueryStrs queryName =
 
     let (_,_,_,_,_,gr,_,_,_,_) = queryDataMap ! queryName in
 
@@ -603,39 +609,35 @@ getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fu
     let groupVarName = getGroupVarName gr in
     let groupList    = getGroupValues gr in
 
-    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName groupVarName groupColName) (allCombsOfLists groupList)
+    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarName groupColName) (allCombsOfLists groupList)
 
 getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String ->
                         M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
-                        [VarName] ->
-                        String -> [String] -> [String] -> [String]
+                        [VarName] -> String -> M.Map String String -> [String] -> [String] ->
+                        [Either Int String]
                         -> [BQ.DataWrtTable]
-getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName groupVarNames groupColNames groupValues =
+getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarNames groupColNames groupValues =
 
     let (directTableAliases,subqueryTableAliases,intermediateVarList,intermediateIsCommonList,directColNames,gr,query,filterAexprs',usedTaskNames,taskName) = queryDataMap ! queryName in
 
     -- each group creates a separate one-output query with a group filter
     let (filterAexprs, group, newQueryName) =
-            if head groupValues == defaultGroupValue then
-                let x1 = filterAexprs' in
-                let x2 = OneGR [defaultGroupColumn] [defaultGroupValue] in
-                let x3 = queryName in
-                (x1,x2,x3)
-            else
-                let x1 = zipWith (\groupVarName groupValue -> 
-                             if fullTypeMap ! groupVarName == "int" || fullTypeMap ! groupVarName == "double" then
-                                 -- TODO it is better to do conversion the other way around and turn int to string only
-                                 -- for this, we will need type information when reading attMap file, and it is a larger change
-                                 ABinary AEQint (AVar groupVarName) (AConst $ unsafePerformIO (intToString groupValue))
-                             else
-                                 ABinary AEQstr (AVar groupVarName) (AText groupValue)
-                         ) groupVarNames groupValues ++ filterAexprs'
-                in
-                let x2 = OneGR groupColNames groupValues in
-                let x3 = addGroupToQName queryName groupValues in
+
+            let x1 = zipWith (\groupVarName groupValue -> 
+                    let groupType = fullTypeMap ! groupVarName in
+                    if  groupType == "int" || groupType == "float" then
+                        let val = case groupValue of {Left c -> c; Right c -> error $ error_badGroupType groupVarName c groupType} in
+                        ABinary AEQint (AVar groupVarName) (AConst $ fromIntegral val)
+                    else
+                        let val = case groupValue of {Right c -> c; Left c -> error $ error_badGroupType groupVarName (show c) groupType} in
+                        ABinary AEQstr (AVar groupVarName) (AText val)
+                    ) groupVarNames groupValues ++ filterAexprs'
+            in
+                let groupValuesAsStrings = map (\x -> case x of {Left y -> show y; Right y -> y}) groupValues in
+                let x2 = OneGR groupColNames groupValuesAsStrings in
+                let x3 = addGroupToQName queryName groupValuesAsStrings in
                 (x1,x2,x3)
     in
-
     let queryStr  = queryToString query in
 
     -- TODO not all intermediate variables are necessarily sensitive, probably do not need to put all of them into the list
@@ -650,9 +652,7 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     -- we filter out rows using _globally_ public filters, since different filterings would be bad for sensitivity over all tables
     let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap True x)) filterAexprs in
 
-    -- TODO (not important) we process the queries one by one anyway, so we may change the interface of this function
-    let (filtQueryFuns, pubFilterAexprs) = addFiltersToQueries [query] filterAexprs filterSensVars in
-    let filtQueryFun = head filtQueryFuns in
+    let (filtQueryFun, pubFilterAexprs) = addFiltersToQuery query filterAexprs filterSensVars in
 
     let (queryExpr,queryAggr,filtQueryStr) = queryToExpr sigmoidBeta inputMap sensitiveColSet (applyQueryTypes fullTypeMap filtQueryFun) in
     let pubFilter  = map aexprToString pubFilterAexprs in
@@ -663,8 +663,8 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     let commonIntermediateVarList = map snd $ filter (\(b,_) -> b) $ zip intermediateIsCommonList intermediateVarList in
     let commonIntermediateColList = map (inputMap ! ) commonIntermediateVarList in
 
-    {-
     traceIfDebug debug ("\n=== Processing subquery " ++ queryName ++ " ===") $
+    {-
     traceIfDebug debug ("----------------") $
     traceIfDebug debug ("Query (w/o filter) = " ++ queryStr) $
     traceIfDebug debug ("Number of Filters: " ++ show (length filterAexprs)) $
@@ -706,17 +706,18 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     -- for each intermediate variable (a subquery), collect all tasks that depend on that subquery
     let internalUsedTaskNames = map (\cv -> let (_,_,_,_,_,_,_,_,usedTasks,_) = queryDataMap ! (varNameToQueryName cv) in concat usedTasks) commonIntermediateVarList in
     let allUsedTaskNames = usedTaskNames ++ internalUsedTaskNames in
-    let (allInputTableNames, allOutputTableNames, finalTableExpr, sqlQueries, normFuns) = unzip5 dataWrtEachTable' in
+    let (analysisData, normFuns) = unzip dataWrtEachTable' in
 
     -- construct a norm where variable names are used, not variable Id-s, these norms will be output to the user
     let idMap = M.fromList $ zip (M.keys inputMap) (M.keys inputMap) in
     let (normExprs,normAggrs) = unzip $ map (normToExpr "" id) normFuns in
 
-    let groupList = replicate (length sqlQueries) group in
-    let taskNames = replicate (length sqlQueries) taskName in
+    let groupList = replicate (length analysisData) group in
+    let taskNames = replicate (length analysisData) taskName in
+    let queryStrs = replicate (length analysisData) (allQueryStrs ! queryName) in
 
     let extra = zip3 taskNames normExprs normAggrs in
-    let dataWrtEachTable = zipWith7 BQ.DWT allInputTableNames allOutputTableNames groupList finalTableExpr sqlQueries allUsedTaskNames extra in
+    let dataWrtEachTable = zipWith5 BQ.DWT analysisData groupList allUsedTaskNames queryStrs extra in
 
     {-
     traceIfDebug debug ("----------------") $

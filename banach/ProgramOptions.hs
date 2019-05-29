@@ -25,7 +25,8 @@ data ProgramOptions
     getEpsilon       :: Double,
     getBeta          :: Maybe Double,
     getG             :: Maybe Double,
-    numOfQueries     :: Int
+    numOfQueries     :: Int,
+    errorUBprob      :: Double
   }
 
 programArgs :: Parser ProgramOptions
@@ -49,6 +50,7 @@ programArgs = ProgramOptions
   <*> optional (option auto (short 'B' <> long "beta" <> help "Specify beta (default is to choose automatically)"))
   <*> optional (option auto (short 'G' <> long "distance-G" <> help "Specify G (the distance between two databases that differ by exactly one row)"))
   <*> option auto (short 'n' <> long "numOfQueries" <> value 1 <> help "Specify the limit on the number of queries applied to the same data (default is 1)")
+  <*> option auto (short 'r' <> long "errorUB" <> value 0.78055 <> help "Specify the probability with which the noise fits below noise magnitude")
 
 getProgramOptions :: IO ProgramOptions
 getProgramOptions = execParser opts

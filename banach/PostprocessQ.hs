@@ -49,6 +49,33 @@ lambert x n =
     let an = lambert x (n - 1) in
     an - (an * exp(an) - x) / ((an + 1) * exp(an))
 
+-- int sqrt(2) / pi * 1 / (1 + x^4) dx
+cauchy_integral a =
+    let x1 = - log (a**2 - (sqrt 2) * a + 1) in
+    let x2 =   log (a**2 + (sqrt 2) * a + 1) in
+    let x3 = - 2 * (atan (1 - (sqrt 2) * a)) in
+    let x4 =   2 * (atan (1 + (sqrt 2) * a)) in
+    (x1 + x2 + x3 + x4) / (4 * pi)
+
+-- int 1 / 2 * exp(-|x|) dx
+laplace_integral a =
+    1 / 4 * (exp (-a)) * ((exp a - 1)**2 * (- (signum a)) + 2 * (exp a) + (exp (2 * a)) - 1)
+
+-- find the range within which the noise stays with probability p
+-- we use window binary search, as we do not have better ideas
+find_noise_range_window f p w =
+    let q = (f w) - (f (-w)) in
+    if p > q then find_noise_range_window f p (w*2)
+    else find_noise_range_binary f p 0 w
+
+find_noise_range_binary f p lb ub =
+    let a = (ub + lb) / 2 in
+    let q = (f a) - (f (-a)) in
+    trace (show q ++ "| " ++ show lb ++ " " ++ show a ++ " " ++ show ub) $
+    if abs (q - p) < 0.01 then a
+    else if p > q then find_noise_range_binary f p a ub
+    else find_noise_range_binary f p lb a
+
 compute_epsilon :: Bool -> Double -> Double -> Double -> Double -> Int -> Double
 compute_epsilon pos delta a q p nq =
 
@@ -171,11 +198,20 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
   --traceIOIfDebug debug ("")
   --traceIOIfDebug debug "table name               \tsensitivity\tquery result\tCauchy noise\tCauchy err(%)\tbeta\tdelta\tLaplace noise\tLaplace err(%)"
 
+  let errorUB = errorUBprob args
+  let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
+  let noiseScaleLaplace = find_noise_range_window laplace_integral errorUB 1
+
+  traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
+  traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
+   
+
   let taskStr =
           map (\(taskName,res) ->
 
                   (taskName, (map (\ (tableName, zs) ->
-                      let (_,qrs,bs,sdss) = unzip4 zs in
+                      let (_,qrs,bs',sdss) = unzip4 zs in
+                      let bs  = map ( / noiseScaleCauchy) bs' in
                       let qr  = if length qrs == 1 then printFloatS (head qrs) else "[" ++ intercalate ", " (map printFloatS qrs) ++ "]" in
                       let cauchyError = printFloatL $ (combinedErrs qrs bs sdss) * 100 in
                       let cauchyNoise = (let xs = combinedEtas bs sdss in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
@@ -193,12 +229,13 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
                       -- these betas should all be the same in our implementation, otherwise DP w.r.t. several outputs is not well-defined
                       let preciseBetas = map (\b -> epsilon / (4 + 1) - b) bs in
                       let finalBeta    = printFloatL $ foldr max 0 preciseBetas in
-                      let laplaceBs = map (\beta -> epsilon - beta) preciseBetas in
-                      let laplaceDeltas = zipWith (\beta b -> if beta == 0 then exp(-2) else 2*exp(epsilon-(1 + (epsilon - b) / beta))) preciseBetas laplaceBs in
+                      let laplaceBs' = map (\beta -> epsilon - beta) preciseBetas in
+                      let laplaceBs = map (/ noiseScaleLaplace) laplaceBs' in
+                      let laplaceDeltas = zipWith (\beta b -> if beta == 0 then exp(-2) else 2*exp(epsilon-(1 + (epsilon - b) / beta))) preciseBetas laplaceBs' in
                       let laplaceDelta = printFloatL $ foldr max 0 laplaceDeltas in
                       let laplaceError = printFloatL $ (combinedErrs qrs laplaceBs sdss) * 100 in
-                      let laplaceNoise = (let xs = map (* 1.515) (combinedEtas laplaceBs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
-
+                      --let laplaceNoise = (let xs = map (* 1.515) (combinedEtas laplaceBs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+                      let laplaceNoise = (let xs = combinedEtas laplaceBs sdss in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
                       [tableName,sds,qr,cauchyNoise,cauchyError,finalBeta,laplaceDelta,laplaceNoise,laplaceError,norm]) res)
 
           )) taskList
@@ -324,12 +361,20 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   --let laplaceNoise = combinedEtas laplaceBs finalSdss
 
   --putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (finalError * 100.0)]
+
+  let errorUB = errorUBprob args
+  let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
+  let noiseScaleLaplace = find_noise_range_window laplace_integral errorUB 1
+
+  traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
+  traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
+
   traceIOIfDebug debug ("===============================")
   let outputList = [("prior: ",                         show pr_pre),
                     ("posterior: ",                     show pr_post),
                     ("expected cost: ",                 show expectedCost),
-                    ("78%-realtive error (Cauchy noise): ", show (finalError * 100.0)),
-                    ("Cauchy noise magnitude: a <- ",        show cauchyNoise),
+                    (show (round $ errorUB * 100) ++ "%-realtive error (Cauchy noise): ", show (finalError * noiseScaleCauchy * 100.0)),
+                    ("Cauchy noise magnitude: a <- ",   show (map ( * noiseScaleCauchy) cauchyNoise)),
                     ("Cauchy noise distribution: ",     "add noise a*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
 
                     -- the scaling by 1.515 is needed to get a 78% error as in Cauchy case

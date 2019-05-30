@@ -659,7 +659,7 @@ exprToBExpr sigmoidBeta sensitiveCols inputMap asgnMap t =
                                 else
                                     (usedVars, B.Sump 1.0 [c1, B.Prod [cN1, B.Min[c1, B.Max[c0, B.Prod [B.Const scInt, B.ComposeL 1.0 [B.Sum2 [e1, B.Prod [cN1, e2]]]]]]]])
 
-        CompStr x1 x2       -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
+        CompStr x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
                             let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
                             let usedVars = S.union usedVars1 usedVars2 in
                             if S.size (S.intersection usedVars sensitiveCols) == 0 then

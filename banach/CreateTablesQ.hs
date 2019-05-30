@@ -6,6 +6,7 @@ import GroupQ
 import ReaderQ (readDB, readDBString, readDBDifferentTypes)
 import ParserQ (parseNormFromFile)
 import ErrorMsg
+import ProgramOptions
 
 import Debug.Trace
 import Data.Char
@@ -86,8 +87,11 @@ initIntermediateAggrTableSql typeMap queryName group =
 --    "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
 --    "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
 
-createTableSqlTyped :: Bool -> String -> String -> String -> [Int] -> [(String,[(String, String)])] -> IO [String]
-createTableSqlTyped policy dataPath separator tableName sR types = do
+createTableSqlTyped :: ProgramOptions -> String -> String -> String -> [Int] -> [(String,[(String, String)])] -> IO [String]
+createTableSqlTyped args dataPath separator tableName sR types = do
+
+    let policy = policyAnalysis args
+    let datestyle = psqlDateStyle args
 
     let dbFileName = dataPath ++ tableName ++ ".db"
 
@@ -106,6 +110,7 @@ createTableSqlTyped policy dataPath separator tableName sR types = do
     let colTypes = map (\col -> let tm = typeMap ! tableName in
                                 if M.member col tm then tm ! col else error $ error_schema_bad_var tableName col (M.keys tm)) colNames
     return [
+      "SET datestyle TO " ++ datestyle,
       "DROP TABLE IF EXISTS " ++ tableName,
       "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (col,t) -> col ++ " " ++ t ++", ") (zip colNames colTypes) ++ "ID int8)",
       "INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (zipWith (\ r i -> '(' : intercalate ", " (zipWith stringForm r colTypes ++ [show i]) ++ ")") tbl [0..]),
@@ -114,10 +119,12 @@ createTableSqlTyped policy dataPath separator tableName sR types = do
       "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
     where
         stringForm s t =
-                       if map toLower (take 4 t) /= "text" then s
-                       else if head s == '\'' then s
-                       else if head s == '\"' then "\'" ++ tail (init s) ++ "\'"
-                       else "\'" ++ s ++ "\'"
+                       if length s == 0 then "NULL"
+                       else if map toLower (take 3 t) /= "int" && map toLower (take 5 t) /= "float" then
+                           if head s == '\'' then s
+                           else if head s == '\"' then "\'" ++ tail (init s) ++ "\'"
+                           else "\'" ++ s ++ "\'"
+                       else s
  
 
 

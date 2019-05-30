@@ -515,7 +515,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
     ctss <- if (not (dbCreateTables args)) then (do return []) else
               forM uniqueTableNamesAndSR $ \ (t,sR) -> do
-                                                         cts <- createTableSqlTyped policy dataPath separator t sR typeList
+                                                         cts <- createTableSqlTyped args dataPath separator t sR typeList
                                                          when debug $ putStr (concatMap (++ ";\n") cts)
                                                          return cts
 

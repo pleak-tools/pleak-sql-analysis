@@ -20,7 +20,6 @@ import NormsQ
 ---- policy data structures ----
 -------------------------------
 
--- TODO use the new constructions also in BanachQ
 data VarState
   = Exact | None | Approx Double
   | IntSubSet   [Int]              | SubSet   [String]              | Range   Double Double                | Total Int

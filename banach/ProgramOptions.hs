@@ -26,7 +26,8 @@ data ProgramOptions
     getBeta          :: Maybe Double,
     getG             :: Maybe Double,
     numOfQueries     :: Int,
-    errorUBprob      :: Double
+    errorUBprob      :: Double,
+    psqlDateStyle    :: String
   }
 
 programArgs :: Parser ProgramOptions
@@ -50,7 +51,8 @@ programArgs = ProgramOptions
   <*> optional (option auto (short 'B' <> long "beta" <> help "Specify beta (default is to choose automatically)"))
   <*> optional (option auto (short 'G' <> long "distance-G" <> help "Specify G (the distance between two databases that differ by exactly one row)"))
   <*> option auto (short 'n' <> long "numOfQueries" <> value 1 <> help "Specify the limit on the number of queries applied to the same data (default is 1)")
-  <*> option auto (short 'r' <> long "errorUB" <> value 0.78055 <> help "Specify the probability with which the noise fits below noise magnitude")
+  <*> option auto (long "errorUB" <> value 0.78055 <> help "Specify the probability with which the noise fits below noise magnitude")
+  <*> strOption (long "datestyle" <> value "European" <> help "Specify the psql datestyle (default is 'European')")
 
 getProgramOptions :: IO ProgramOptions
 getProgramOptions = execParser opts

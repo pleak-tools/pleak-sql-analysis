@@ -205,6 +205,9 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
   traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
   traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
    
+  -- if we have a GroupBy query, we need to scale epsilon accordingly
+  let numOfOutputs = fromIntegral $ M.size qmap
+  let finalEpsilon = epsilon / numOfOutputs
 
   let taskStr =
           map (\(taskName,res) ->
@@ -217,7 +220,7 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
                       let cauchyNoise = (let xs = combinedEtas bs sdss in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
                       let sds = printFloatL $ combinedSdss sdss in
                       let norm = if tableName == B.resultForAllTables then
-                                      "an l_1-norm of norms w.r.t. all input tables"
+                                      "an l_1-norm of all input table norms"
                                       -- TODO the following is precise, but is less readable. we also need to remove intermediate tables from the list.
                                       -- "|| " ++ (intercalate "," $ map (\(normExpr,normAggr) -> niceNormPrint normExpr ++ ", rows l_" ++ show normAggr) $ M.elems normMap) ++ " ||_1"
                                  else
@@ -227,11 +230,11 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
                       in
 
                       -- these betas should all be the same in our implementation, otherwise DP w.r.t. several outputs is not well-defined
-                      let preciseBetas = map (\b -> epsilon / (4 + 1) - b) bs in
+                      let preciseBetas = map (\b -> finalEpsilon / (4 + 1) - b) bs in
                       let finalBeta    = printFloatL $ foldr max 0 preciseBetas in
-                      let laplaceBs' = map (\beta -> epsilon - beta) preciseBetas in
+                      let laplaceBs' = map (\beta -> finalEpsilon - beta) preciseBetas in
                       let laplaceBs = map (/ noiseScaleLaplace) laplaceBs' in
-                      let laplaceDeltas = zipWith (\beta b -> if beta == 0 then exp(-2) else 2*exp(epsilon-(1 + (epsilon - b) / beta))) preciseBetas laplaceBs' in
+                      let laplaceDeltas = zipWith (\beta b -> if beta == 0 then exp(-2) else 2*exp(finalEpsilon-(1 + (finalEpsilon - b) / beta))) preciseBetas laplaceBs' in
                       let laplaceDelta = printFloatL $ foldr max 0 laplaceDeltas in
                       let laplaceError = printFloatL $ (combinedErrs qrs laplaceBs sdss) * 100 in
                       --let laplaceNoise = (let xs = map (* 1.515) (combinedEtas laplaceBs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
@@ -351,14 +354,20 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let cauchyNoise = combinedEtas finalBs finalSdss
   --let cauchyError = combinedErrs finalQrs finalBs finalSdss -- we already have this
 
-  -- TODO we would like to compute epsilon for Laplace noise, which is different since there is epsilon-delta DP
-  -- we need to find a way of converting GA to epsilon and delta
-  --let preciseBetas = map (\b -> epsilon / (4.0 + 1) - b) finalBs
-  --let laplaceBs = map (\beta -> epsilon - beta) preciseBetas
-  --let laplaceDeltas = zipWith (\beta b -> exp(-(1 + (epsilon - b) / beta))) preciseBetas laplaceBs
-  --let laplaceDelta = foldr max 0 laplaceDeltas
-  --let laplaceError = combinedErrs finalQrs laplaceBs finalSdss
-  --let laplaceNoise = combinedEtas laplaceBs finalSdss
+  -- if we have a GroupBy query, we need to scale epsilon accordingly
+  let numOfOutputs = fromIntegral $ length finalQrs
+  let finalEpsilon = epsilon / numOfOutputs
+
+  let preciseBetas = map (\b -> finalEpsilon / (4 + 1) - b) finalBs
+  let laplaceBs = map (\beta -> finalEpsilon - beta) preciseBetas
+
+  -- TODO we would like to convert DP to GA also fo delta > 0
+  -- TODO verify that the 'special case' of delta = 0 works as expected in all cases
+  -- if beta = 0 and sds = 1, we know that we are adding Lap(1), so we get delta = 0 case, but we cannot give better guarantees otherwise
+  let laplaceDeltas = zipWith3 (\sds beta b -> if beta == 0 then (if sds <= 1 then 0 else exp(-2)) else 2*exp(finalEpsilon-(1 + (finalEpsilon - b) / beta))) finalSdss preciseBetas laplaceBs
+  let laplaceDelta = foldr max 0 laplaceDeltas
+  let laplaceError = combinedErrs finalQrs laplaceBs finalSdss
+  let laplaceNoise = combinedEtas laplaceBs finalSdss
 
   --putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (finalError * 100.0)]
 
@@ -368,23 +377,25 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
 
   traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
   traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
+  traceIOIfDebug debug ("betas: " ++ show preciseBetas)
 
   traceIOIfDebug debug ("===============================")
   let outputList = [("prior: ",                         show pr_pre),
                     ("posterior: ",                     show pr_post),
                     ("expected cost: ",                 show expectedCost),
-                    (show (round $ errorUB * 100) ++ "%-realtive error (Cauchy noise): ", show (finalError * noiseScaleCauchy * 100.0)),
+                    (show (round $ errorUB * 100) ++ "%-realtive error (Cauchy noise): ", show (finalError * noiseScaleCauchy * 100.0) ++ "%"),
                     ("Cauchy noise magnitude: a <- ",   show (map ( * noiseScaleCauchy) cauchyNoise)),
                     ("Cauchy noise distribution: ",     "add noise a*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
 
-                    -- the scaling by 1.515 is needed to get a 78% error as in Cauchy case
-                    --("78%-realtive error (Laplace noise): ", show (laplaceError * 100.0 * 1.515)),
-                    --("Laplace noise magnitude (a): ",    show (map (* 1.515) laplaceNoise)),
-                    --("Laplace noise distribution:",      "add noise a*z, where z ~ 1 / 2 * exp(-x)"),
-                    --("delta (Laplace only): ",      show laplaceDelta),
+                    (show (round $ errorUB * 100) ++ "%-realtive error (Laplace noise): ", if laplaceDelta > 0 then "cannot achive (epsilon,delta)-DP with delta=0 for Laplace noise"
+                                                         else show (laplaceError * 100.0 * noiseScaleLaplace) ++ "%"),
+                    ("Laplace noise magnitude (a): ",    if laplaceDelta > 0 then "cannot achive (epsilon,delta)-DP with delta=0 for Laplace noise"
+                                                         else show (map (* noiseScaleLaplace) laplaceNoise)),
+                    ("Laplace noise distribution: ",     "add noise a*z, where z ~ 1 / 2 * exp(-x)"),
 
-                    ("DP epsilon: ",                   show epsilon),
-                    ("smoothness beta: ",                      show finalBeta),
+                    ("delta (Laplace only): ",      show laplaceDelta),
+                    ("DP epsilon: ",                show finalEpsilon),
+                    ("smoothness beta: ",           show finalBeta),
                     ("sensitivity w.r.t. norm N: ", show finalSdss),
                     ("norm N: ",                    niceNormPrint norm)]
 

@@ -298,7 +298,7 @@ allCombsOfLists (xs:xss) =
 
 -- putting everything together
 getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String
-                          -> IO (String,[(M.Map String VarState, Double)], M.Map String VarState, String, String, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
+                          -> IO (String,[(M.Map String VarState, Double)], M.Map String VarState, String, String, Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
 getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
 
     let debug = not (alternative args)
@@ -446,22 +446,25 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- remove the auxiliary group-tables, as we do not need them anymore
     let commonOrderedQueryNames = filter ((\(_,_,_,_,_,_,q,_,_,_) -> isCommonQuery q) . (subQueryDataMap' M.!)) orderedQueryNames
     let subQueryDataMap         = M.filter (\(_,_,_,_,_,_,q,_,_,_) -> isCommonQuery q) $ foldl (\x y -> removeGroupFromSubQueryMap commonOrderedQueryNames x y) subQueryDataMap' orderedQueryNames
+    let outputQueryName = last commonOrderedQueryNames
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "commonOrderedQueryNames: " ++ show commonOrderedQueryNames
-    traceIOIfDebug debug $ show (M.keys subQueryDataMap')
-    traceIOIfDebug debug $ show (M.keys subQueryDataMap)
     traceIOIfDebug debug $ "Subquery Map: " ++ show subQueryDataMap
     traceIOIfDebug debug $ "----------------"
 
     -- reconstruct the initial query
     let allQueryStrs = M.fromList $ map (\f -> let qn = getQueryName f in (qn, constructInitialQuery subQueryDataMap' inputTableMap qn)) outputQueryFuns
     let initialQuery = allQueryStrs ! (getQueryName $ head outputQueryFuns)
+    let initialQueryGroups = ((\(_,_,_,_,_,gr,_,_,_,_) -> gr) (subQueryDataMap ! outputQueryName))
+    let numOfOutputs = product $ map length (getGroupValues initialQueryGroups)
+
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Initial query: " ++ initialQuery
+    traceIOIfDebug debug $ "Initial query groups: " ++ show initialQueryGroups
+    traceIOIfDebug debug $ "number of outputs: " ++ show numOfOutputs
     traceIOIfDebug debug $ "----------------"
-
 
     let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) inputMap inputTableMap fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
 
@@ -479,7 +482,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- the last column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let tableExprData = (outputTableName,plcMaps, attMap,dataPath,initialQuery, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
+    let tableExprData = (outputTableName,plcMaps, attMap,dataPath,initialQuery, numOfOutputs, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
 
     -- TODO is it a proper place for table Gs if groups are used? we decide it when extend the groups to combined sensitivity
     traceIOIfDebug debug $ "----------------"

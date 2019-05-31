@@ -160,8 +160,8 @@ optimal_a_epsilon pos delta r gss dss rss rrss a epsilon q p k n nq =
     optimal_a_epsilon pos delta r gss dss rss rrss a'' epsilon'' q'' p'' (k-1) n nq
 
 -- TODO if we want to look for an optimal beta here using binary search, we will also need outputTableName here
-performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
-performDPAnalysis args outputTableName dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
+performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
+performDPAnalysis args outputTableName dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   let debug = not (alternative args)
   let epsilon = getEpsilon args
@@ -169,16 +169,17 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
 
   -- do not look for optimal beta if it has been specified by the user
   (qmap,taskAggrMap) <- case beta of
-          Just _  -> performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+          Just _  -> performAnalysis args epsilon beta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
           Nothing -> do
-                         (_,q,tm,_,_) <- findBestBeta args outputTableName epsilon beta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts
+                         (_,q,tm,_,_) <- findBestBeta args outputTableName epsilon beta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
                          return (q,tm)
 
   traceIOIfDebug debug ("===============================")
   traceIOIfDebug debug ("final qmap: " ++ (show qmap))
   traceIOIfDebug debug ("final taskAggr: " ++ (show taskAggrMap))
 
-  let outMap = M.fromListWith (++) $ concat $ map (\key -> extractFinalResults (qmap ! key) (taskAggrMap ! key) key) (M.keys qmap)
+  -- TODO if a group is empty, we set its output to 0, but it is actually difficult to define for MIN/MAX queries
+  let outMap = M.fromListWith (++) $ concat $ map (\key -> extractFinalResults (if M.member key qmap then qmap ! key else 0) (taskAggrMap ! key) key) (M.keys taskAggrMap)
   let outList = map (\((taskName,tableName), zs) -> (taskName,[(tableName,zs)])) $ M.toList outMap
   let taskList = M.toList $ M.fromListWith (++) outList
 
@@ -206,8 +207,7 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
   traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
    
   -- if we have a GroupBy query, we need to scale epsilon accordingly
-  let numOfOutputs = fromIntegral $ M.size qmap
-  let finalEpsilon = epsilon / numOfOutputs
+  let finalEpsilon = epsilon / (fromIntegral numOfOutputs)
 
   let taskStr =
           map (\(taskName,res) ->
@@ -251,8 +251,8 @@ performDPAnalysis args outputTableName dataPath separator initialQuery colNames 
   putStr ""
 
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
-performPolicyAnalysis args outputTableName dataPath separator initialQuery colNames typeMap taskMap tableExprData plcMaps attMap colTableCounts = do
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
+performPolicyAnalysis args outputTableName dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData plcMaps attMap colTableCounts = do
 
   -- the input epsilon now works as delta, the upper bound on attacker's advantage
   let debug = not (alternative args)
@@ -340,21 +340,22 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
   let pr_pre  = p1 * 100
   let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
 
-  (finalBeta,finalQmap,finalTaskAggr,finalError,_) <- findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts
+  (finalBeta,qmap,taskAggrMap,finalError,_) <- findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
 
   traceIOIfDebug debug ("===============================")
-  traceIOIfDebug debug ("final qmap: " ++ (show finalQmap))
-  traceIOIfDebug debug ("final taskAggr: " ++ (show finalTaskAggr))
+  traceIOIfDebug debug ("final qmap: " ++ (show qmap))
+  traceIOIfDebug debug ("final taskAggr: " ++ (show taskAggrMap))
 
   let expectedCost = delta * cost
   traceIOIfDebug debug ("params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
 
   -- additional outputs
-  let (finalQrs, finalBs, finalSdss) = unzip3 $ map (\key -> extractFinalResult (finalQmap ! key) (finalTaskAggr ! key) B.resultForAllTables outputTableName) (M.keys finalQmap)
+  let (finalQrs, finalBs, finalSdss) = unzip3 $ map (\key -> extractFinalResult (if M.member key qmap then qmap ! key else 0) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys taskAggrMap)
   let cauchyNoise = combinedEtas finalBs finalSdss
   --let cauchyError = combinedErrs finalQrs finalBs finalSdss -- we already have this
 
   -- if we have a GroupBy query, we need to scale epsilon accordingly
+  -- we already took into account numOfQueries, now we also need to include numOfOutputs
   let numOfOutputs = fromIntegral $ length finalQrs
   let finalEpsilon = epsilon / numOfOutputs
 
@@ -394,6 +395,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
                     ("Laplace noise distribution: ",     "add noise a*z, where z ~ 1 / 2 * exp(-x)"),
 
                     ("delta (Laplace only): ",      show laplaceDelta),
+                    ("actual outputs: ",            show finalQrs),
                     ("DP epsilon: ",                show finalEpsilon),
                     ("smoothness beta: ",           show finalBeta),
                     ("sensitivity w.r.t. norm N: ", show finalSdss),
@@ -405,10 +407,10 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery colNa
 
 
 -- TODO it seems that we can remove sds (and maybe something else) since this is already a part of qmap
-findBestBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> M.Map String VarState -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
-findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery colNames typeMap taskMap tableExprData attMap colTableCounts = do
+findBestBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> M.Map String VarState -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
+findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts = do
 
-  let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
+  let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery numOfOutputs colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
   (finalBeta,finalQmap,finaltaskAggr,finalError,finalSds) <- case fixedBeta of
                     Nothing -> do
                         initialBeta <- BQ.findMinimumBeta args epsilon Nothing dataPath separator initialQuery colNames typeMap [] tableExprData attMap [] colTableCounts
@@ -459,20 +461,20 @@ combinedErrs qrs bs sdss =
     errnorm / qnorm
     --sqrt $ sum $ zipWith3 (\qr b sds -> ((sds / b) / qr) ^ 2) qrs bs sdss
 
-performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
-performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
+performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
+performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
 
-  (qmap,taskAggrMap) <- performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  (qmap,taskAggrMap) <- performAnalysis args epsilon beta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
   let (qrs, bs, sdss) = unzip3 $ map (\key -> extractFinalResult (qmap ! key) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys qmap)
   let err = combinedErrs qrs bs sdss
 
   return (qmap,taskAggrMap,err,sdss)
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
-performAnalysis args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalysis args epsilon beta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
-  (qmap,taskAggrMap') <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  (qmap,taskAggrMap') <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
 
   -- if we choose beta that is not compatible with epsilon during optimization, we get a negative b, so we set it to 0 to get Infinity relative error
   -- in policy analysis, this means that desired epsilon, and hence the guessing advantage bound, could not be achieved

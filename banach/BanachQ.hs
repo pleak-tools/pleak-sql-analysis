@@ -1116,8 +1116,8 @@ analyzeTableExprQ fr wh srt colNames sensitiveVarSet varStates colTableCounts co
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens srt subQueryMap te in
   AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
-performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
-performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
+performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalyses args epsilon' fixedBeta dataPath separator initialQuery numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
   let debug = not (alternative args)
   let tableGmap = M.fromList tableGs
   let tableGstr = intercalate "," $
@@ -1141,10 +1141,9 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery colNames
   when debug $ putStrLn "================================="
 
   let qmap = M.fromList qmapList
-  let numOfQueries = length qmapList
 
   -- scale epsilon according to the number of outputs
-  let epsilon = divide epsilon' (fromIntegral numOfQueries)
+  let epsilon = divide epsilon' (fromIntegral numOfOutputs)
 
   when (dbSensitivity args && debug) $ putStrLn (show qmapList)
   when debug $ putStrLn "================================="

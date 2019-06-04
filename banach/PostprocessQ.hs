@@ -6,6 +6,7 @@ module PostprocessQ where
 
 import Debug.Trace
 
+import AexprQ
 import Control.Monad
 import Data.List
 import Data.Maybe
@@ -29,6 +30,17 @@ traceIOIfDebug debug msg = do
     if debug then traceIO msg
     else return ()
 
+data PlcData = PlcData Bool Double Double Double Bool (Double -> Maybe [Double])
+get_b  (PlcData b _  _ _ _ _) = b
+get_ur (PlcData _ ur _ _ _ _) = ur
+get_r  (PlcData _ _  r _ _ _) = r
+get_rr (PlcData _ _ _ rr _ _) = rr
+get_d  (PlcData _ _ _ _  d _) = d
+get_g  (PlcData _ _ _ _ _  g) = g
+
+instance Show PlcData where
+   show (PlcData _ ur r rr _ _) = "(" ++ show ur ++ "," ++ show r ++ "," ++ show rr ++ ")"
+
 -- this is used only for nice output printing
 data RR = RR {sensitivity :: String, query_result :: String, cauchy_noise :: String, cauchy_relative_err :: String,
               beta :: String, delta :: String, laplace_noise :: String, laplace_relative_err :: String, norm :: String} deriving (Data, G.Generic, Show)
@@ -42,12 +54,6 @@ constructRR [v2,v3,v4,v5,v6,v7,v8,v9,v10] = RR {sensitivity = v2,
                                             laplace_noise = v8,
                                             laplace_relative_err = v9,
                                             norm = v10}
-
--- finds y such that y * exp(y) = x
-lambert x 0 = 1
-lambert x n =
-    let an = lambert x (n - 1) in
-    an - (an * exp(an) - x) / ((an + 1) * exp(an))
 
 -- int sqrt(2) / pi * 1 / (1 + x^4) dx
 cauchy_integral a =
@@ -85,81 +91,98 @@ compute_epsilon pos delta a q p nq =
         - (log (p / (q - p) * (1 / (d + p) - 1))) / (a * fromIntegral nq)
     else
         let d = min (1 - (q - p)) delta in
-        - (log ((q - p) / p * (1 / (d + (q - p)) - 1))) / (a * fromIntegral nq)
+        - (log ((q - p) / p * (1 / ((1 - p) / (q - p) * (d + (1 - p) - (1 - q) / (1 - p))) - 1))) / (a * fromIntegral nq)
+        -- - (log ((q - p) / p * (1 / (d + (q - p)) - 1))) / (a * fromIntegral nq)
 
 compute_worst_epsilon :: Double -> Double -> Double -> Int -> Double
 compute_worst_epsilon delta a q nq =
     2 / (a * fromIntegral nq) * (log ((sqrt q + sqrt (delta*(delta + q - 1))) / (1 - delta)))
 
-compute_one_comb_data :: Bool -> Int -> Double -> [[Double]] -> [[Bool]] -> [[Double]] -> [Maybe Double] -> [Maybe Double] -> (Double,Double,Double,Double)
-compute_one_comb_data pos nq delta ass dss rrss qs' ps =
+-- we know that, if the variable is the same, then only the r part can be different
+minPlcData (PlcData b ur r1 rr d g) (PlcData _ _ r2 _ _ _) =
+    (PlcData b ur (min r1 r2) rr d g)
 
-    -- compute data for each AND
-    -- we take 2a as distance since X' may be located somewhere in a corner, except the discrete case
-    let as' = map (foldr max 0) $ zipWith (zipWith (\d a -> if d then 1.0 else 2*a)) dss ass in
-    let rrs = map (foldr max 0) rrss in
+-- if the same variable repeats with different precisions, we need to take minimum in an AND
+fand :: [(Int, M.Map String PlcData)] -> [(Int, M.Map String PlcData)] -> [(Int, M.Map String PlcData)]
+fand ms1 ms2 = concat $ map (\(s2,m2) -> map (\(s1,m1) -> (s1*s2, M.unionWith minPlcData m1 m2)) ms1) ms2
 
-    -- determine the bounds
-    let (qs,as) = unzip $ zipWith3 (\q a rr -> if q == Nothing then (1,rr) else (fromJust q, a)) qs' as' rrs in
+for  :: [(Int, M.Map String PlcData)] -> [(Int, M.Map String PlcData)] -> [(Int, M.Map String PlcData)]
+for ms1 ms2 = ms1 ++ ms2 ++ map (\(s,v) -> (-s,v)) (fand ms1 ms2)
 
-    -- this is the information about the region within distance a
-    let a = foldr max 0 as in
-    let q = (product qs) in
+compute_eps_for_a :: Bool -> Double -> AExpr (String,PlcData) -> Double -> Int -> (Double,Double,Double,Double)
+compute_eps_for_a pos delta expr sample_a nq =
+
+    -- compute p and q using the equalities and P(A || B) = P(A) + P(B) - P(AB), P(AA) = P(A), P(AB) = P(A)*P(B)
+    let pqExpr = traverseExpr fand for (\x -> if x == 1 then [(1,M.empty)] else []) (\pd var -> [(1, M.singleton var pd)]) expr in
+
+    -- compute the weight of X' (distributions of some dimensions can be unknown)
+    -- if different elements come with different probabilities, we consider all combinations
+    -- we agree that we scale the space by "max r" in the norm computation, so that (rr / r) >= (rr / max r)
+    -- TODO to get more precise results, we could compute the "max r" and compute (rr / max r) directly
+    let qssAs = map (\(s,m) -> let (vss,as) = unzip $ map (\(PlcData b ur r rr d g) ->
+
+                                    -- adjust proposed a to the actual bounds R
+                                    -- we take 2a as distance since X' may be located somewhere in a corner, except the discrete case
+                                    let a = if not b then sample_a
+                                            else if d then rr
+                                            else max r $ min rr sample_a
+                                    in
+                                            if not b then ([1], sample_a)
+                                            else
+                                                case g (ur * a) of
+                                                    Nothing -> ([(fromIntegral s) * 1], if d then 1.0 else rr)
+                                                    Just vs -> (vs,                     if d then 1.0 else 2*a)
+                                    ) (M.elems m)
+                               in
+                                    (map (((fromIntegral s) * ) . product) (allCombsOfLists vss), foldr max 1 as)) pqExpr
+    in
+
+    let pss'  = map (\(s,m) -> let vss = map (\(PlcData b ur r _ _ g) -> if b then g (ur * r) else Just [1]) (M.elems m) in
+                               if elem Nothing vss then Nothing
+                               else
+                                    let wss = allCombsOfLists $ (map fromJust) vss in
+                                    Just $ map ((((fromIntegral s) *) . product) ) wss) pqExpr
+    in
+
+    -- determine the unique bound a that is true for all dimensions
+    let (qss',as) = unzip qssAs in
+    let a = foldr max 1 as in
+
+    let pss = allCombsOfMaybeLists pss' in
+    let qss = allCombsOfLists qss' in
 
     -- compute the epsilon (use worst-case p if p is unknown)
-    if elem Nothing ps then 
-        let eps = compute_worst_epsilon delta a q nq in
-        let p = sqrt q * (exp (eps / 2) - sqrt q) / (exp eps - 1) in
-        (a,eps,q,p)
-    else
-        let p   = (product qs) - (product $ zipWith (-) qs (map fromJust ps)) in
-        let eps = compute_epsilon pos delta a q p nq in
-        --trace (show qs) $
-        --trace (show ps) $
-        --trace (show (a,eps,q,p)) $
-        --trace ("-------------") $
-        (a,eps,q,p)
+    let results = zipWith (\ps qs ->
+                       let q = sum qs in
+                       if elem Nothing ps then
+                               let eps = compute_worst_epsilon delta a q nq in
+                               let p = sqrt q * (exp (eps / 2) - sqrt q) / (exp eps - 1) in
+                               (a,eps,q,p)
+                       else
+                               let p = sum (map fromJust ps) in
+                               let eps = compute_epsilon pos delta a q p nq in
+                               (a,eps,q,p)
+                  ) pss qss
+    in
 
-compute_data :: Bool -> Double -> Double -> [[Double -> Maybe [Double]]] -> [[Bool]] -> [[Double]] -> [[Double]] -> Int -> (Double,Double,Double,Double)
-compute_data pos delta starting_a gss dss rss rrss nq =
-
-    -- adjust proposed a to the actual bounds R
-    let ass = zipWith (zipWith (\d rr -> if d then rr else min rr starting_a)) dss rrss in
-
-    -- compute the weights (some of them can be unknown)
-    let qss = zipWith3 (zipWith3 (\g a r -> g (a*r))) gss ass rss in
-    let pss = zipWith  (zipWith  (\g r   -> g r    )) gss rss in
-
-    -- collect all possible variants of q and p
-    let cqss = (map (map (\qs -> if elem Nothing qs then Nothing else Just $ product (map fromJust qs))) . allCombsOfLists . map allCombsOfMaybeLists) qss in
-    let cpss = (map (map (\ps -> if elem Nothing ps then Nothing else Just $ product (map fromJust ps))) . allCombsOfLists . map allCombsOfMaybeLists) pss in
-    let eps  = zipWith (compute_one_comb_data pos nq delta ass dss rrss) cqss cpss in
-
-    let (a,epsilon,q,p) = foldr (\x1@(_,e1,_,_) x2@(_,e2,_,_) -> if e1 < e2 then x1 else x2) (head eps) (tail eps) in
-    --trace ("ass: " ++ show ass) $
-    --trace ("rss: " ++ show rss) $
-    --trace ("qss: " ++ show qss) $
-    --trace ("pss: " ++ show pss) $
-    --trace ("eps: " ++ show eps) $
-    --trace (show (a,epsilon,q,p)) $
-    --trace ("-------------") $
+    let (a,epsilon,q,p) = foldr (\x1@(_,e1,_,_) x2@(_,e2,_,_) -> if e1 < e2 then x1 else x2) (head results) (tail results) in
     (a,epsilon,q,p)
 
-optimal_a_epsilon :: Bool -> Double -> Double -> [[Double -> Maybe [Double]]] -> [[Bool]] -> [[Double]] -> [[Double]] -> Double -> Double -> Double -> Double
-                     -> Double -> Double -> Int -> (Double,Double,Double,Double)
-optimal_a_epsilon _ _ _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
-optimal_a_epsilon pos delta r gss dss rss rrss a epsilon q p k n nq =
 
-    -- compute the initial value for a
-    let rr = foldr max 0 (concat rrss) in
-    let starting_a = r + k * (rr - r) / n in
-    let (a',epsilon',q',p') = compute_data pos delta starting_a gss dss rss rrss nq in
+optimal_a_epsilon :: Bool -> Double -> Double -> Double -> AExpr (String,PlcData) -> Double -> Double -> Double -> Double
+                     -> Double -> Double -> Int -> (Double,Double,Double,Double)
+optimal_a_epsilon _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
+optimal_a_epsilon pos delta scaled_r scaled_rr expr a epsilon q p k n nq =
+
+    -- compute the sample value for a and check how good it is
+    let sample_a = scaled_r + k * (scaled_rr - scaled_r) / n in
+    let (a',epsilon',q',p') = compute_eps_for_a pos delta expr sample_a nq in
 
     --take the best values found so far
     let (a'',epsilon'',q'',p'') = if (epsilon' > epsilon) then (a',epsilon',q',p') else (a,epsilon,q,p) in
-    optimal_a_epsilon pos delta r gss dss rss rrss a'' epsilon'' q'' p'' (k-1) n nq
+    optimal_a_epsilon pos delta scaled_r scaled_rr expr a'' epsilon'' q'' p'' (k-1) n nq
 
--- TODO if we want to look for an optimal beta here using binary search, we will also need outputTableName here
+
 performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
 performDPAnalysis args outputTableName dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
@@ -251,8 +274,18 @@ performDPAnalysis args outputTableName dataPath separator initialQuery numOfOutp
   putStr ""
 
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> [(M.Map String VarState, Double)] -> M.Map String VarState -> [Int] -> IO ()
-performPolicyAnalysis args outputTableName dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData plcMaps attMap colTableCounts = do
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> PlcCostType -> M.Map String VarState -> [Int] -> IO ()
+performPolicyAnalysis args outputTableName dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData plcCostType attMap colTableCounts = do
+
+  let plcExpr = fst plcCostType
+  let cost = snd plcCostType
+
+  -- TODO remove the keywords
+  --remove the special variables that are not needed
+  --let kwlen = length reservedSensRowsKeyword
+  --let plcMapData = map (M.filterWithKey (\varName _ -> length varName < kwlen || reverse (take kwlen (reverse varName)) /= reservedSensRowsKeyword) . fst) plcMaps
+  --let plcExpr = map (\plcMap -> M.mapWithKey (\k _ -> extract_b attMap plcMap k) plcMap) plcMapData
+  --let plcExpr = foldr (\plcMap y -> ABinary AOr y $ foldr (ABinary AAnd) (AConst 1.0) (map AVar (M.toList plcMap))) (AConst 0.0) plcMapData
 
   -- the input epsilon now works as delta, the upper bound on attacker's advantage
   let debug = not (alternative args)
@@ -264,67 +297,50 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery numOf
   let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (preficedVarName tname x,y)) tmap) typeMap
   let plainTypeMap  = M.fromList $ concat plainTypeMaps
 
-  -- we rather assume that there is one leak-statement per policy, but if there are many, all of them have the same delta and can be summed up
-  let cost = sum $ map snd plcMaps
+  -- compute parameters of the sensitivie attributes
+  let unit_r_map =  traverseExpr (M.unionWith min) (M.unionWith min) (const M.empty) (\plcState var ->
+                                   let r  = extract_r attMap plcState var in
+                                   M.singleton var r) plcExpr
 
-  --remove the special variables that are not needed
-  let kwlen = length reservedSensRowsKeyword
-  let plcMapData = map (M.filterWithKey (\varName _ -> length varName < kwlen || reverse (take kwlen (reverse varName)) /= reservedSensRowsKeyword) . fst) plcMaps
-
-  let bss  = map (extract_bs attMap) plcMapData
-  let gss    = zipWith filterWith bss $ map (extract_gs attMap) plcMapData
-  let dss    = zipWith filterWith bss $ map (extract_ds attMap) plcMapData
-  let rss    = zipWith filterWith bss $ map (extract_rs attMap) plcMapData
-  let rrss'  = zipWith filterWith bss $ map (extract_Rs attMap plainTypeMap) plcMapData
-
-  -- this norm is used only to show it in the output
-  let norm = deriveDbNorm attMap plcMapData
+  let plcExprExt = traverseExpr (ABinary AAnd) (ABinary AOr) AConst (\plcState var ->
+                                   let b  = extract_b attMap plcState var in
+                                   let r  = extract_r attMap plcState var in
+                                   let rr = extract_R attMap plainTypeMap plcState var in
+                                   let d  = extract_d attMap plcState var in
+                                   let g  = extract_g attMap plcState var in
+                                   let unit_r = unit_r_map ! var in
+                                   AVar (var, PlcData b unit_r (r / unit_r) (rr / unit_r) d g)) plcExpr
 
   -- further, we assume r = 1 everywhere in each dimension
-  let rrss = zipWith (zipWith (/)) rrss' rss --rescaled R
-  let r = 1
+  let scaled_r  = 1
+  let scaled_rr = traverseExpr max max (const 0) (\plcState var -> let r  = extract_r attMap plcState var in
+                                                                   let rr = extract_R attMap plainTypeMap plcState var in
+                                                                   rr / r) plcExpr
 
-  -- space dimensionality comes from the total number of sensitive variables
-  -- we multiply the dimensions of variables belonging to one sensitive set
-  -- we add the weights of different sensitive sets, since the attacker may guess any of them
-  -- TODO do not include repeating variables multiple times into the intersection weight
-  let allSensVars = S.fromList $ concat (map M.keys plcMapData)
+  -- this norm is used only to show it in the output
+  let norm = deriveDbNorm attMap plcExpr
+  let allSensVars = extract_vars plcExpr
 
   -- it seems that brute-forcing optimal epsilon and a works quite well
   -- we consider multidimensional space, where the radius is linf-norm
   let num_of_tries = 10000
 
   -- since 'a' is only an estimation parameter, we find the noise separately for the positive and the negative guess, and then take the largest noise
-  let (init_a, init_epsilon, init_q, init_p) = compute_data True delta (foldr max 0 (concat rrss)) gss dss rss rrss nq
-  let (a1,epsilon1,q1,p1) = optimal_a_epsilon True delta r gss dss rss rrss init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
+  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a True delta plcExprExt scaled_rr nq
+  let (a1,epsilon1,q1,p1) = optimal_a_epsilon True delta scaled_r scaled_rr plcExprExt init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
 
-  let (init_a, init_epsilon, init_q, init_p) = compute_data False delta (foldr max 0 (concat rrss)) gss dss rss rrss nq
-  let (a0,epsilon0,q0,p0) = optimal_a_epsilon False delta r gss dss rss rrss init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
+  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a False delta plcExprExt scaled_rr nq
+  let (a0,epsilon0,q0,p0) = optimal_a_epsilon False delta scaled_r scaled_rr plcExprExt init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
 
   let epsilon = min epsilon0 epsilon1
 
-  {-
-  -- this computation works only for uniform distribtions
-  -- convert guessing probability to epsilon (assuming that 'a' is optimal)
-  let ub = p + d
-  let es' = map (\r -> (lambert (ub / (exp(1) * (1 - ub))) 10) / r) rs
-  -- consider scaled dimensions, where r = 1 for all r
-  let epsilon' = if m == 1 then lambert (ub / (exp(1) * (1 - ub))) 10 else m / (exp(1) * (1 / ub - 1 + exp(-m)) ** (1 / m))
-
-  -- find the initial (optimal) value of a
-  -- we compute a = m / epsilon + 1 if m = 1, and m / epsilon for the multidimensional case
-  let a' = if m == 1 then m / epsilon' + 1 else m / epsilon'
-  -}
-
-  traceIOIfDebug debug ("plcMaps: " ++ show plcMaps)
+  traceIOIfDebug debug ("plcExpr: " ++ show plcExpr)
   traceIOIfDebug debug ("allSensVars: " ++ show allSensVars)
   traceIOIfDebug debug ("--------")
   traceIOIfDebug debug ("delta: " ++ (show delta))
   traceIOIfDebug debug ("--------")
-  traceIOIfDebug debug ("rrss': " ++ (show rrss'))
-  traceIOIfDebug debug ("rss: " ++ (show rss))
-  traceIOIfDebug debug ("rrss: " ++ (show rrss))
-  traceIOIfDebug debug ("r: " ++ (show r))
+  traceIOIfDebug debug ("scaled rr: " ++ (show scaled_rr))
+  traceIOIfDebug debug ("scaled r: " ++ (show scaled_r))
   traceIOIfDebug debug ("--------")
   traceIOIfDebug debug ("a0: " ++ (show a0))
   traceIOIfDebug debug ("eps0: " ++ (show epsilon0))

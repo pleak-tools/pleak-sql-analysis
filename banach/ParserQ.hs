@@ -602,28 +602,30 @@ function = do
 ------------------------------------------
 ---- Parsing policy and attacker file ----
 ------------------------------------------
-policy :: Parser [(M.Map String VarState, Double)]
-policy = sensitiveFormula <|> many sensitiveSet
+policy :: Parser (AExpr (String, VarState), Double)
+policy = sensitiveFormula <|> sensitiveSet
 
-sensitiveFormula :: Parser [(M.Map String VarState, Double)]
+sensitiveFormula :: Parser (AExpr (String, VarState), Double)
 sensitiveFormula = do
 
     cexpr <- cExpr
-    let cs = (fromDNFtoList . toDNF) cexpr
-    let n = length cs
+    --let cs = (fromDNFtoList . toDNF) cexpr
+    --let n = length cs
 
-    let stateMapList = map M.fromList cs
-    c <- costValue
-    let costList = replicate n (c / fromIntegral n)
+    --let stateMapList = map M.fromList cs
+    c <- costValue <|> do return 100.0
+    --let costList = replicate n (c / fromIntegral n)
 
-    return $ zip stateMapList costList
+    --return $ zip stateMapList costList
+    return (cexpr,c)
 
-sensitiveSet :: Parser (M.Map String VarState, Double)
+-- this is deprecated and is only needed to support old models
+sensitiveSet :: Parser (AExpr (String, VarState), Double)
 sensitiveSet = do
   keyWord "leak"
   ps <- many varStateStmt
-  c <- costValue
-  return (M.fromList ps, c)
+  c <- costValue <|> do return 100.0
+  return (foldr (ABinary AAnd) (AConst 1.0) (map AVar ps), c)
 
 costValue :: Parser Double
 costValue = do
@@ -879,7 +881,7 @@ parseFromFile p err s = fmap (parseData p (err s)) (readInput s)
 parseTestFromFile :: (Show a, ShowErrorComponent e) => Parsec e String a -> FilePath -> IO ()
 parseTestFromFile p s = parseTest p (unsafePerformIO (readInput s))
 
-parsePolicyFromFile fileName   = if fileName == "" then do return [] else parseFromFile policy error_parsePolicy fileName
+parsePolicyFromFile fileName   = if fileName == "" then do return (AConst 1.0, 0) else parseFromFile policy error_parsePolicy fileName
 parseAttackerFromFile fileName = if fileName == "" then do return M.empty else parseFromFile attacker error_parseAttacker fileName
 parseNormFromFile typeMap fileName = parseFromFile (norm typeMap) error_parseNorm fileName
 --parseNormsFromFile fileName = do

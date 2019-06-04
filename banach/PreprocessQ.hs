@@ -246,7 +246,7 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
 
 -- construct table data
 -- assume that the db norm files are located in 'dataPath'
-readTableData :: Bool -> String -> M.Map String VarState -> [(M.Map String VarState, Double)]->
+readTableData :: Bool -> String -> M.Map String VarState -> PlcCostType->
                  M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias]
                  -> IO (M.Map TableAlias TableData)
 readTableData policy dataPath attMap plcMaps typeMap tableNames tableAliases = do
@@ -255,7 +255,7 @@ readTableData policy dataPath attMap plcMaps typeMap tableNames tableAliases = d
     -- read table sensitivities from corresponding files
     -- mapM is a standard function [IO a] -> IO [a]
     let dbNormData = if policy then
-            return (constructNormData tableNames attMap plcMaps)
+            return (constructNormData tableNames attMap (fst plcMaps))
         else
             mapM (\tableName -> parseNormFromFile (typeMap ! tableName) $ dataPath ++ tableName ++ ".nrm") tableNames
 
@@ -298,7 +298,7 @@ allCombsOfLists (xs:xss) =
 
 -- putting everything together
 getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String
-                          -> IO (String,[(M.Map String VarState, Double)], M.Map String VarState, String, String, Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
+                          -> IO (String,PlcCostType, M.Map String VarState, String, String, Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
 getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
 
     let debug = not (alternative args)
@@ -689,7 +689,9 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     let directTables        = map (\x -> let z = getTableName (inputTableMap ! x) in if x == z then z else z ++ " AS " ++ x) directTableAliases in
     let intermediateTables  = map varNameToTableName intermediateVarList in
     let uniqueTables        = S.toList $ S.fromList $ directTables ++ intermediateTables in
-    let sel = intercalate ", " directColNames in
+    -- TODO rename variable 'sel' to avoid confusion, as this is not a select anymore
+    --let sel = intercalate ", " directColNames in
+    let sel = "true" in
     let fr  = intercalate ", " uniqueTables in
     let wh  = if length pubFilter == 0 then "true" else intercalate " AND " pubFilter in
 

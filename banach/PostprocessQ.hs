@@ -277,15 +277,8 @@ performDPAnalysis args outputTableName dataPath separator initialQuery numOfOutp
 performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> PlcCostType -> M.Map String VarState -> [Int] -> IO ()
 performPolicyAnalysis args outputTableName dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData plcCostType attMap colTableCounts = do
 
-  let plcExpr = fst plcCostType
-  let cost = snd plcCostType
-
-  -- TODO remove the keywords
-  --remove the special variables that are not needed
-  --let kwlen = length reservedSensRowsKeyword
-  --let plcMapData = map (M.filterWithKey (\varName _ -> length varName < kwlen || reverse (take kwlen (reverse varName)) /= reservedSensRowsKeyword) . fst) plcMaps
-  --let plcExpr = map (\plcMap -> M.mapWithKey (\k _ -> extract_b attMap plcMap k) plcMap) plcMapData
-  --let plcExpr = foldr (\plcMap y -> ABinary AOr y $ foldr (ABinary AAnd) (AConst 1.0) (map AVar (M.toList plcMap))) (AConst 0.0) plcMapData
+  let plcExpr = getStatement plcCostType
+  let cost = getCost plcCostType
 
   -- the input epsilon now works as delta, the upper bound on attacker's advantage
   let debug = not (alternative args)

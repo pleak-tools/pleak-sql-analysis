@@ -1097,7 +1097,7 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens sens
       in aR {fx = fx,
              sdsf = SUB (\ beta ->
                            let
-                             subquery = GroupBy ((sdsg beta `As` "sdsg") `Where` (srt ++ ".sensitive")) (srt ++ ".ID") ""
+                             subquery = GroupBy ((sdsg beta `As` "sdsg") `Where` (sensCond ++ " AND " ++ srt ++ ".sensitive")) (srt ++ ".ID") ""
                              AR _ _ (SUB sdsg2 _) _ _ _ = combine_p $ AR {sdsf = SUB (fixedArg beta $ VarQ "sdsg") subBeta}
                              mainquery = sdsg2 beta
                            in

@@ -255,7 +255,7 @@ readTableData policy dataPath attMap plcMaps typeMap tableNames tableAliases = d
     -- read table sensitivities from corresponding files
     -- mapM is a standard function [IO a] -> IO [a]
     let dbNormData = if policy then
-            return (constructNormData tableNames attMap (fst plcMaps))
+            return (constructNormData tableNames attMap (getStatement plcMaps))
         else
             mapM (\tableName -> parseNormFromFile (typeMap ! tableName) $ dataPath ++ tableName ++ ".nrm") tableNames
 
@@ -365,6 +365,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
     inputTableMap <- readTableData policy dataPath attMap plcMaps typeMap allInputTableNames allInputTableAliases
+    let plcFilterMap = M.fromList $ getFilters plcMaps
 
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
     let orderedTableAliases = M.keys inputTableMap
@@ -466,7 +467,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "number of outputs: " ++ show numOfOutputs
     traceIOIfDebug debug $ "----------------"
 
-    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) inputMap inputTableMap fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
+    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) inputMap inputTableMap plcFilterMap fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
 
     let (tableNameList,_,_) = unzip3 $ map BQ.getExtra dataWrtEachTable
     let taskMap = BQ.TM $ nub $ map (\t -> if t == outputTableName then (t,True) else (t,False)) tableNameList
@@ -599,12 +600,12 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     (mainSelect ++ " FROM " ++ (intercalate ", " (directTables ++ subFroms)) ++ " WHERE " ++ mainWhere ++ groupBy)
 
 
-getQueryData :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String ->
+getQueryData :: Bool -> Bool -> Double -> Double -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->
                 M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
                 [VarName]-> M.Map String String ->
                 String
                 -> [BQ.DataWrtTable]
-getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList allQueryStrs queryName =
+getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList allQueryStrs queryName =
 
     let (_,_,_,_,_,gr,_,_,_,_) = queryDataMap ! queryName in
 
@@ -612,16 +613,26 @@ getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fu
     let groupVarName = getGroupVarName gr in
     let groupList    = getGroupValues gr in
 
-    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarName groupColName) (allCombsOfLists groupList)
+    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarName groupColName) (allCombsOfLists groupList)
 
-getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> (M.Map VarName B.Var) -> (M.Map TableAlias TableData) -> M.Map TableName String ->
+getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->
                         M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
                         [VarName] -> String -> M.Map String String -> [String] -> [String] ->
                         [Either Int String]
                         -> [BQ.DataWrtTable]
-getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarNames groupColNames groupValues =
+getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarNames groupColNames groupValues =
 
     let (directTableAliases,subqueryTableAliases,intermediateVarList,intermediateIsCommonList,directColNames,gr,query,filterAexprs',usedTaskNames,taskName) = queryDataMap ! queryName in
+
+    -- put the direct table aliases in place of corresponding table names in plcFilterMap
+    let fullTablePaths = S.fromList directTableAliases in
+    --traceIfDebug debug ("####################> " ++ show fullTablePaths) $
+    --traceIfDebug debug ("####################> " ++ show plcFilterMap) $
+    let filtStr = intercalate " AND " $ map (\ta -> let tn = getTableName (inputTableMap ! ta) in
+                                                    let prefix = ta ++ [tsep] in
+                                                    if M.member tn plcFilterMap then aexprToString $ updatePreficesAexpr fullTablePaths prefix (plcFilterMap ! tn) else "true"
+                                            ) directTableAliases
+    in
 
     -- each group creates a separate one-output query with a group filter
     let (filterAexprs, group, newQueryName) =
@@ -691,7 +702,7 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     let uniqueTables        = S.toList $ S.fromList $ directTables ++ intermediateTables in
     -- TODO rename variable 'sel' to avoid confusion, as this is not a select anymore
     --let sel = intercalate ", " directColNames in
-    let sel = "true" in
+    let sel = filtStr in
     let fr  = intercalate ", " uniqueTables in
     let wh  = if length pubFilter == 0 then "true" else intercalate " AND " pubFilter in
 
@@ -725,9 +736,6 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     let dataWrtEachTable = zipWith5 BQ.DWT analysisData groupList allUsedTaskNames queryStrs extra in
 
     {-
-    traceIfDebug debug ("----------------") $
-    traceIfDebug debug ("All InputTableNames:" ++ show allInputTableNames) $
-    traceIfDebug debug ("All OutputTableNames:" ++ show allOutputTableNames) $
     traceIfDebug debug ("----------------") $
     traceIfDebug debug ("SELECT: " ++ show sel) $
     traceIfDebug debug ("----------------") $

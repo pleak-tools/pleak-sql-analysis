@@ -29,9 +29,11 @@ data VarState
   deriving (Show)
 
 type PlcExpr     = AExpr (String, VarState)
-type PlcCostType = (PlcExpr,Double)
+type PlcCostType = (PlcExpr,Double,[(String, AExpr VarName)])
 
-reservedSensRowsKeyword = "sensRows"
+getStatement (plcExpr,_,_) = plcExpr
+getCost (_,cost,_) = cost
+getFilters (_,_,fs) = fs
 
 niceNormPrint :: (Show a) => Norm a -> String
 niceNormPrint = niceNorm
@@ -69,8 +71,8 @@ isBadPlcState var x =
     case x of
             Exact -> (False,"")
             None  -> (False,"")
-            Range _ _   -> if varNameToSubVarName var == reservedSensRowsKeyword then (False,"") else (True, err_badPolicy x)
-            IntSubSet _ -> if varNameToSubVarName var == reservedSensRowsKeyword then (False,"") else (True, err_badPolicy x)
+            Range _ _   -> (True, err_badPolicy x)
+            IntSubSet _ -> (True, err_badPolicy x)
             Approx r -> if r >= 0 then (False,"") else (True, err_badPolicy_r x)
             _ -> (True, err_badPolicy x)
 
@@ -167,7 +169,7 @@ verifyVarSecrecy attMap scaleMap plcState preficedVar =
                            [s1,s2] -> [s1,s2]
                            _       -> error $ error_badPolicyFormat preficedVar
     in
-    if var == reservedSensRowsKeyword then (prefix, (0,[],[],[])) else
+
     let attState = if M.member preficedVar attMap then attMap ! preficedVar else None in
 
     let leakedVar = [isLeakedVar attState plcState] in
@@ -310,6 +312,7 @@ extract_R attMap typeMap plcState var =
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 
+{-
 extractRange plcExpr tableName =
     let key = preficedVarName tableName reservedSensRowsKeyword in
     S.toList $ traverseExpr (S.union) (S.union) (const (S.empty)) (extractRanges key) plcExpr
@@ -324,6 +327,7 @@ extractRanges key varState var =
                 _            -> error $ error_badPolicySensRows varState
     else
         S.empty
+-}
 
 -- update varstates of the attacker file if their type is not compatible with the schema
 update_varStates :: M.Map String VarState -> M.Map String String -> M.Map String VarState
@@ -427,7 +431,9 @@ constructNormData tableNames attMap plcExpr =
 
     let combinedDataMap = constructNormDataSet tableNames attMap scaleMap plcExpr in
 
-    let tableSensRows = map (extractRange plcExpr) tableNames in
+    -- we decided not to introduce special variables for defining sensRows, but use row filters instead
+    --let tableSensRows = map (extractRange plcExpr) tableNames in
+    let tableSensRows = replicate (length tableNames) [(0 :: Int)..] in
 
     zipWith (normsFromCombinedData combinedDataMap) tableNames tableSensRows
 

@@ -79,7 +79,6 @@ find_noise_range_window f p w =
 find_noise_range_binary f p lb ub =
     let a = (ub + lb) / 2 in
     let q = (f a) - (f (-a)) in
-    trace (show q ++ "| " ++ show lb ++ " " ++ show a ++ " " ++ show ub) $
     if abs (q - p) < 0.01 then a
     else if p > q then find_noise_range_binary f p a ub
     else find_noise_range_binary f p lb a

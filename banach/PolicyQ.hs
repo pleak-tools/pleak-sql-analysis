@@ -21,14 +21,17 @@ import NormsQ
 ---- policy data structures ----
 -------------------------------
 
-data VarState
-  = Exact | None | Approx Double
-  | IntSubSet   [Int]              | SubSet   [String]              | Range   Double Double                | Total Int
-  | IntSubSetUn [Int]              | SubSetUn [String]              | RangeUn Double Double                | TotalUn Int
-  | IntSubSetPr (M.Map Int Double) | SubSetPr (M.Map String Double) | RangePr Double (M.Map Double Double)
+data VState a
+  = Exact | None
+  | Approx a                       | ApproxWrtLp Double a           | ApproxWrtLinf a
+  | IntSubSet   [Int]              | SubSet   [String]              | Range   a a                | Total Int
+  | IntSubSetUn [Int]              | SubSetUn [String]              | RangeUn a a                | TotalUn Int
+  | IntSubSetPr (M.Map Int Double) | SubSetPr (M.Map String Double) | RangePr a (M.Map a Double)
   deriving (Show)
 
-type PlcExpr     = AExpr (String, VarState)
+
+type VarState = VState Double
+type PlcExpr     = AExpr ([String], VarState)
 type PlcCostType = (PlcExpr,Double,[(String, AExpr VarName)])
 
 getStatement (plcExpr,_,_) = plcExpr
@@ -47,11 +50,11 @@ getUb lb mp = foldr max lb (M.keys mp)
 -- traverse the boolean formula
 -- apply the function fvar to a variable and fconst to a constant
 -- combine the results using the functions fand and for
-traverseExpr :: (a -> a -> a) -> (a -> a -> a) -> (Double -> a) -> (b -> String -> a) -> (AExpr (String,b)) -> a
-traverseExpr _ _ fconst fvar (AVar (varName,varState)) =
-    fvar varState varName
+traverseExpr :: (a -> a -> a) -> (a -> a -> a) -> (Double -> a) -> (b -> a) -> (AExpr b) -> a
+traverseExpr _ _ _ fvar (AVar x) =
+    fvar x
 
-traverseExpr _ _ fconst fvar (AConst x) =
+traverseExpr _ _ fconst _ (AConst x) =
     fconst x
 
 traverseExpr fand for fconst fvar (ABinary AAnd x1 x2) =
@@ -64,16 +67,23 @@ traverseExpr fand for fconst fvar (ABinary AOr x1 x2) =
     let y2 = traverseExpr fand for fconst fvar x2 in
     for y1 y2
 
+-- collect the variables that are part of lp-norm approximation for p > 1
+-- we currently assume that such variables are
+findLpVars :: AExpr ([String],Double,b) -> [String]
+findLpVars (AVar (xs,p,_)) = if p > 1 && length xs > 1 then xs else []
+findLpVars (AConst x) = []
+findLpVars (ABinary AAnd x1 x2) = findLpVars x1 ++ findLpVars x2
+findLpVars (ABinary AOr x1 x2)  = findLpVars x1 ++ findLpVars x2
 
--- verify the "goodness" of attacker an policy states
-isBadPlcState :: String -> VarState -> (Bool,String)
-isBadPlcState var x =
+-- verify the "goodness" of attacker and policy states
+isBadPlcState :: VarState -> (Bool,String)
+isBadPlcState x =
     case x of
-            Exact -> (False,"")
-            None  -> (False,"")
-            Range _ _   -> (True, err_badPolicy x)
-            IntSubSet _ -> (True, err_badPolicy x)
-            Approx r -> if r >= 0 then (False,"") else (True, err_badPolicy_r x)
+            Exact           -> (False,"")
+            None            -> (False,"")
+            Approx r        -> if r >= 0 then (False,"") else (True, err_badPolicy_r x)
+            ApproxWrtLp _ r -> if r >= 0 then (False,"") else (True, err_badPolicy_r x)
+            ApproxWrtLinf r -> if r >= 0 then (False,"") else (True, err_badPolicy_r x)
             _ -> (True, err_badPolicy x)
 
 isBadAttState :: VarState -> (Bool,String)
@@ -130,8 +140,9 @@ getStateValues attMap varName =
     else error $ error_noAttMapBounds varName
 
 -- the cases in which the given attacker guesses the variable with required precision
+-- when matching range vs radius, or different lp-norms, we assume the worst-case attacker
 isLeakedVar :: VarState -> VarState -> Bool
-isLeakedVar attState plcState =
+isLeakedVar plcState attState =
     case (attState, plcState) of
 
             (Exact,_)  -> True
@@ -140,132 +151,176 @@ isLeakedVar attState plcState =
             (_, None)  -> False
 
             -- here we assume that the actual data belongs to (lb,ub) -- i.e. the attacker knowledge is correct
-            -- while (ub - lb) / 2 <= r2 would already be sufficient in the case when the actual data is in the middle,
-            -- we only claim immediate leakage if it leaks for sure
+            -- in the worst case (ub - lb) / 2 <= r is sufficient for the attacker the case when the actual data is in the middle
+            -- so claim that there are no privacy guarantees in such a case
             (Range   lb ub,  Approx r) -> (ub - lb) <= r
             (RangeUn lb ub,  Approx r) -> (ub - lb) <= r
-            (RangePr lb ubs, Approx r) -> (sum $ map (\ub -> if ub - lb <= r then ubs ! ub else 0) (M.keys ubs)) == 1
+            (RangePr lb ubs, Approx r) -> (sum $ map (\ub -> if (ub - lb) / 2 <= r then ubs ! ub else 0) (M.keys ubs)) == 1
+
+            (Range   lb ub,  ApproxWrtLp _ r) -> (ub - lb) <= r
+            (RangeUn lb ub,  ApproxWrtLp _ r) -> (ub - lb) <= r
+            (RangePr lb ubs, ApproxWrtLp _ r) -> (sum $ map (\ub -> if (ub - lb) / 2 <= r then ubs ! ub else 0) (M.keys ubs)) == 1
+
+            (Range   lb ub,  ApproxWrtLinf r) -> (ub - lb) <= r
+            (RangeUn lb ub,  ApproxWrtLinf r) -> (ub - lb) <= r
+            (RangePr lb ubs, ApproxWrtLinf r) -> (sum $ map (\ub -> if (ub - lb) / 2 <= r then ubs ! ub else 0) (M.keys ubs)) == 1
 
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 
 -- the variable is not sensitive either if attacker already knows it, or we do not care about it
 isSensVar :: VarState -> VarState -> Bool
-isSensVar attState plcState =
-    if isLeakedVar attState plcState then False
+isSensVar plcState attState =
+    if isLeakedVar plcState attState then False
     else case (attState, plcState) of
             (_, None) -> False
             _         -> True
 
 -- TODO it seems that we should distinguish AND and OR, since a complete leakage in an AND can still be bearable
-verifyVarsSecrecy :: M.Map String VarState -> M.Map String Double -> PlcExpr -> [(String, (Int, [Bool],[VarName],[Expr]))]
+verifyVarsSecrecy :: M.Map String VarState -> M.Map [String] Double -> PlcExpr -> [(String, (Int, [Bool],[VarName],[VarName],M.Map String Expr))]
 verifyVarsSecrecy attMap scaleMap plcExpr =
-    traverseExpr (++) (++) (const []) (\x y -> [verifyVarSecrecy attMap scaleMap x y]) plcExpr
+    traverseExpr (++) (++) (const []) (\(x,y) -> [verifyVarSecrecy attMap scaleMap y x]) plcExpr
 
-verifyVarSecrecy :: M.Map String VarState -> M.Map String Double -> VarState -> String -> (String, (Int, [Bool],[VarName],[Expr]))
-verifyVarSecrecy attMap scaleMap plcState preficedVar =
+verifyVarSecrecy :: M.Map String VarState -> M.Map [String] Double -> VarState -> [String] -> (String, (Int, [Bool],[VarName],[VarName],M.Map String Expr))
+verifyVarSecrecy attMap scaleMap plcState preficedVs =
 
-    let [prefix,var] = case (varNameToTableAndSubVarName preficedVar) of
-                           [s1,s2] -> [s1,s2]
-                           _       -> error $ error_badPolicyFormat preficedVar
+    let (prefices,vs) = unzip $ map (\pv -> case varNameToTableAndSubVarName pv of
+                                                [s1,s2] -> (s1,s2)
+                                                _       -> error $ error_badPolicyFormat pv) preficedVs
     in
 
-    let attState = if M.member preficedVar attMap then attMap ! preficedVar else None in
+    -- it is not allowed to mix columns of different tables into an lp-norm
+    if S.size (S.fromList prefices) == 0 then error $ error_badPolicyFormatEmptyVars else
+    if S.size (S.fromList prefices) > 1  then error $ error_badPolicyFormatLpMixedTables prefices else
+    let prefix = head prefices in
 
-    let leakedVar = [isLeakedVar attState plcState] in
-    let sensVar = if isSensVar attState plcState then [var] else [] in
+    let attStates = map (\pv -> if M.member pv attMap then attMap ! pv else None) preficedVs in
 
-    -- constuct the norm, which is NormZero for insensitive vars, L0 for exact guesses, and is abs.value for approximated guesses
-    let normVar = case (attState, plcState) of
-            (Exact,_)    -> []
-            (_, None)    -> []
-            (_,Exact)    -> [LZero var]
-            (_,Approx _) -> let r = scaleMap ! preficedVar in [ScaleNorm (1/r) var]
-            _ -> error $ error_badAttackerPolicyCombination attState plcState
+    let leakedVars = map (isLeakedVar plcState) attStates in
+    let sensVars   = filterWith (map (isSensVar plcState) attStates) vs in
+
+    -- this is to create temporary variables for the norm construction
+    let sensVarKeys = map ("~" ++) sensVars in
+
+    -- constuct the norm, which is NormZero for insensitive vars, L0 for exact guesses, and Lp-norm for approximated guesses
+    let (normKeys,normMap) = case plcState of
+            None            -> ([],M.empty)
+            Exact           -> (sensVarKeys, M.fromList $ zip sensVarKeys (map LZero sensVars))
+            Approx        _ -> (sensVarKeys, let r = scaleMap ! preficedVs in M.fromList $ zip sensVarKeys (map (ScaleNorm (1/r)) sensVars))
+            ApproxWrtLp p _ -> let x1 = intercalate "_" sensVars in
+                               let x2 = "~" ++ x1 in
+                               let r = scaleMap ! preficedVs in
+                               ([x1], M.fromList [(x1, ScaleNorm (1/r) x2), (x2, L p sensVars)])
+            ApproxWrtLinf _ -> let x1 = intercalate "_" sensVars in
+                               let x2 = "~" ++ x1 in
+                               let r = scaleMap ! preficedVs in
+                               ([x1], M.fromList [(x1, ScaleNorm (1/r) x2), (x2, LInf sensVars)])
+            _ -> error $ err_badPolicy plcState
     in
 
-    (prefix, (1, leakedVar,sensVar,normVar))
+    (prefix, (1, leakedVars,sensVars,normKeys,normMap))
 
 -- extract variable names
-extract_vars :: PlcExpr-> [String]
+extract_vars :: PlcExpr-> [[String]]
 extract_vars plcExpr =
-    traverseExpr (++) (++) (const []) (\x y -> [y]) plcExpr
+    traverseExpr (++) (++) (const []) (\(x,y) -> [x]) plcExpr
 
 -- extract variable states
 extract_states :: PlcExpr-> [VarState]
 extract_states plcExpr =
-    traverseExpr (++) (++) (const []) (\x y -> [x]) plcExpr
+    traverseExpr (++) (++) (const []) (\(x,y) -> [y]) plcExpr
 
 -- check whether sensitivity w.r.t. that variable needs to be analysed at all
 extract_bs :: M.Map String VarState -> PlcExpr -> [Bool]
 extract_bs attMap plcExpr =
-    traverseExpr (++) (++) (const []) (\x y -> [extract_b attMap x y]) plcExpr
+    traverseExpr (++) (++) (const []) (\(x,y) -> [extract_b attMap y x]) plcExpr
 
-extract_b :: M.Map String VarState -> VarState -> String -> Bool
-extract_b attMap plcState var =
-    let attState = if M.member var attMap then attMap ! var else None in
-    isSensVar attState plcState
+extract_b :: M.Map String VarState -> VarState -> [String] -> Bool
+extract_b attMap plcState vs =
+    -- if at least one variable in the approximated vector is sensitive, then we do consider it in the analysis
+    let sensVars = map (\v -> let attState = if M.member v attMap then attMap ! v else None in isSensVar plcState attState) vs in
+    foldr (||) False sensVars
 
 -- extract the guessing radius
 extract_rs :: M.Map String VarState -> PlcExpr -> [Double]
 extract_rs attMap plcExpr =
-    traverseExpr (++) (++) (const []) (\x y -> [extract_r attMap x y]) plcExpr
+    traverseExpr (++) (++) (const []) (\(_,y) -> [extract_r y]) plcExpr
 
-extract_r :: M.Map String VarState -> VarState -> String -> Double
-extract_r attMap plcState var =
-    let attState = if M.member var attMap then attMap ! var else None in
-    case (attState, plcState) of
-            (_,Exact)    -> 1.0 -- compatible with L0-norm
-            (_,Approx r) -> r
-            _ -> error $ error_badAttackerPolicyCombination attState plcState
+extract_r :: VarState -> Double
+extract_r plcState =
+    case plcState of
+            Exact           -> 1.0 -- compatible with L0-norm
+            Approx        r -> r
+            ApproxWrtLp _ r -> r
+            ApproxWrtLinf r -> r
+            _ -> error $ err_badPolicy plcState
 
 -- extract whether the dimension has discrete norm
 extract_ds :: M.Map String VarState -> PlcExpr -> [Bool]
 extract_ds attMap plcExpr =
-    traverseExpr (++) (++) (const []) (\x y -> [extract_d attMap x y]) plcExpr
+    traverseExpr (++) (++) (const []) (\(x,y) -> [extract_d y]) plcExpr
 
-extract_d :: M.Map String VarState -> VarState -> String -> Bool
-extract_d attMap plcState var =
-    let attState = if M.member var attMap then attMap ! var else None in
-    case (attState, plcState) of
-            (_,Exact)    -> True
-            (_,Approx r) -> False
-            _ -> error $ error_badAttackerPolicyCombination attState plcState
+extract_d :: VarState -> Bool
+extract_d plcState =
+    case plcState of
+            Exact           -> True
+            Approx r        -> False
+            ApproxWrtLp _ r -> False
+            ApproxWrtLinf r -> False
+            _ -> error $ err_badPolicy plcState
+
+-- extract the used p-norm
+extract_ps :: M.Map String VarState -> PlcExpr -> [Double]
+extract_ps attMap plcExpr =
+    traverseExpr (++) (++) (const []) (\(x,y) -> [extract_p y]) plcExpr
+
+extract_p :: VarState -> Double
+extract_p plcState =
+    case plcState of
+            Exact           -> 0.0
+            Approx r        -> 1.0
+            ApproxWrtLp p r -> p
+            ApproxWrtLinf r -> 1/0
+            _ -> error $ err_badPolicy plcState
 
 -- extract the function computing probabilities in total space
 extract_gs :: M.Map String VarState -> PlcExpr -> [Double -> Maybe [Double]]
 extract_gs attMap plcExpr =
-    traverseExpr (++) (++) (const []) (\x y -> [extract_g attMap x y]) plcExpr
+    traverseExpr (++) (++) (const []) (\(xs,_) -> [extract_g attMap xs]) plcExpr
 
-extract_g :: M.Map String VarState -> VarState -> String -> (Double -> Maybe [Double])
-extract_g attMap plcState var =
-    let attState = if M.member var attMap then attMap ! var else None in
-    case (attState, plcState) of
-            (Exact,_)        -> const $ Just [1.0]     -- the sensitive region already has sensitivity 1
-            (None, _)        -> const Nothing        -- no knowledge
+-- we assume that attacker known bounds hold w.r.t. the same lp-norm that is used in sensitive set
+-- otherwise, it would be more complicated to compute the weight of a circle w.r.t. a square, and using same lp-norm is more reasonable
+extract_g :: M.Map String VarState -> [String] -> (Double -> Maybe [Double])
+extract_g attMap vs =
+  let attStates = map (\v -> if M.member v attMap then attMap ! v else None) vs in
+  let fs = map (\attState ->
+          case attState of
+            Exact        -> const $ Just [1.0]   -- a leaked sensitive region has probability weight 1
+            None         -> const Nothing        -- no knowledge
 
             -- unknown distribution
-            (Total n, _)     -> const Nothing
-            (SubSet xs,_)    -> const Nothing
-            (IntSubSet xs,_) -> const Nothing
-            (Range lb ub,_)  -> const Nothing
+            Total n      -> const Nothing
+            SubSet xs    -> const Nothing
+            IntSubSet xs -> const Nothing
+            Range lb ub  -> const Nothing
 
             -- uniform distribution
             -- since the distance does not depend on x, it always makes sense to take the entire space for a > 1
-            (TotalUn n, _)     -> (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
-            (SubSetUn xs,_)    -> let n = length xs in (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
-            (IntSubSetUn xs,_) -> let n = length xs in (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
+            TotalUn n      -> (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
+            SubSetUn xs    -> let n = length xs in (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
+            IntSubSetUn xs -> let n = length xs in (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
             -- here the distance does depend on x
-            (RangeUn lb ub,_)  -> let rr = (ub - lb) / 2.0 in (\x -> Just [x / rr])
+            RangeUn lb ub  -> let rr = (ub - lb) / 2.0 in (\x -> Just [x / rr])
 
             -- customized distribution
             -- we look at all possiblilities for "g 1", and take "g a = 1" for a > 1
-            (SubSetPr mp,_)    -> (\x -> if x == 1 then Just (M.elems mp) else Just (replicate (M.size mp) 1.0))
-            (IntSubSetPr mp,_) -> (\x -> if x == 1 then Just (M.elems mp) else Just (replicate (M.size mp) 1.0))
+            -- we do not define lp-norms over discrete sets
+            SubSetPr mp    -> if length vs > 1 then error (error_badPolicyFormatLpDiscrete vs) else (\x -> if x == 1 then Just (M.elems mp) else Just (replicate (M.size mp) 1.0))
+            IntSubSetPr mp -> if length vs > 1 then error (error_badPolicyFormatLpDiscrete vs) else (\x -> if x == 1 then Just (M.elems mp) else Just (replicate (M.size mp) 1.0))
 
             -- if the range is given in several segments, we assume that the distribution inside each segment is uniform
             -- TODO can we do something better?
-            (RangePr lb mp,_)  -> (\x ->
+            RangePr lb mp  -> (\x ->
                                        -- compute the weight of blocks that are fully under x
                                        let p1 = sum $ map (\ub -> if ub - lb <= x then mp ! ub else 0) (M.keys mp) in
                                        -- compute the partial weight of the block where x locates
@@ -276,17 +331,29 @@ extract_g attMap plcState var =
                                        let p2 = if ubL == ubR then 0 else ((x + lb) - ubL) / (ubR - ubL) * (mp ! ubR) in
                                        Just [p1 + p2])
 
-            _ -> error $ error_badAttackerPolicyCombination attState plcState
+            _ -> error $ err_badAttackerPolicy attState) attStates in
+
+  -- for discrete variables, we cannot have longer combinations of lp-norms
+  if length vs == 1 then head fs else
+  -- if we do not know some dimension, then the total weight is unknown as well
+  if elem Nothing (zipWith (\f x -> f x) fs (replicate (length fs) 0)) then const Nothing else
+  (\r ->
+          -- if all variables are non-discrete, then we have exactly one element in each list under Just
+          let zs = map (\f -> (head . (\(Just z) -> z) . f) r) fs in
+          Just [product zs])
+
 
 -- extract the total space radius
+-- assume that attacker known bounds hold w.r.t. the same lp-norm that is used in sensitive set
 extract_Rs :: M.Map String VarState -> M.Map String String -> PlcExpr -> [Double]
 extract_Rs attMap typeMap plcExpr =
-    traverseExpr (++) (++) (const []) (\x y -> [extract_R attMap typeMap x y]) plcExpr
+    traverseExpr (++) (++) (const []) (\(x,y) -> [extract_R attMap typeMap y x]) plcExpr
 
-extract_R :: M.Map String VarState -> M.Map String String -> VarState -> String -> Double
-extract_R attMap typeMap plcState var =
-    let attState = if M.member var attMap then attMap ! var else None in
-    case (attState, plcState) of
+extract_R :: M.Map String VarState -> M.Map String String -> VarState -> [String] -> Double
+extract_R attMap typeMap plcState vs =
+    let rrs = map (\var -> 
+          let attState = if M.member var attMap then attMap ! var else None in
+          case (attState, plcState) of
             (Exact,_)       -> 1.0 -- compatible with L0-norm
             (None, Exact)   -> 1.0 -- compatible with L0-norm
             (None, _)       -> let dataType = map toLower $ typeMap ! var in
@@ -309,25 +376,22 @@ extract_R attMap typeMap plcState var =
             (Range   lb ub,_)  -> (ub - lb) / 2.0
             (RangeUn lb ub,_)  -> (ub - lb) / 2.0
             (RangePr lb mp,_)  -> let ub = getUb lb mp in (ub - lb) / 2.0
-            _ -> error $ error_badAttackerPolicyCombination attState plcState
+            _ -> error $ err_badAttackerPolicy attState) vs
+    in
+    case plcState of
+        Exact           -> lpnorm 1.0 rrs
+        Approx _        -> lpnorm 1.0 rrs
+        ApproxWrtLp p _ -> lpnorm p rrs
+        ApproxWrtLinf _ -> linfnorm rrs
 
+-- compute ||(x_1,...,x_n)||_p
+lpnorm :: Double -> [Double] -> Double
+lpnorm p xs = (sum $ map (** p) $ map abs xs) ** (1 / p)
 
-{-
-extractRange plcExpr tableName =
-    let key = preficedVarName tableName reservedSensRowsKeyword in
-    S.toList $ traverseExpr (S.union) (S.union) (const (S.empty)) (extractRanges key) plcExpr
+-- compute ||(x_1,...,x_n)||_infinity
+linfnorm :: [Double] -> Double
+linfnorm = maximum . map abs
 
-extractRanges key varState var =
-    if key == var then
-        case varState of
-                Range lb ub    -> S.fromList [round lb .. round (ub-1)]
-                RangePr lb mp  -> let ub = getUb lb mp in S.fromList [round lb .. round (ub-1)]
-                IntSubSet xs   -> S.fromList xs
-                IntSubSetPr mp -> S.fromList (M.keys mp)
-                _            -> error $ error_badPolicySensRows varState
-    else
-        S.empty
--}
 
 -- update varstates of the attacker file if their type is not compatible with the schema
 update_varStates :: M.Map String VarState -> M.Map String String -> M.Map String VarState
@@ -384,29 +448,9 @@ filterWith (b:bs) (x:xs) =
     let ys = filterWith bs xs in
     if b then (x:ys) else ys
 
--- construct the norm w.r.t. which we compute sensitivity (used only for the output; this is the 'database norm' that should be understandable to the user)
--- TODO should we apply bss filter, or leave everything as it is?
-deriveDbNorm :: M.Map String VarState -> PlcExpr -> Norm String
-deriveDbNorm attMap plcExpr =
-
-    -- we put together all variables of all sensitive sets to define one norm over all of them
-    let bs  = extract_bs attMap plcExpr in
-    let xs  = filterWith bs $ extract_vars   plcExpr in
-    let ds  = filterWith bs $ extract_ds attMap plcExpr in
-    let rs  = filterWith bs $ extract_rs attMap plcExpr in
-
-    -- if the same variable repeats with different precisions, we agree that we scale the space by the minimum to keep r <= 1
-    let scaleMap =  M.fromListWith (\(d,r1) (_,r2) -> (d, max r1 r2)) $ zip xs (zip ds rs) in
-    let ys  = map (\(x, (d,r)) -> if d then NormLZero (Col x) else NormScale (1/r) (Col x)) (M.toList scaleMap) in
-    NormL (Exactly 1.0) ys
-
 -- construct the norm w.r.t. which we compute sensitivity -- the construction that we actually use in the analysis, with optimizations
 constructNormData :: [TableName] -> M.Map String VarState -> PlcExpr -> [(([Int], [VarName]), NormFunction, Maybe Double)]
 constructNormData tableNames attMap plcExpr =
-
-    -- TODO remove the special variables that are not needed
-    --let kwlen = length reservedSensRowsKeyword in
-    --let plcMapData = map (M.filterWithKey (\varName _ -> length varName < kwlen || reverse (take kwlen (reverse varName)) /= reservedSensRowsKeyword) . fst) plcMaps in
 
     -- check that the attacker knowledge and the sensitive variables have been defined correctly
     let badAttStates = map isBadAttState $ M.elems attMap in
@@ -414,19 +458,19 @@ constructNormData tableNames attMap plcExpr =
     let plcMapVars   = extract_vars   plcExpr in
     let plcMapStates = extract_states plcExpr in
 
-    let badPlcStates = zipWith isBadPlcState plcMapVars plcMapStates in
+    let badPlcStates = map isBadPlcState plcMapStates in
     let badStates = badAttStates ++ badPlcStates in
     let (somethingBad,errorMessages) = foldr (\(b1,e1) (b2,e2) -> (b1 || b2, if e1 == "" then e2 else e1 ++ ";\n" ++ e2)) (False,"") badStates in
     if somethingBad then error errorMessages else
 
     -- we put together all variables of all sensitive sets to define one norm over all of them
     let bs  = extract_bs attMap plcExpr in
-    let xs  = filterWith bs $ plcMapVars in
+    let xss = filterWith bs $ plcMapVars in
     let ds  = filterWith bs $ extract_ds attMap plcExpr in
     let rs  = filterWith bs $ extract_rs attMap plcExpr in
 
     -- if the same variable repeats with different precisions, we agree that we scale the space by the minimum to keep r <= 1
-    let scaleMap' = M.fromListWith (\(d,r1) (_,r2) -> if d then (d,1.0) else (d,max r1 r2)) $ zip xs (zip ds rs) in
+    let scaleMap' = M.fromListWith (\(d,r1) (_,r2) -> if d then (d,1.0) else (d,max r1 r2)) $ zip xss (zip ds rs) in
     let scaleMap  = M.map snd scaleMap' in
 
     let combinedDataMap = constructNormDataSet tableNames attMap scaleMap plcExpr in
@@ -438,23 +482,38 @@ constructNormData tableNames attMap plcExpr =
     zipWith (normsFromCombinedData combinedDataMap) tableNames tableSensRows
 
 
-normsFromCombinedData :: M.Map TableName (M.Map String Expr) -> TableName -> [Int] -> (([Int], [VarName]), NormFunction, Maybe Double)
+
+-- construct the norm w.r.t. which we compute sensitivity (used only for the output; this is the 'database norm' that should be understandable to the user)
+-- TODO should we apply bss filter, or leave everything as it is?
+deriveDbNorm :: M.Map String VarState -> PlcExpr -> Norm String
+deriveDbNorm attMap plcExpr =
+
+    -- we put together all variables of all sensitive sets to define one norm over all of them
+    let bs  = extract_bs attMap plcExpr in
+    let xss = filterWith bs $ extract_vars   plcExpr in
+    let rs  = filterWith bs $ extract_rs attMap plcExpr in
+    let ps  = filterWith bs $ extract_ps attMap plcExpr in
+
+    -- if the same variable repeats with different precisions, we agree that we scale the space by the minimum to keep r <= 1
+    let scaleMap = M.fromListWith (\(p,r1) (_,r2) -> (p, max r1 r2)) $ zip xss (zip ps rs) in
+    let ys  = map (\ (xs, (p,r)) -> if p == 0 then NormLZero (Col (head xs)) else NormScale (1/r) (if p < 1/0 then NormL (Exactly p) (map Col xs) else NormL Any (map Col xs)) ) (M.toList scaleMap) in
+    NormL Any ys
+
+normsFromCombinedData :: M.Map TableName ([VarName],[VarName],M.Map String Expr) -> TableName -> [Int] -> (([Int], [VarName]), NormFunction, Maybe Double)
 normsFromCombinedData combinedDataMap tableName tableSensRows =
-    let varMap = combinedDataMap ! tableName in
-    let sensVars = M.keys varMap in
-    let normVars = M.elems varMap in
-    let normVarNames = (map (\x -> defaultNormVariable ++ show x) [0..(length normVars - 1)]) in
-    let tempVarMap = M.fromList $ zip normVarNames normVars in
-    let nf = NF (M.insert defaultNormVariable (LInf normVarNames) tempVarMap) (SelectL 1.0 defaultNormVariable) in
+
+    let (sensVars,normKeys,normMap) = combinedDataMap ! tableName in
+    let nf = NF (M.insert defaultNormVariable (LInf $ nub normKeys) normMap) (SelectL 1.0 defaultNormVariable) in
+
     -- if there are no explicit records for sensitive rows, we consider all of them sensitive by deafult
     let recordedTableSensRows = if length tableSensRows == 0 then [0..] else tableSensRows in
     ((recordedTableSensRows,sensVars),nf, Nothing)
 
-constructNormDataSet :: [TableName] -> M.Map String VarState -> M.Map String Double -> PlcExpr -> M.Map TableName (M.Map String Expr)
+constructNormDataSet :: [TableName] -> M.Map String VarState -> M.Map [String] Double -> PlcExpr -> M.Map TableName ([VarName],[VarName],M.Map String Expr)
 constructNormDataSet tableNames attMap scaleMap plcExpr =
 
     -- aggregate the variables for each table separately
-    let dataMap = M.fromListWith (\(n1,x1s,y1s,z1s) (n2,x2s,y2s,z2s) -> (n1 + n2, x1s ++ x2s, y1s ++ y2s, z1s ++ z2s)) $ verifyVarsSecrecy attMap scaleMap plcExpr in
+    let dataMap = M.fromListWith (\(n1,x1s,y1s,z1s,w1s) (n2,x2s,y2s,z2s,w2s) -> (n1 + n2, x1s ++ x2s, y1s ++ y2s, z1s ++ z2s, M.union w1s w2s)) $ verifyVarsSecrecy attMap scaleMap plcExpr in
 
     --trace (show dataMap) $
     let (res0,res) = unzip $ map (constructTableNormData dataMap) tableNames in
@@ -468,14 +527,13 @@ constructNormDataSet tableNames attMap scaleMap plcExpr =
     if (numOfVars > 0 && badAttacker) then error $ error_attackerBreaksEverything else M.fromList res
 
 -- the attacker badness should be checked for all tables together, not one by one
-constructTableNormData :: M.Map String (Int, [Bool],[String],[Expr]) -> String -> ((Int, [Bool]), (TableName, M.Map String Expr))
+constructTableNormData :: M.Map String (Int, [Bool],[VarName],[VarName],M.Map String Expr) -> String -> ((Int, [Bool]), (TableName, ([VarName],[VarName],M.Map String Expr)))
 constructTableNormData dataMap tableName =
 
     if M.member tableName dataMap then
-        let (numOfVars, leakedVars, sensVars, normVars) = dataMap ! tableName in
-        --trace (show sensVars ++ show normVars) $
-        ((numOfVars, leakedVars), (tableName, M.fromList $ zip sensVars normVars))
+        let (numOfVars, leakedVars, sensVars, normKeys, normMap) = dataMap ! tableName in
+        ((numOfVars, leakedVars), (tableName, (sensVars,normKeys,normMap)))
     else
         -- if the policy is not related to the given table, it is treated as public
-        ((0, []), (tableName, M.empty))
+        ((0, []), (tableName, ([],[],M.empty)))
 

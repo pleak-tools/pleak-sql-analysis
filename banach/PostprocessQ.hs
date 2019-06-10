@@ -103,22 +103,20 @@ minPlcData (PlcData b ur r1 rr d g) (PlcData _ _ r2 _ _ _) =
     (PlcData b ur (min r1 r2) rr d g)
 
 -- if the same variable repeats with different precisions, we need to take minimum in an AND
-fand :: [(Int, M.Map String PlcData)] -> [(Int, M.Map String PlcData)] -> [(Int, M.Map String PlcData)]
+fand :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)]
 fand ms1 ms2 = concat $ map (\(s2,m2) -> map (\(s1,m1) -> (s1*s2, M.unionWith minPlcData m1 m2)) ms1) ms2
 
-for  :: [(Int, M.Map String PlcData)] -> [(Int, M.Map String PlcData)] -> [(Int, M.Map String PlcData)]
+for  :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)]
 for ms1 ms2 = ms1 ++ ms2 ++ map (\(s,v) -> (-s,v)) (fand ms1 ms2)
 
-compute_eps_for_a :: Bool -> Double -> AExpr (String,PlcData) -> Double -> Int -> (Double,Double,Double,Double)
+compute_eps_for_a :: Bool -> Double -> AExpr ([String],PlcData) -> Double -> Int -> (Double,Double,Double,Double)
 compute_eps_for_a pos delta expr sample_a nq =
 
     -- compute p and q using the equalities and P(A || B) = P(A) + P(B) - P(AB), P(AA) = P(A), P(AB) = P(A)*P(B)
-    let pqExpr = traverseExpr fand for (\x -> if x == 1 then [(1,M.empty)] else []) (\pd var -> [(1, M.singleton var pd)]) expr in
+    let pqExpr = traverseExpr fand for (\x -> if x == 1 then [(1,M.empty)] else []) (\(var,pd) -> [(1, M.singleton var pd)]) expr in
 
     -- compute the weight of X' (distributions of some dimensions can be unknown)
     -- if different elements come with different probabilities, we consider all combinations
-    -- we agree that we scale the space by "max r" in the norm computation, so that (rr / r) >= (rr / max r)
-    -- TODO to get more precise results, we could compute the "max r" and compute (rr / max r) directly
     let qssAs = map (\(s,m) -> let (vss,as) = unzip $ map (\(PlcData b ur r rr d g) ->
 
                                     -- adjust proposed a to the actual bounds R
@@ -169,7 +167,7 @@ compute_eps_for_a pos delta expr sample_a nq =
     (a,epsilon,q,p)
 
 
-optimal_a_epsilon :: Bool -> Double -> Double -> Double -> AExpr (String,PlcData) -> Double -> Double -> Double -> Double
+optimal_a_epsilon :: Bool -> Double -> Double -> Double -> AExpr ([String],PlcData) -> Double -> Double -> Double -> Double
                      -> Double -> Double -> Int -> (Double,Double,Double,Double)
 optimal_a_epsilon _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
 optimal_a_epsilon pos delta scaled_r scaled_rr expr a epsilon q p k n nq =
@@ -291,24 +289,24 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery numOf
   let plainTypeMap  = M.fromList $ concat plainTypeMaps
 
   -- compute parameters of the sensitivie attributes
-  let unit_r_map =  traverseExpr (M.unionWith min) (M.unionWith min) (const M.empty) (\plcState var ->
-                                   let r  = extract_r attMap plcState var in
+  let unit_r_map =  traverseExpr (M.unionWith min) (M.unionWith min) (const M.empty) (\(var,plcState) ->
+                                   let r  = extract_r plcState in
                                    M.singleton var r) plcExpr
 
-  let plcExprExt = traverseExpr (ABinary AAnd) (ABinary AOr) AConst (\plcState var ->
+  let plcExprExt = traverseExpr (ABinary AAnd) (ABinary AOr) AConst (\(var,plcState) ->
                                    let b  = extract_b attMap plcState var in
-                                   let r  = extract_r attMap plcState var in
+                                   let r  = extract_r plcState in
                                    let rr = extract_R attMap plainTypeMap plcState var in
-                                   let d  = extract_d attMap plcState var in
-                                   let g  = extract_g attMap plcState var in
+                                   let d  = extract_d plcState in
+                                   let g  = extract_g attMap var in
                                    let unit_r = unit_r_map ! var in
                                    AVar (var, PlcData b unit_r (r / unit_r) (rr / unit_r) d g)) plcExpr
 
   -- further, we assume r = 1 everywhere in each dimension
   let scaled_r  = 1
-  let scaled_rr = traverseExpr max max (const 0) (\plcState var -> let r  = extract_r attMap plcState var in
-                                                                   let rr = extract_R attMap plainTypeMap plcState var in
-                                                                   rr / r) plcExpr
+  let scaled_rr = traverseExpr max max (const 0) (\(var,plcState) -> let r  = extract_r plcState in
+                                                                     let rr = extract_R attMap plainTypeMap plcState var in
+                                                                     rr / r) plcExpr
 
   -- this norm is used only to show it in the output
   let norm = deriveDbNorm attMap plcExpr
@@ -328,6 +326,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery numOf
   let epsilon = min epsilon0 epsilon1
 
   traceIOIfDebug debug ("plcExpr: " ++ show plcExpr)
+  traceIOIfDebug debug ("plcExprExt: " ++ show plcExprExt)
   traceIOIfDebug debug ("allSensVars: " ++ show allSensVars)
   traceIOIfDebug debug ("--------")
   traceIOIfDebug debug ("delta: " ++ (show delta))

@@ -356,7 +356,7 @@ aexprToExpr y (ABinary AGT x1 x2) =
 --    let z1     = y ++ "~1" in
 --    M.union (aexprToExpr z x) $ M.fromList [(y, Sigmoid a c z)]
 
--- lp-norm
+-- l2-norm
 aexprToExpr y aexpr@(ABinary ADistance (AVector xs1) (AVector xs2)) =
     if length xs1 /= length xs2 then error $ error_queryExpr_pointDistanceLen aexpr else
     let n = length xs1 in
@@ -371,6 +371,7 @@ aexprToExpr y aexpr@(ABinary ADistance (AVector xs1) (AVector xs2)) =
     let ws = M.fromList $ concat $ zipWith4 (\z z1 z2 z3 -> [(z, Sum [z1,z3]), (z3, Prod ["-1", z2]), ("-1", Const (-1.0))]) zs zs1 zs2 zs3 in
     M.union (foldr M.union ws (ws1 ++ ws2)) $ M.fromList [(y, L 2.0 zs)]
 
+-- lp-norm
 aexprToExpr y aexpr@(AUnary (APower pinv) (ASum xs)) =
 
     let p = 1 / pinv in
@@ -519,6 +520,9 @@ aexprToExpr y (AXors xs) = aexprToExpr y $ ASum xs
 -- we may possibly add more interesting expressions that can be reduced to Expr
 aexprToExpr y aexpr = error $ error_queryExpr aexpr
 ------------------------------------------------------------------------------------
+aexprLpnorm p xs = AUnary (APower (1/p)) $ ASum $ map (AUnary (APower p) . AAbs) xs
+aexprLinfnorm xs = AMaxs $ map AAbs xs
+
 aexprToString :: AExpr String -> String
 aexprToString aexpr =
     case aexpr of

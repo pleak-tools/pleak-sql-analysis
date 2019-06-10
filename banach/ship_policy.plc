@@ -1,5 +1,5 @@
 LEAK
 ship.ship_id exact AND
-ship.longitude approx 5 AND
-ship.latitude approx 5
-FROM ship WHERE name = 'farmi';
+(ship.longitude, ship.latitude) approxWrtLp(2) 5
+FROM ship WHERE name = 'farmi'
+COST 1000;

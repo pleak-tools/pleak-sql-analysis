@@ -9,7 +9,7 @@ import CreateTablesQ
 import DatabaseQ
 import GroupQ
 import NormsQ hiding ((!!))
-import PolicyQ (VarState(..))
+import PolicyQ (VarState(..),VState(..))
 import ErrorMsg
 import RangeUtils
 
@@ -1174,7 +1174,10 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery numOfOut
   let b = epsilon / (gamma + 1) - beta
   when debug $ printf "b = %0.6f\n" b
 
-  let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
+  -- extract the known bounds for columns (if any) from the attMap, convert everything to ranges whenever possible
+  let varStatesRaw = map (M.findWithDefault Exact `flip` attMap) colNames
+  let varStates    = map anyVarStateToRange varStatesRaw
+
   when debug $ printf "colNames = %s\n" (show colNames)
   when debug $ printf "varStates = %s\n" (show varStates)
   when debug $ printf "colTableCounts = %s\n" (show colTableCounts)

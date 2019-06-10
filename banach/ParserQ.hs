@@ -311,24 +311,24 @@ bOperators =
 bTerm :: Parser (AExpr VarName)
 bTerm = try aExpr <|> parens bExpr
 
-cExpr :: Parser (AExpr (String,VarState))
+cExpr :: Parser (AExpr ([String],VarState))
 cExpr = makeExprParser cTerm cOperators
 
-cOperators :: [[Operator Parser (AExpr (String,VarState))]]
+cOperators :: [[Operator Parser (AExpr ([String],VarState))]]
 cOperators =
   [
     [ InfixL (ABinary AAnd <$ caseInsensKeyWord "and")]
   , [InfixL (ABinary AOr  <$ caseInsensKeyWord "or")]
   ]
 
-cTerm :: Parser (AExpr (String,VarState))
+cTerm :: Parser (AExpr ([String],VarState))
 cTerm = try cVarStateStmt <|> parens cExpr
 
-cVarStateStmt :: Parser (AExpr (String,VarState))
+cVarStateStmt :: Parser (AExpr ([String],VarState))
 cVarStateStmt = do
-    a <- varName
-    b <- varStateVal
-    return $ AVar (a,b)
+    as <- fmap (\x -> [x]) varName <|> parens (sepBy1 varName (symbol ","))
+    b  <- varStatePlcVal
+    return $ AVar (as,b)
 
 ------------------------------------------------------------
 ---- Parsing SQL query (simlpified, could be delegated) ----
@@ -602,10 +602,10 @@ function = do
 ------------------------------------------
 ---- Parsing policy and attacker file ----
 ------------------------------------------
-policy :: Parser (AExpr (String, VarState), Double, [(String,AExpr VarName)])
+policy :: Parser (AExpr ([String], VarState), Double, [(String,AExpr VarName)])
 policy = sensitiveFormula <|> sensitiveSet
 
-sensitiveFormula :: Parser (AExpr (String, VarState), Double, [(String,AExpr VarName)])
+sensitiveFormula :: Parser (AExpr ([String], VarState), Double, [(String,AExpr VarName)])
 sensitiveFormula = do
 
     caseInsensKeyWord "leak"
@@ -625,35 +625,41 @@ sensitiveCondition = do
     return (tableName,bexpr)
 
 -- this is deprecated and is only needed to support old models
-sensitiveSet :: Parser (AExpr (String, VarState), Double, [(String,AExpr VarName)])
+sensitiveSet :: Parser (AExpr ([String], VarState), Double, [(String,AExpr VarName)])
 sensitiveSet = do
   keyWord "leak"
-  ps <- many varStateStmt
+  ps <- many varStatePlcStmt
   c <- costValue <|> do return 100.0
   return (foldr (ABinary AAnd) (AConst 1.0) (map AVar ps), c, [])
 
 costValue :: Parser Double
 costValue = do
-  keyWord "cost"
+  caseInsensKeyWord "cost"
   c <- float
   return c
 
 attacker :: Parser (M.Map String VarState)
 attacker = do
-  ps <- many varStateStmt
+  ps <- many varStateAttStmt
   return (M.fromList ps)
 
-varStateStmt :: Parser (String,VarState)
-varStateStmt = do
+varStatePlcStmt :: Parser ([String],VarState)
+varStatePlcStmt = do
+  as <- fmap (\x -> [x]) varName <|> parens (sepBy1 varName (symbol ","))
+  b  <- varStatePlcVal
+  void (delim)
+  return (as,b)
+
+varStateAttStmt :: Parser (String,VarState)
+varStateAttStmt = do
   a <- varName
-  b <- varStateVal
+  b <- varStateAttVal
   void (delim)
   return (a,b)
 
-varStateVal :: Parser VarState
-varStateVal = varStateExact
+varStateAttVal :: Parser VarState
+varStateAttVal = varStateExact
   <|> varStateNone
-  <|> varStateApprox
   <|> varStateTotalUnif
   <|> varStateTotal
   <|> varStateRangeUnif
@@ -663,6 +669,13 @@ varStateVal = varStateExact
   <|> varStateRange
   <|> varStateSet
 
+varStatePlcVal :: Parser VarState
+varStatePlcVal = varStateExact
+  <|> varStateNone
+  <|> varStateApproxLp
+  <|> varStateApproxLinf
+  <|> varStateApprox
+
 varStateExact = do
   keyWord "exact"
   return Exact
@@ -671,6 +684,17 @@ varStateApprox = do
   keyWord "approx"
   r  <- float
   return (Approx r)
+
+varStateApproxLp = do
+  keyWord "approxWrtLp"
+  p  <- parens $ float
+  r  <- float
+  return (ApproxWrtLp p r)
+
+varStateApproxLinf = do
+  keyWord "approxWrtLinf"
+  r  <- float
+  return (ApproxWrtLinf r)
 
 varStateTotal = do
   keyWord "total"

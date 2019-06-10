@@ -119,11 +119,14 @@ err_badAttackerPolicy_n x     = errorTag ++ " negative number of choices in " ++
 err_badAttackerPolicy_range x = errorTag ++ " lower bound is smaller than upper bound in " ++ show x
 err_badAttackerPolicy_Pr x    = errorTag ++ " the probabilities should be nonnegative and sum up to 1 in " ++ show x
 err_badAttackerPolicy x       = errorTag ++ " unsupported attacker state " ++ show x
-err_badPolicy_r x             = errorTag ++ " negative radius in sensitive data state " ++ show x
+err_badPolicy_r x             = errorTag ++ " bad radius in sensitive data state " ++ show x
 err_badPolicy x               = errorTag ++ " unsupported sensitive data state " ++ show x
 
 error_unboundedDataType t = errorTag ++ " data type " ++ t ++ " cannot be included into policy yet."
 error_badPolicyFormat preficedVar = errorTag ++ " policy format error, \"" ++ preficedVar ++ "\" is expected to be of the form \"tableName.varName\""
+error_badPolicyFormatEmptyVars = errorTag ++ " policy format error, an empty variable list is being approximated"
+error_badPolicyFormatLpMixedTables prefices = errorTag ++ " columns of different tables \"" ++ show prefices ++ "\" cannot be combined into a vector in sensitive data description\""
+error_badPolicyFormatLpDiscrete xs = errorTag ++ " discrete table columns \"" ++ show xs ++ "\" cannot be combined into a vector in sensitive data description\""
 error_badSetPolicyFormat xs1 xs2 = errorTag ++ " policy format error, should not use strings " ++ show xs1 ++ " and integers " ++ show xs2 ++ " in one set."
 error_badPolicySensRows vs    = errorTag ++ " the sensitive rows should be listed as \'Range a b\', but we got " ++ show vs ++ " instead."
 

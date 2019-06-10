@@ -608,7 +608,7 @@ policy = sensitiveFormula <|> sensitiveSet
 sensitiveFormula :: Parser (AExpr ([String], VarState), Double, [(String,AExpr VarName)])
 sensitiveFormula = do
 
-    caseInsensKeyWord "leak"
+    caseInsensKeyWord "select"
     cexpr <- cExpr
     fs <- many sensitiveCondition
     c <- costValue <|> do return 100.0

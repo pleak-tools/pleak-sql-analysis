@@ -55,6 +55,8 @@ constructRR [v2,v3,v4,v5,v6,v7,v8,v9,v10] = RR {sensitivity = v2,
                                             laplace_relative_err = v9,
                                             norm = v10}
 
+niceRound x = fromIntegral (round (x * 1000)) / 1000
+
 -- int sqrt(2) / pi * 1 / (1 + x^4) dx
 cauchy_integral a =
     let x1 = - log (a**2 - (sqrt 2) * a + 1) in
@@ -346,7 +348,8 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery numOf
 
   -- if delta < prior, then the lower bound may be negative, and we take the bound 0 in this case
   let pr_pre  = p1 * 100
-  let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
+  --let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
+  let pr_post = 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100
 
   (finalBeta,qmap,taskAggrMap,finalError,_) <- findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
 
@@ -389,25 +392,24 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery numOf
   traceIOIfDebug debug ("betas: " ++ show preciseBetas)
 
   traceIOIfDebug debug ("===============================")
-  let outputList = [("prior: ",                         show pr_pre),
-                    ("posterior: ",                     show pr_post),
-                    ("expected cost: ",                 show expectedCost),
-                    (show (round $ errorUB * 100) ++ "%-realtive error (Cauchy noise): ", show (finalError * noiseScaleCauchy * 100.0) ++ "%"),
-                    ("Cauchy noise magnitude: a <- ",   show (map ( * noiseScaleCauchy) cauchyNoise)),
-                    ("Cauchy noise distribution: ",     "add noise a*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
-
-                    (show (round $ errorUB * 100) ++ "%-realtive error (Laplace noise): ", if laplaceDelta > 0 then "cannot achive (epsilon,delta)-DP with delta=0 for Laplace noise"
-                                                         else show (laplaceError * 100.0 * noiseScaleLaplace) ++ "%"),
-                    ("Laplace noise magnitude (a): ",    if laplaceDelta > 0 then "cannot achive (epsilon,delta)-DP with delta=0 for Laplace noise"
-                                                         else show (map (* noiseScaleLaplace) laplaceNoise)),
-                    ("Laplace noise distribution: ",     "add noise a*z, where z ~ 1 / 2 * exp(-x)"),
-
-                    ("delta (Laplace only): ",      show laplaceDelta),
-                    ("actual outputs: ",            show finalQrs),
-                    ("DP epsilon: ",                show finalEpsilon),
-                    ("smoothness beta: ",           show finalBeta),
-                    ("sensitivity w.r.t. norm N: ", show finalSdss),
-                    ("norm N: ",                    niceNormPrint norm)]
+  let outputList = [("actual outputs y: ",           show (map niceRound finalQrs)),
+                    (show (round $ errorUB * 100) ++ "%-noise magnitude a: ",   show (map (niceRound . (* noiseScaleCauchy)) cauchyNoise)),
+                    (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y|: ", show (niceRound (finalError * noiseScaleCauchy * 100.0)) ++ "%"),
+                    ("Cauchy (default) distribution: ",  "add noise a*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
+                    ("prior (worst instance): ", show (niceRound pr_pre)),
+                    ("posterior (worst instance): ", show (niceRound pr_post)),
+                    ("DP epsilon: ",                 show (niceRound finalEpsilon)),
+                    ("smoothness beta: ",            show (niceRound finalBeta)),
+                    ("delta (Laplace only): ",       show (niceRound laplaceDelta)),
+                    ("norm N: ",                     niceNormPrint norm),
+                    ("beta-smooth sensitivity w.r.t. N: ",  show (map niceRound finalSdss)),
+                    (show (round $ errorUB * 100) ++ "%-noise magnitude a (Laplace): ",
+                                                     if laplaceDelta > 0 then "cannot achive (epsilon,delta)-DP with delta=0 for Laplace noise"
+                                                     else show (map (niceRound . (* noiseScaleLaplace)) laplaceNoise)),
+                    (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y| (Laplace): ",
+                                                     if laplaceDelta > 0 then "cannot achive (epsilon,delta)-DP with delta=0 for Laplace noise"
+                                                     else show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
+                    ("Laplace noise distribution: ", "add noise a*z, where z ~ 1 / 2 * exp(-x)")]
 
   let sep = if alternative args then [B.unitSeparator2] else "\n"
   let out = if alternative args then map snd outputList else map (\(x,y) -> x ++ y) outputList

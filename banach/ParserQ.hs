@@ -24,7 +24,7 @@ import AexprQ
 import ErrorMsg
 import ExprQ
 import NormsQ
-import PolicyQ
+import VarstateQ
 import QueryQ
 import ReaderQ
 

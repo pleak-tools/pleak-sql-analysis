@@ -135,3 +135,6 @@ error_badGroupType groupName groupValue groupType = errorTag ++ " bad group by "
 error_noAttMapBounds x = errorTag ++ " no set of possible values is specified for " ++ x ++ ", which is essential for GROUP BY queries. Specify \'set x1 ... xn\' or \'range x y\' in the attacker file."
 error_badAttMapBounds x t = errorTag ++ " bad set of possible values " ++ show t ++ " for " ++ x ++ ", which is essential for GROUP BY queries. Use \'set x1 ... xn\' or \'range x y\' in the attacker file. Note that GROUP BY variables need to have table name prefices."
 error_noCSGroupSupport = errorTag ++ " GROUP BY is not support in combined sensitivity. Use plain derivative sensitivity (i.e. without \'-c\' parameter)."
+
+-- rangeutils errors
+error_badRangeAexpr aexpr = error_internal ++ " computation of range undefined for Aexpr " ++ show aexpr

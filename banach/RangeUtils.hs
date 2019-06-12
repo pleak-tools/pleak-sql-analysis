@@ -1,7 +1,6 @@
 module RangeUtils where
 
-import PolicyQ (VarState(..), VState(..), getUb)
-import AexprQ
+import VarstateQ (VarState(..), VState(..), getUb)
 import qualified Banach as B (lpnorm, linfnorm)
 
 infinity :: Double
@@ -64,71 +63,115 @@ rangeLInfNorm rs0 =
   in Range lb ub
 
 --------------------------------------------------------------------------------------------
--- TODO it would be nicer to use some general class, but I do not know how to do it nicely
--- TODO we do not use it anywhere yet
+-- polymorphic ranges
 
-infinityA :: AExpr a
-infinityA = AConst (1/0)
 
 -- upper bound on the absolute value
-getGubFromVsA :: VState (AExpr a) -> AExpr a
-getGubFromVsA (Range lb ub) = ABinary AMax (AAbs lb) ub
-getGubFromVsA _             = infinityA
+getGubFromVsPoly :: (a -> a -> a) -> (a -> a) -> a -> VState a -> a
+getGubFromVsPoly fmax fabs inf (Range lb ub) = fmax (fabs lb) ub
+getGubFromVsPoly _ _ inf _                   = inf
 
 -- upper bound on the actual value
-getUbFromVsA :: VState (AExpr a) -> AExpr a
-getUbFromVsA (Range lb ub) = ub
-getUbFromVsA _             = infinityA
+getUbFromVsPoly :: a -> VState a -> a
+getUbFromVsPoly inf (Range lb ub) = ub
+getUbFromVsPoly inf _             = inf
 
 -- lower bound on the actual value
-getLbFromVsA :: VState (AExpr a) -> AExpr a
-getLbFromVsA (Range lb ub) = lb
-getLbFromVsA _             = AUnary ANeg infinityA
+getLbFromVsPoly :: a -> VState a -> a
+getLbFromVsPoly ninf (Range lb ub) = lb
+getLbFromVsPoly ninf _             = ninf
 
-getRangeFromVsA :: VState (AExpr a) -> VState (AExpr a)
-getRangeFromVsA vs = Range (getLbFromVsA vs) (getUbFromVsA vs)
+getRangeFromVsPoly :: a -> a -> VState a -> VState a
+getRangeFromVsPoly inf ninf vs = Range (getLbFromVsPoly ninf vs) (getUbFromVsPoly inf vs)
 
-rangeMulA :: VState (AExpr a) -> VState (AExpr a) -> VState (AExpr a)
-rangeMulA (Range x1 x2) (Range y1 y2) = Range (AMins xys) (AMaxs xys)
+rangeMulPoly :: (a -> a -> a) -> ([a] -> a) -> ([a] -> a) -> VState a -> VState a -> VState a
+rangeMulPoly fmul fmins fmaxs (Range x1 x2) (Range y1 y2) = Range (fmins xys) (fmaxs xys)
   where
-    xys = [ABinary AMult x1 y1, ABinary AMult x1 y2, ABinary AMult x2 y1, ABinary AMult x2 y2]
+    xys = [fmul x1 y1, fmul x1 y2, fmul x2 y1, fmul x2 y2]
 
-rangeProductA :: [VState (AExpr a)] -> VState (AExpr a)
-rangeProductA = foldl1 rangeMulA
+rangeProductPoly :: (a -> a -> a) -> ([a] -> a) -> ([a] -> a) -> [VState a] -> VState a
+rangeProductPoly fmul fmins fmaxs = foldl1 (rangeMulPoly fmul fmins fmaxs)
 
-rangeAbsA :: VState (AExpr a) -> VState (AExpr a)
-rangeAbsA (Range x y) = Range lb ub
+rangeAbsPoly :: a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> VState a -> VState a
+rangeAbsPoly zero fabs fle fmul fmin fmax (Range x y) = Range lb ub
   where
-    ub = ABinary AMax (AAbs x) (AAbs y)
-    lb = ABinary AMult (ABinary ASub (AConst 1) (ABinary AMult (ABinary ALE x (AConst 0)) (ABinary AGE y (AConst 0)))) (ABinary AMin (AAbs x) (AAbs y))
-{-
-rangeLpNormA :: Double -> [ VState (AExpr a)] ->  VState (AExpr a)
-rangeLpNormA p rs0 =
-  let rs = map rangeAbsA rs0
-      ubs = map getUbFromVsA rs
-      lbs = map getLbFromVsA rs
-      ub = aexprLpnorm p ubs
-      lb = aexprLpnorm p lbs
+    ub = fmax (fabs x) (fabs y)
+    lb = fmul (fmax (fle zero x) (fle y zero)) (fmin (fabs x) (fabs y))
+
+rangeLpNormPoly :: Double -> a -> a -> a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (Double -> [a] -> a)
+                   -> [VState a] ->  VState a
+rangeLpNormPoly p inf ninf zero fabs fle fmul fmin fmax flpnorm rs0 =
+  let rs = map (rangeAbsPoly zero fabs fle fmul fmin fmax) rs0
+      ubs = map (getUbFromVsPoly inf) rs
+      lbs = map (getLbFromVsPoly ninf) rs
+      ub = flpnorm p ubs
+      lb = flpnorm p lbs
   in Range lb ub
 
-rangeLInfNormA :: [VarState] -> VarState
-rangeLInfNormA rs0 =
-  let rs = map rangeAbsA rs0
-      ubs = map getUbFromVsA rs
-      lbs = map getLbFromVsA rs
-      ub = aexprLinfnorm ubs
-      lb = aexprLinfnorm lbs
+rangeLInfNormPoly :: a -> a -> a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> ([a] -> a)
+                   -> [VState a] ->  VState a
+rangeLInfNormPoly inf ninf zero fabs fle fmul fmin fmax flinfnorm rs0 =
+  let rs = map (rangeAbsPoly zero fabs fle fmul fmin fmax) rs0
+      ubs = map (getUbFromVsPoly inf) rs
+      lbs = map (getLbFromVsPoly ninf) rs
+      ub = flinfnorm ubs
+      lb = flinfnorm lbs
   in Range lb ub
--}
-rangeMinA :: VState (AExpr a) -> VState (AExpr a) -> VState (AExpr a)
-rangeMinA (Range x1 x2) (Range y1 y2) = Range (ABinary AMin x1 y1) (ABinary AMin x2 y2)
 
-rangeMinsA :: [VState (AExpr a)] -> VState (AExpr a)
-rangeMinsA = foldl1 rangeMinA
+rangeDivPoly :: (a -> a -> a) -> ([a] -> a) -> ([a] -> a) -> VState a -> VState a -> VState a
+rangeDivPoly fdiv fmins fmaxs (Range x1 x2) (Range y1 y2) = Range (fmins xys) (fmaxs xys)
+  where
+    xys = [fdiv x1 y1, fdiv x1 y2, fdiv x2 y1, fdiv x2 y2]
 
-rangeMaxA :: VState (AExpr a) -> VState (AExpr a) -> VState (AExpr a)
-rangeMaxA (Range x1 x2) (Range y1 y2) = Range (ABinary AMax x1 y1) (ABinary AMax x2 y2)
+rangeAddPoly :: (a -> a -> a) -> VState a -> VState a -> VState a
+rangeAddPoly fadd (Range x1 x2) (Range y1 y2) = Range (fadd x1 y1) (fadd x2 y2)
 
-rangeMaxsA :: [VState (AExpr a)] -> VState (AExpr a)
-rangeMaxsA = foldl1 rangeMaxA
+rangeSumPoly :: (a -> a -> a) -> [VState a] -> VState a
+rangeSumPoly fadd = foldl1 (rangeAddPoly fadd)
+
+rangeNegPoly :: (a -> a) ->VState a -> VState a
+rangeNegPoly fneg (Range x1 x2) = Range (fneg x2) (fneg x1)
+
+rangeSubPoly :: (a -> a -> a) -> (a -> a) -> VState a -> VState a -> VState a
+rangeSubPoly fadd fneg x1 x2 = rangeAddPoly fadd x1 (rangeNegPoly fneg x2)
+
+rangeNotPoly :: (a -> a) -> VState a -> VState a
+rangeNotPoly fnot (Range x1 x2) = Range (fnot x2) (fnot x1)
+
+rangeMinPoly :: (a -> a -> a) -> VState a -> VState a -> VState a
+rangeMinPoly fmin (Range x1 x2) (Range y1 y2) = Range (fmin x1 y1) (fmin x2 y2)
+
+rangeMinsPoly :: (a -> a -> a) -> [VState a] -> VState a
+rangeMinsPoly fmin = foldl1 (rangeMinPoly fmin)
+
+rangeAndPoly  = rangeMinPoly
+rangeAndsPoly = rangeMinsPoly
+
+rangeMaxPoly :: (a -> a -> a) -> VState a -> VState a -> VState a
+rangeMaxPoly fmax (Range x1 x2) (Range y1 y2) = Range (fmax x1 y1) (fmax x2 y2)
+
+rangeMaxsPoly :: (a -> a -> a) -> [VState a] -> VState a
+rangeMaxsPoly fmax = foldl1 (rangeMinPoly fmax)
+
+rangeOrPoly  = rangeMinPoly
+rangeOrsPoly = rangeMinsPoly
+
+rangeXorPoly :: (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> VState a -> VState a -> VState a
+rangeXorPoly fxor fmin fmax (Range x1 x2) (Range y1 y2) =
+    let z1 = fxor x1 y1 in
+    let z2 = fxor x2 y2 in
+    Range (fmin z1 z2) (fmax z1 z2)
+
+rangeXorsPoly :: (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> [VState a] -> VState a
+rangeXorsPoly fxor fmin fmax = foldl1 (rangeXorPoly fxor fmin fmax)
+
+rangeMonotonePoly :: (a -> a) -> VState a -> VState a
+rangeMonotonePoly f (Range x1 x2) = Range (f x1) (f x2) 
+
+rangeLTPoly :: (a -> a -> a) -> VState a -> VState a -> VState a
+rangeLTPoly flt (Range x1 x2) (Range y1 y2) = Range (flt x2 y1) (flt x1 y2)
+
+rangeLEPoly :: (a -> a -> a) -> VState a -> VState a -> VState a
+rangeLEPoly fle (Range x1 x2) (Range y1 y2) = Range (fle x2 y1) (fle x1 y2)
+
 

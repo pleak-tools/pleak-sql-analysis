@@ -4,9 +4,12 @@ import Data.List
 import qualified Data.Map as M
 import qualified Data.Set as S
 
+import Debug.Trace
 import ErrorMsg
 import ExprQ
 import GroupQ
+import VarstateQ
+import RangeUtils
 
 -- the default alpha value for Tauoids and Sigmoids
 a = 0.1
@@ -876,4 +879,155 @@ applyAexprTypes typeMap aexpr =
              let (types,aexprs) = unzip (map (applyAexprTypes typeMap) xs) in
              (foldr max AUnit types, aexprs)
          isInteger c = (ceiling c == floor c)
+
+
+
+---------------------------------------------------------------------------------------------------
+-- symbolic execution of intervals
+aexprRange :: M.Map String String -> M.Map String (VState (AExpr String)) -> S.Set VarName -> AExpr String
+              -> VState (AExpr String)
+aexprRange typeMap attMap sensVars aexpr =
+
+    case aexpr of
+
+        -- we look for known constraints in attMap, and if it is not there, use the typeMap
+        AVar x   -> let v = queryNameToVarName x in
+                    if not (S.member v sensVars) then Range (AVar x) (AVar x)
+                    else if M.member v attMap then attMap ! v
+                    else case typeMap ! v of
+                             "int"  -> Range (AConst (-2^32)) (AConst (2^32))
+                             "bool" -> Range (AConst 0) (AConst 1)
+                             _      -> unknown
+
+        AConst c -> Range (AConst c) (AConst c)
+        AText c  -> unknown
+
+        -- the outputs of intermediate tables are treated similarly to input vars,
+        -- since intermediate table schema is optional, it is possible that the variable is not present in typeMap
+        ASubExpr t x _ -> let v = preficedVarName t x in
+                          if not (S.member v sensVars) then Range (AVar x) (AVar x)
+                          else if M.member x attMap then attMap ! v
+                          else if M.member v typeMap then
+                              case typeMap ! x of
+                                  "int"  -> Range (AConst (-2^32)) (AConst (2^32))
+                                  "bool" -> Range (AConst 0) (AConst 1)
+                                  _      -> unknown
+                          else
+                              unknown
+
+        AZeroSens x  -> processRec x
+        AAbs x       -> let y = processRec x in rangeAbsPoly zero fabs fle fmul fmin fmax y
+
+        ASum xs  -> let ys = map processRec xs in rangeSumPoly fadd ys
+        AProd xs -> let ys = map processRec xs in rangeProductPoly fmul fmins fmaxs ys
+        AMins xs -> let ys = map processRec xs in rangeMinsPoly fmin ys
+        AMaxs xs -> let ys = map processRec xs in rangeMaxsPoly fmax ys
+        AAnds xs -> let ys = map processRec xs in rangeAndsPoly fmin ys
+        AOrs  xs -> let ys = map processRec xs in rangeOrsPoly fmax ys
+        AXors xs -> let ys = map processRec xs in rangeXorsPoly fxor fmin fmax ys
+
+        AUnary ALn x        -> let y = processRec x in rangeMonotonePoly (AUnary ALn) y
+        AUnary AFloor x     -> processRec x
+        AUnary ANeg x       -> let y = processRec x in rangeNegPoly fneg y
+        AUnary ANot x       -> let y = processRec x in rangeNotPoly fnot y
+        AUnary (AExp c) x   -> let y = processRec x in rangeMonotonePoly (AUnary (AExp c)) y
+        AUnary (APower c) x -> let y = processRec x in rangeMonotonePoly (AUnary (APower c)) y
+
+        ABinary ADiv x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeDivPoly fdiv fmins fmaxs y1 y2
+        ABinary AMult x1 x2 -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeMulPoly fmul fmins fmaxs y1 y2
+        ABinary AAdd x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeAddPoly fadd y1 y2
+        ABinary ASub x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeSubPoly fadd fneg y1 y2
+        ABinary AMin x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeMinPoly fmin y1 y2
+        ABinary AMax x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeMaxPoly fmax y1 y2
+        ABinary AAnd x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeMinPoly fmin y1 y2
+        ABinary AOr  x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeMaxPoly fmax y1 y2
+        ABinary AXor x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeXorPoly fxor fmin fmax y1 y2
+
+        ABinary ALT x1 x2   -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeLTPoly flt y1 y2
+        ABinary ALE x1 x2   -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeLEPoly fle y1 y2
+        ABinary AEQ  x1 x2  -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeOrPoly fmax (rangeLEPoly fle y1 y2) (rangeLEPoly fle y2 y1)
+        ABinary AGE x1 x2   -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeLEPoly fle y2 y1
+        ABinary AGT x1 x2   -> let y1 = processRec x1 in
+                               let y2 = processRec x2 in
+                               rangeLTPoly flt y2 y1
+
+        ABinary ALTint x1 x2 -> let y1 = processRec x1 in
+                                let y2 = processRec x2 in
+                                rangeLTPoly flt y1 y2
+        ABinary ALEint x1 x2 -> let y1 = processRec x1 in
+                                let y2 = processRec x2 in
+                                rangeLEPoly fle y1 y2
+        ABinary AEQint x1 x2 -> let y1 = processRec x1 in
+                                let y2 = processRec x2 in
+                                rangeOrPoly fmax (rangeLEPoly fle y1 y2) (rangeLEPoly fle y2 y1)
+        ABinary AGEint x1 x2 -> let y1 = processRec x1 in
+                                let y2 = processRec x2 in
+                                rangeLEPoly fle y2 y1
+        ABinary AGTint x1 x2 -> let y1 = processRec x1 in
+                                let y2 = processRec x2 in
+                                rangeLTPoly flt y2 y1
+
+        ABinary AEQstr x1 x2 -> let y1 = processRec x1 in
+                                let y2 = processRec x2 in
+                                rangeOrPoly fmax (rangeLEPoly fle y1 y2) (rangeLEPoly fle y2 y1)
+        ABinary ALike x1 x2  -> let y1 = processRec x1 in
+                                let y2 = processRec x2 in
+                                rangeOrPoly fmax (rangeLEPoly fle y1 y2) (rangeLEPoly fle y2 y1)
+
+        ABinary ADistance (AVector xs1) (AVector xs2) ->
+                                let ys1 = map processRec xs1 in
+                                let ys2 = map processRec xs2 in
+                                let ys  = map (rangeAbsPoly zero fabs fle fmul fmin fmax) $ zipWith (rangeSubPoly fadd fneg) ys1 ys2 in
+                                rangeLpNormPoly 2 inf ninf zero fabs fle fmul fmin fmax aexprLpnorm ys
+
+        _                        -> error $ error_badRangeAexpr aexpr
+
+   where unknown = Range ninf inf
+         fadd = ABinary AAdd
+         fdiv = ABinary ADiv
+         fmul = ABinary AMult
+         fxor = ABinary AXor
+         fle  = ABinary ALE
+         flt  = ABinary ALT
+         fmin = ABinary AMin
+         fmax = ABinary AMax
+
+         fneg = AUnary ANeg
+         fnot = AUnary ANot
+
+         fmins = AMins
+         fmaxs = AMaxs
+         fabs  = AAbs
+
+         zero = AConst 0
+         ninf = AConst (-1/0)
+         inf  = AConst (1/0)
+
+         processRec = aexprRange typeMap attMap sensVars
 

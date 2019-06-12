@@ -9,7 +9,7 @@ import CreateTablesQ
 import DatabaseQ
 import GroupQ
 import NormsQ hiding ((!!))
-import PolicyQ (VarState(..),VState(..))
+import VarstateQ (VarState(..),VState(..))
 import ErrorMsg
 import RangeUtils
 

@@ -16,21 +16,9 @@ import ExprQ
 import GroupQ
 import QueryQ
 import NormsQ
+import VarstateQ
 
--------------------------------
----- policy data structures ----
--------------------------------
-
-data VState a
-  = Exact | None
-  | Approx a                       | ApproxWrtLp Double a           | ApproxWrtLinf a
-  | IntSubSet   [Int]              | SubSet   [String]              | Range   a a                | Total Int
-  | IntSubSetUn [Int]              | SubSetUn [String]              | RangeUn a a                | TotalUn Int
-  | IntSubSetPr (M.Map Int Double) | SubSetPr (M.Map String Double) | RangePr a (M.Map a Double)
-  deriving (Show)
-
-
-type VarState = VState Double
+-- policy-related data structures
 type PlcExpr     = AExpr ([String], VarState)
 type PlcCostType = (PlcExpr,Double,[(String, AExpr VarName)])
 
@@ -38,16 +26,37 @@ getStatement (plcExpr,_,_) = plcExpr
 getCost (_,cost,_) = cost
 getFilters (_,_,fs) = fs
 
+data PlcData = PlcData Bool Double Double Double Bool (Double -> Maybe [Double])
+get_b  (PlcData b _  _ _ _ _) = b
+get_ur (PlcData _ ur _ _ _ _) = ur
+get_r  (PlcData _ _  r _ _ _) = r
+get_rr (PlcData _ _ _ rr _ _) = rr
+get_d  (PlcData _ _ _ _  d _) = d
+get_g  (PlcData _ _ _ _ _  g) = g
+
+instance Show PlcData where
+   show (PlcData _ ur r rr _ _) = "(" ++ show ur ++ "," ++ show r ++ "," ++ show rr ++ ")"
+
+type PlcMap = AExpr ([String],PlcData)
+
+rewriteExpr :: (([String],VarState) -> ([String],PlcData)) -> PlcExpr -> PlcMap
+rewriteExpr f plcExpr = 
+    traverseExpr (ABinary AAnd) (ABinary AOr) AConst (\x -> AVar (f x)) plcExpr
+
+-- table constraint data structure
+type AttMap = M.Map String VarState
+
+-- (relatively) nice norm printing
 niceNormPrint :: (Show a) => Norm a -> String
 niceNormPrint = niceNorm
 
 niceADoublePrint :: ADouble -> String
 niceADoublePrint = niceADouble
 
-getUb :: Double -> M.Map Double Double -> Double
-getUb lb mp = foldr max lb (M.keys mp)
+getRangeLB (Range lb _ ) = lb
+getRangeUB (Range _  ub) = ub
 
--- traverse the boolean formula
+-- traverse the aexpr formula
 -- apply the function fvar to a variable and fconst to a constant
 -- combine the results using the functions fand and for
 traverseExpr :: (a -> a -> a) -> (a -> a -> a) -> (Double -> a) -> (b -> a) -> (AExpr b) -> a
@@ -392,6 +401,18 @@ lpnorm p xs = (sum $ map (** p) $ map abs xs) ** (1 / p)
 linfnorm :: [Double] -> Double
 linfnorm = maximum . map abs
 
+doubleRangesToAexprRanges :: M.Map String VarState -> M.Map String (VState (AExpr a))
+doubleRangesToAexprRanges attMap =
+    let rangeAttMap = M.filter (\x -> case x of
+                                          Range _ _ -> True
+                                          RangeUn _ _ -> True
+                                          RangePr _ _ -> True
+                                          _ -> False) attMap in
+
+    M.map (\x -> case x of
+                     Range lb ub -> Range (AConst lb) (AConst ub)
+                     RangeUn lb ub -> Range (AConst lb) (AConst ub)
+                     RangePr lb mp -> let ub = getUb lb mp in Range (AConst lb) (AConst ub)) rangeAttMap
 
 -- update varstates of the attacker file if their type is not compatible with the schema
 update_varStates :: M.Map String VarState -> M.Map String String -> M.Map String VarState

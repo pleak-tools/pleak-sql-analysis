@@ -6,7 +6,6 @@ module PostprocessQ where
 
 import Debug.Trace
 
-import AexprQ
 import Control.Monad
 import Data.List
 import Data.Maybe
@@ -30,16 +29,6 @@ traceIOIfDebug debug msg = do
     if debug then traceIO msg
     else return ()
 
-data PlcData = PlcData Bool Double Double Double Bool (Double -> Maybe [Double])
-get_b  (PlcData b _  _ _ _ _) = b
-get_ur (PlcData _ ur _ _ _ _) = ur
-get_r  (PlcData _ _  r _ _ _) = r
-get_rr (PlcData _ _ _ rr _ _) = rr
-get_d  (PlcData _ _ _ _  d _) = d
-get_g  (PlcData _ _ _ _ _  g) = g
-
-instance Show PlcData where
-   show (PlcData _ ur r rr _ _) = "(" ++ show ur ++ "," ++ show r ++ "," ++ show rr ++ ")"
 
 -- this is used only for nice output printing
 data RR = RR {sensitivity :: String, query_result :: String, cauchy_noise :: String, cauchy_relative_err :: String,
@@ -110,8 +99,9 @@ fand ms1 ms2 = concat $ map (\(s2,m2) -> map (\(s1,m1) -> (s1*s2, M.unionWith mi
 for  :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)]
 for ms1 ms2 = ms1 ++ ms2 ++ map (\(s,v) -> (-s,v)) (fand ms1 ms2)
 
-compute_eps_for_a :: Bool -> Double -> AExpr ([String],PlcData) -> Double -> Int -> (Double,Double,Double,Double)
+compute_eps_for_a :: Bool -> Double -> PlcMap -> Double -> Int -> (Double,Double,Double,Double)
 compute_eps_for_a pos delta expr sample_a nq =
+
 
     -- compute p and q using the equalities and P(A || B) = P(A) + P(B) - P(AB), P(AA) = P(A), P(AB) = P(A)*P(B)
     let pqExpr = traverseExpr fand for (\x -> if x == 1 then [(1,M.empty)] else []) (\(var,pd) -> [(1, M.singleton var pd)]) expr in
@@ -129,8 +119,9 @@ compute_eps_for_a pos delta expr sample_a nq =
                                             if not b then ([1], sample_a)
                                             else
                                                 case g (ur * a) of
-                                                    Nothing -> ([(fromIntegral s) * 1], if d then 1.0 else rr)
-                                                    Just vs -> (vs,                     if d then 1.0 else 2*a)
+                                                    -- TODO something is still wrong with 'Nothing' case
+                                                    Nothing -> ([1], if d then 1.0 else rr)
+                                                    Just vs -> (vs,  if d then 1.0 else 2*a)
                                     ) (M.elems m)
                                in
                                     (map (((fromIntegral s) * ) . product) (allCombsOfLists vss), foldr max 1 as)) pqExpr
@@ -168,7 +159,7 @@ compute_eps_for_a pos delta expr sample_a nq =
     (a,epsilon,q,p)
 
 
-optimal_a_epsilon :: Bool -> Double -> Double -> Double -> AExpr ([String],PlcData) -> Double -> Double -> Double -> Double
+optimal_a_epsilon :: Bool -> Double -> Double -> Double -> PlcMap -> Double -> Double -> Double -> Double
                      -> Double -> Double -> Int -> (Double,Double,Double,Double)
 optimal_a_epsilon _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
 optimal_a_epsilon pos delta scaled_r scaled_rr expr a epsilon q p k n nq =
@@ -182,7 +173,7 @@ optimal_a_epsilon pos delta scaled_r scaled_rr expr a epsilon q p k n nq =
     optimal_a_epsilon pos delta scaled_r scaled_rr expr a'' epsilon'' q'' p'' (k-1) n nq
 
 
-performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO ()
+performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO ()
 performDPAnalysis args outputTableName dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   let debug = not (alternative args)
@@ -273,7 +264,7 @@ performDPAnalysis args outputTableName dataPath separator initialQuery numOfOutp
   putStr ""
 
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> PlcCostType -> M.Map String VarState -> [Int] -> IO ()
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> PlcCostType -> AttMap -> [Int] -> IO ()
 performPolicyAnalysis args outputTableName dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData plcCostType attMap colTableCounts = do
 
   let plcExpr = getStatement plcCostType
@@ -294,14 +285,14 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery numOf
                                    let r  = extract_r plcState in
                                    M.singleton var r) plcExpr
 
-  let plcExprExt = traverseExpr (ABinary AAnd) (ABinary AOr) AConst (\(var,plcState) ->
-                                   let b  = extract_b attMap plcState var in
-                                   let r  = extract_r plcState in
-                                   let rr = extract_R attMap plainTypeMap plcState var in
-                                   let d  = extract_d plcState in
-                                   let g  = extract_g attMap var in
-                                   let unit_r = unit_r_map ! var in
-                                   AVar (var, PlcData b unit_r (r / unit_r) (rr / unit_r) d g)) plcExpr
+  let plcExprExt = rewriteExpr (\(var,plcState) ->
+                                     let b  = extract_b attMap plcState var in
+                                     let r  = extract_r plcState in
+                                     let rr = extract_R attMap plainTypeMap plcState var in
+                                     let d  = extract_d plcState in
+                                     let g  = extract_g attMap var in
+                                     let unit_r = unit_r_map ! var in
+                                     (var, PlcData b unit_r (r / unit_r) (rr / unit_r) d g)) plcExpr
 
   -- further, we assume r = 1 everywhere in each dimension
   let scaled_r  = 1
@@ -416,7 +407,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery numOf
 
 
 -- TODO it seems that we can remove sds (and maybe something else) since this is already a part of qmap
-findBestBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> M.Map String VarState -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
+findBestBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> AttMap -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
 findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts = do
 
   let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery numOfOutputs colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
@@ -470,7 +461,7 @@ combinedErrs qrs bs sdss =
     errnorm / qnorm
     --sqrt $ sum $ zipWith3 (\qr b sds -> ((sds / b) / qr) ^ 2) qrs bs sdss
 
-performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
+performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
 performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
 
   (qmap,taskAggrMap) <- performAnalysis args epsilon beta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
@@ -480,7 +471,7 @@ performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQ
   return (qmap,taskAggrMap,err,sdss)
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
 performAnalysis args epsilon beta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   (qmap,taskAggrMap') <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts

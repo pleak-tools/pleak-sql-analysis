@@ -97,6 +97,9 @@ updateAExprVariableNames fullTablePaths prefix aexpr = updatePreficesAexpr fullT
 --------------------------------------------------------------
 -- some query transformations
 
+queryToAExpr :: Function -> AExpr VarName
+queryToAExpr (F aexpr _) = aexpr
+
 queryToExpr :: Double -> (M.Map VarName B.Var) -> (S.Set B.Var) -> Function -> (B.Expr, B.TableExpr, String)
 queryToExpr sigmoidBeta inputMap allSensitiveCols (F aexpr y) =
     let x = getVarNameFromTableExpr y in

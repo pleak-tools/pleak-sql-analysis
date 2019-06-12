@@ -158,7 +158,7 @@ getTableGs tableMap =
     M.toList tableGsMap
 
 -- generate dependencies between queries and input tables
-processQuery :: TableName -> (M.Map TableName Query) -> (M.Map String VarState) -> 
+processQuery :: TableName -> (M.Map TableName Query) -> AttMap -> 
                 TableName -> TableAlias -> TableName
                 -> ([[[String]]], [[TableAlias]],[[TableName]], [(TableAlias,TableName)], [GroupData], [(Function,String)], [[AExpr VarName]])
 processQuery outputTableName queryMap attMap taskName tableAlias tableName =
@@ -246,7 +246,7 @@ processQuery outputTableName queryMap attMap taskName tableAlias tableName =
 
 -- construct table data
 -- assume that the db norm files are located in 'dataPath'
-readTableData :: Bool -> String -> M.Map String VarState -> PlcCostType->
+readTableData :: Bool -> String -> AttMap -> PlcCostType->
                  M.Map TableName (M.Map String String) -> [TableName] -> [TableAlias]
                  -> IO (M.Map TableAlias TableData)
 readTableData policy dataPath attMap plcMaps typeMap tableNames tableAliases = do
@@ -298,7 +298,7 @@ allCombsOfLists (xs:xss) =
 
 -- putting everything together
 getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String
-                          -> IO (String,PlcCostType, M.Map String VarState, String, String, Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
+                          -> IO (String,PlcCostType, AttMap, String, String, Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
 getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
 
     let debug = not (alternative args)
@@ -467,7 +467,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "number of outputs: " ++ show numOfOutputs
     traceIOIfDebug debug $ "----------------"
 
-    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) inputMap inputTableMap plcFilterMap fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
+    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) attMap inputMap inputTableMap plcFilterMap fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
 
     let (tableNameList,_,_) = unzip3 $ map BQ.getExtra dataWrtEachTable
     let taskMap = BQ.TM $ nub $ map (\t -> if t == outputTableName then (t,True) else (t,False)) tableNameList
@@ -600,12 +600,12 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     (mainSelect ++ " FROM " ++ (intercalate ", " (directTables ++ subFroms)) ++ " WHERE " ++ mainWhere ++ groupBy)
 
 
-getQueryData :: Bool -> Bool -> Double -> Double -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->
+getQueryData :: Bool -> Bool -> Double -> Double -> AttMap -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->
                 M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
                 [VarName]-> M.Map String String ->
                 String
                 -> [BQ.DataWrtTable]
-getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList allQueryStrs queryName =
+getQueryData debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList allQueryStrs queryName =
 
     let (_,_,_,_,_,gr,_,_,_,_) = queryDataMap ! queryName in
 
@@ -613,14 +613,14 @@ getQueryData debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap pl
     let groupVarName = getGroupVarName gr in
     let groupList    = getGroupValues gr in
 
-    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarName groupColName) (allCombsOfLists groupList)
+    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarName groupColName) (allCombsOfLists groupList)
 
-getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->
+getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> AttMap -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->
                         M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
                         [VarName] -> String -> M.Map String String -> [String] -> [String] ->
                         [Either Int String]
                         -> [BQ.DataWrtTable]
-getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarNames groupColNames groupValues =
+getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarNames groupColNames groupValues =
 
     let (directTableAliases,subqueryTableAliases,intermediateVarList,intermediateIsCommonList,directColNames,gr,query,filterAexprs',usedTaskNames,taskName) = queryDataMap ! queryName in
 
@@ -652,7 +652,8 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
                 let x3 = addGroupToQName queryName groupValuesAsStrings in
                 (x1,x2,x3)
     in
-    let queryStr  = queryToString query in
+    let queryStr   = queryToString query in
+    let queryAExpr = queryToAExpr  query in
 
     -- TODO not all intermediate variables are necessarily sensitive, probably do not need to put all of them into the list
     let sensitiveVarListQ = S.toList $ (\ (F aexpr _) -> getAllAExprVars False aexpr) query in
@@ -661,7 +662,23 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
 
     let sensitiveColList = map (inputMap ! ) sensitiveVarList in
     let sensitiveColSet  = S.fromList sensitiveColList in
+    let sensitiveVarSet  = S.fromList (map queryNameToVarName sensitiveVarList) in
 
+
+    let aexprAttMap = doubleRangesToAexprRanges attMap in
+    let queryRange = aexprRange fullTypeMap aexprAttMap sensitiveVarSet queryAExpr in
+    let queryRangeLB = getRangeLB queryRange in
+    let queryRangeUB = getRangeUB queryRange in
+    let queryRangeLBstr = aexprToString queryRangeLB in
+    let queryRangeUBstr = aexprToString queryRangeUB in
+    {-
+    trace ("==================" ++ show queryStr) $
+    trace ("==================" ++ show queryAExpr) $
+    trace ("==================" ++ show queryRangeLB) $
+    trace ("==================" ++ show queryRangeUB) $
+    trace ("==================" ++ show queryRangeLBstr) $
+    trace ("==================" ++ show queryRangeUBstr) $
+    -}
 
     -- we filter out rows using _globally_ public filters, since different filterings would be bad for sensitivity over all tables
     let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap True x)) filterAexprs in
@@ -707,10 +724,10 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision inputMap inputTab
     let wh  = if length pubFilter == 0 then "true" else intercalate " AND " pubFilter in
 
     -- compute min/max queries using sel, fr, wh
-    -- TODO we may actually want to use RangeUtils if we do not want to leak MIN/MAX before filtering
+    -- TODO check if it still works if the MIN/MAX query in turn uses subqueries
     let minmaxQuery = case queryAggr of
-                          B.SelectMin _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
-                          B.SelectMax _ -> ", (SELECT MIN(" ++ queryStr ++ ") AS min, MAX(" ++ queryStr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
+                          B.SelectMin _ -> ", (SELECT MIN(" ++ queryRangeLBstr ++ ") AS min, MAX(" ++ queryRangeUBstr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
+                          B.SelectMax _ -> ", (SELECT MIN(" ++ queryRangeLBstr ++ ") AS min, MAX(" ++ queryRangeUBstr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
                           _             -> ""
     in
     let initQueryParts = (sel,fr ++ minmaxQuery,wh) in

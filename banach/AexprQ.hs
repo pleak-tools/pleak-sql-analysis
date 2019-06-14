@@ -884,6 +884,9 @@ applyAexprTypes typeMap aexpr =
 
 ---------------------------------------------------------------------------------------------------
 -- symbolic execution of intervals
+
+-- TODO if the sensitive variable is in a non-sensitive row, we may also consider its exact value
+
 aexprRange :: M.Map String String -> M.Map String (VState (AExpr String)) -> S.Set VarName -> AExpr String
               -> VState (AExpr String)
 aexprRange typeMap attMap sensVars aexpr =
@@ -904,6 +907,7 @@ aexprRange typeMap attMap sensVars aexpr =
 
         -- the outputs of intermediate tables are treated similarly to input vars,
         -- since intermediate table schema is optional, it is possible that the variable is not present in typeMap
+        -- TODO we need composition here
         ASubExpr t x _ -> let v = preficedVarName t x in
                           if not (S.member v sensVars) then Range (AVar x) (AVar x)
                           else if M.member x attMap then attMap ! v

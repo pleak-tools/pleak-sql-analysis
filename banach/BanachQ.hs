@@ -1116,8 +1116,8 @@ analyzeTableExprQ fr wh sensCond srt colNames sensitiveVarSet varStates colTable
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens sensCond srt subQueryMap te in
   AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
-performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
-performAnalyses args epsilon' fixedBeta dataPath separator initialQuery numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
+performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalyses args epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
   let debug = not (alternative args)
   let tableGmap = M.fromList tableGs
   let tableGstr = intercalate "," $
@@ -1125,6 +1125,13 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery numOfOut
                                             (tbl,Just g) | isInfinite g -> tbl
                                                          | otherwise    -> tbl ++ ':' : show g)
                         tableGs
+
+
+  when debug $ putStrLn "================================="
+  when debug $ putStrLn "Computing queries that create empty intermediate query tables and the input tables:\n"
+
+  sendQueriesToDbAndCommit args initQueries
+
   --when debug $ printf "tableGstr = %s\n" tableGstr
   when debug $ putStrLn "================================="
   when debug $ putStrLn "Computing the initial query:"

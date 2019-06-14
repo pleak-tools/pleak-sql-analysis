@@ -298,7 +298,7 @@ allCombsOfLists (xs:xss) =
 
 -- putting everything together
 getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String
-                          -> IO (String,PlcCostType, AttMap, String, String, Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
+                          -> IO (String,PlcCostType, AttMap, String, String, [String], Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
 getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
 
     let debug = not (alternative args)
@@ -483,7 +483,6 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- the last column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
-    let tableExprData = (outputTableName,plcMaps, attMap,dataPath,initialQuery, numOfOutputs, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
 
     -- TODO is it a proper place for table Gs if groups are used? we decide it when extend the groups to combined sensitivity
     traceIOIfDebug debug $ "----------------"
@@ -506,11 +505,12 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- generate the tables for intermediate aggragate queries
     let aggrIntermediateQueryFuns = filter (\(x,_) -> isAggrQuery x) $ zip (tail outputQueryFuns) (tail outputGroups)
 
+    -- the follwing queries are called as a part of performAnalyses, to avoid duplications during beta optimization
     when debug $ putStrLn "================================="
     when debug $ putStrLn "Generating SQL statements for creating empty intermediate query tables:\n"
-    let initQueries = concat $ map (\ ((F _ y),z) -> let x = getVarNameFromTableExpr y in initIntermediateAggrTableSql fullTypeMap x z) aggrIntermediateQueryFuns
-    traceIOIfDebug debug $ "INIT queries : " ++ show initQueries
-    sendQueriesToDbAndCommit args (initQueries)
+    let subtableQueries = concat $ map (\ ((F _ y),z) -> let x = getVarNameFromTableExpr y in initIntermediateAggrTableSql fullTypeMap x z) aggrIntermediateQueryFuns
+    traceIOIfDebug debug $ "Subtable queries : " ++ show subtableQueries
+    --sendQueriesToDbAndCommit args subtableQueries
 
     -- this has moved here from BanachQ since it is easier to extract pure input table names here
     --let uniqueTableNames = nub $ concat inputTableNames
@@ -523,9 +523,11 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
                                                          when debug $ putStr (concatMap (++ ";\n") cts)
                                                          return cts
 
-    when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
+    --when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
+    let initQueries = subtableQueries ++ if dbCreateTables args then concat ctss else []
 
     -- return data to the banach space analyser
+    let tableExprData = (outputTableName,plcMaps,attMap,dataPath,initialQuery,initQueries,numOfOutputs, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
     return tableExprData
 
 removeGroupFromSubQueryMap :: [String] -> M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName],GroupData,Function, [AExpr VarName], [[String]], String) -> String

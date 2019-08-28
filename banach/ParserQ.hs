@@ -617,12 +617,21 @@ sensitiveFormula = do
 
 -- the filters describing which table rows are sensitive
 sensitiveCondition :: Parser (String, AExpr VarName)
-sensitiveCondition = do
+sensitiveCondition = try sensitiveConditionFilter <|> sensitiveConditionNoFilter
+
+sensitiveConditionFilter :: Parser (String, AExpr VarName)
+sensitiveConditionFilter = do
     caseInsensKeyWord "from"
     tableName <- identifier
     caseInsensKeyWord "where"
     bexpr <- bExpr
     return (tableName,bexpr)
+
+sensitiveConditionNoFilter :: Parser (String, AExpr VarName)
+sensitiveConditionNoFilter = do
+    caseInsensKeyWord "from"
+    tableName <- identifier
+    return (tableName, AText "true")
 
 -- this is deprecated and is only needed to support old models
 sensitiveSet :: Parser (AExpr ([String], VarState), Double, [(String,AExpr VarName)])

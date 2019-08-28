@@ -342,7 +342,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
-    let (usedTaskNames', inputTableAliases', inputTableNames', subTableAliases, outputGroups, outputQueryFuns', filterAexprs') = processQuery outputTableName queryMap attMap "" outputTableName outputTableName
+    let (usedTaskNames', inputTableAliases', inputTableNames', subTableAliasMap, outputGroups, outputQueryFuns', filterAexprs') = processQuery outputTableName queryMap attMap "" outputTableName outputTableName
     let (outputQueryFuns, taskNames) = unzip outputQueryFuns'
 
     -- by construction, the used table aliases may repeat, so we discard repetitions first
@@ -360,7 +360,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Input table names:   " ++ show allInputTableNames
     traceIOIfDebug debug $ "Input table aliases: " ++ show allInputTableAliases
-    traceIOIfDebug debug $ "Subtable aliases:    " ++ show subTableAliases
+    traceIOIfDebug debug $ "Subtable aliases:    " ++ show subTableAliasMap
     traceIOIfDebug debug $ "----------------"
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
@@ -404,9 +404,11 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let colNames         = inputColNames ++ uniqueSubExprvarList
     let sensitiveVarList = concat $ map (getSensCols . (inputTableMap ! ) ) orderedTableAliases
 
+    let (subTableNames, subTableAliases) = unzip $ nub $ subTableAliasMap
     let fullTypeMap1 = foldr M.union M.empty $ zipWith (\tableAlias tableName -> M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName)) allInputTableAliases allInputTableNames
-    let fullTypeMap2 = foldr M.union M.empty $ map (\(tableAlias,tableName) -> if M.member tableName typeMap then M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName) else M.empty) subTableAliases
-    let fullTypeMap = M.union fullTypeMap1 fullTypeMap2
+    let fullTypeMap2 = foldr M.union M.empty $ map (\(tableAlias,tableName) -> if M.member tableName typeMap then M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName) else M.empty) subTableAliasMap
+    let fullTypeMap3 = foldr M.union M.empty $ zipWith (\tableAlias tableName -> if M.member tableName typeMap then M.mapKeys (preficedVarName tableAlias) (typeMap ! tableName) else M.empty) subTableAliases subTableNames
+    let fullTypeMap = M.union (M.union fullTypeMap1 fullTypeMap2) fullTypeMap3
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Intermediate Vars: " ++ show allIntermediateColNameList
@@ -467,7 +469,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "number of outputs: " ++ show numOfOutputs
     traceIOIfDebug debug $ "----------------"
 
-    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) attMap inputMap inputTableMap plcFilterMap fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
+    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) attMap inputMap inputTableMap plcFilterMap (M.fromList subTableAliasMap) fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
 
     let (tableNameList,_,_) = unzip3 $ map BQ.getExtra dataWrtEachTable
     let taskMap = BQ.TM $ nub $ map (\t -> if t == outputTableName then (t,True) else (t,False)) tableNameList
@@ -602,12 +604,12 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
     (mainSelect ++ " FROM " ++ (intercalate ", " (directTables ++ subFroms)) ++ " WHERE " ++ mainWhere ++ groupBy)
 
 
-getQueryData :: Bool -> Bool -> Double -> Double -> AttMap -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->
+getQueryData :: Bool -> Bool -> Double -> Double -> AttMap -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String -> M.Map TableName String ->
                 M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
                 [VarName]-> M.Map String String ->
                 String
                 -> [BQ.DataWrtTable]
-getQueryData debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList allQueryStrs queryName =
+getQueryData debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap subTableAliasMap fullTypeMap queryDataMap globalSensitiveVarList allQueryStrs queryName =
 
     let (_,_,_,_,_,gr,_,_,_,_) = queryDataMap ! queryName in
 
@@ -615,14 +617,14 @@ getQueryData debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTabl
     let groupVarName = getGroupVarName gr in
     let groupList    = getGroupValues gr in
 
-    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarName groupColName) (allCombsOfLists groupList)
+    concat $ map (getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap subTableAliasMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarName groupColName) (allCombsOfLists groupList)
 
-getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> AttMap -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->
+getQueryDataForGroup :: Bool -> Bool -> Double -> Double -> AttMap -> M.Map VarName B.Var -> M.Map TableAlias TableData -> M.Map TableName (AExpr VarName) -> M.Map TableName String ->M.Map TableName String ->
                         M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName], GroupData, Function, [AExpr VarName], [[String]], String) ->
                         [VarName] -> String -> M.Map String String -> [String] -> [String] ->
                         [Either Int String]
                         -> [BQ.DataWrtTable]
-getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarNames groupColNames groupValues =
+getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap inputTableMap plcFilterMap subTableAliasMap fullTypeMap queryDataMap globalSensitiveVarList queryName allQueryStrs groupVarNames groupColNames groupValues =
 
     let (directTableAliases,subqueryTableAliases,intermediateVarList,intermediateIsCommonList,directColNames,gr,query,filterAexprs',usedTaskNames,taskName) = queryDataMap ! queryName in
 
@@ -668,7 +670,7 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap i
 
 
     let aexprAttMap = doubleRangesToAexprRanges attMap in
-    let queryRange = aexprRange fullTypeMap aexprAttMap sensitiveVarSet queryAExpr in
+    let queryRange = aexprRange subTableAliasMap fullTypeMap aexprAttMap sensitiveVarSet queryAExpr in
     let queryRangeLB = getRangeLB queryRange in
     let queryRangeUB = getRangeUB queryRange in
     let queryRangeLBstr = aexprToString queryRangeLB in

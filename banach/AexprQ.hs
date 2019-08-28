@@ -887,13 +887,14 @@ applyAexprTypes typeMap aexpr =
 
 -- TODO if the sensitive variable is in a non-sensitive row, we may also consider its exact value
 
-aexprRange :: M.Map String String -> M.Map String (VState (AExpr String)) -> S.Set VarName -> AExpr String
+aexprRange :: M.Map String String -> M.Map String String -> M.Map String (VState (AExpr String)) -> S.Set VarName -> AExpr String
               -> VState (AExpr String)
-aexprRange typeMap attMap sensVars aexpr =
+aexprRange subTableAliasMap typeMap attMap sensVars aexpr =
 
     case aexpr of
 
         -- we look for known constraints in attMap, and if it is not there, use the typeMap
+        -- TODO attMap contains tableNames while typeMap and sensVars contain aliases!
         AVar x   -> let v = queryNameToVarName x in
                     if not (S.member v sensVars) then Range (AVar x) (AVar x)
                     else if M.member v attMap then attMap ! v
@@ -908,11 +909,13 @@ aexprRange typeMap attMap sensVars aexpr =
         -- the outputs of intermediate tables are treated similarly to input vars,
         -- since intermediate table schema is optional, it is possible that the variable is not present in typeMap
         -- TODO we need composition here
-        ASubExpr t x _ -> let v = preficedVarName t x in
+        ASubExpr t x _ -> let t0 = if M.member t subTableAliasMap then subTableAliasMap ! t else t in
+                          let v0 = preficedVarName t0 x in
+                          let v  = preficedVarName t  x in
                           if not (S.member v sensVars) then Range (AVar x) (AVar x)
-                          else if M.member x attMap then attMap ! v
+                          else if M.member v0 attMap then attMap ! v0
                           else if M.member v typeMap then
-                              case typeMap ! x of
+                              case typeMap ! v of
                                   "int"  -> Range (AConst (-2^32)) (AConst (2^32))
                                   "bool" -> Range (AConst 0) (AConst 1)
                                   _      -> unknown
@@ -1030,8 +1033,8 @@ aexprRange typeMap attMap sensVars aexpr =
          fabs  = AAbs
 
          zero = AConst 0
-         ninf = AConst (-1/0)
-         inf  = AConst (1/0)
+         ninf = AConst (-99999.99)
+         inf  = AConst 99999.99
 
-         processRec = aexprRange typeMap attMap sensVars
+         processRec = aexprRange subTableAliasMap typeMap attMap sensVars
 

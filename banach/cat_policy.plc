@@ -1,3 +1,5 @@
-SELECT
-(cat.gender exact AND cat.color exact) OR (cat.gender exact AND cat.color exact)
-FROM cat WHERE available;
+leak
+cat.cat_id exact;
+cat.gender exact;
+cat.color exact;
+cost 100

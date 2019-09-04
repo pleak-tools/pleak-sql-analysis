@@ -496,9 +496,11 @@ constructNormData tableNames attMap plcExpr =
 
     let combinedDataMap = constructNormDataSet tableNames attMap scaleMap plcExpr in
 
-    -- we decided not to introduce special variables for defining sensRows, but use row filters instead
     --let tableSensRows = map (extractRange plcExpr) tableNames in
-    let tableSensRows = replicate (length tableNames) [(0 :: Int)..] in
+    -- we decided not to introduce special variables for defining sensRows, but use row filters instead
+    --let tableSensRows = replicate (length tableNames) [(0 :: Int)..] in
+    -- TODO something is wrong afterwards in CreateTablesQ, we get something worse than [0..] for a table
+    let tableSensRows = replicate (length tableNames) [] in
 
     zipWith (normsFromCombinedData combinedDataMap) tableNames tableSensRows
 

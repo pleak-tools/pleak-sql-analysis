@@ -88,7 +88,7 @@ initIntermediateAggrTableSql typeMap queryName group =
 --    "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
 
 createTableSqlTyped :: ProgramOptions -> String -> String -> String -> [Int] -> [(String,[(String, String)])] -> IO [String]
-createTableSqlTyped args dataPath separator tableName sR types = do
+createTableSqlTyped args dataPath separator tableName sRows types = do
 
     let policy = policyAnalysis args
     let datestyle = psqlDateStyle args
@@ -100,6 +100,9 @@ createTableSqlTyped args dataPath separator tableName sR types = do
 
     let numRows = length tbl
     let sensTableName = sensRows tableName
+
+    -- TODO I thought that sRows will automatically be [0..] for policy, but something is wrong there
+    let sR = if policy then [0..] else sRows
     --sR <- if policy then do return ([0..])
     --      else do
     --              let normFileName = dataPath ++ tableName ++ ".nrm"

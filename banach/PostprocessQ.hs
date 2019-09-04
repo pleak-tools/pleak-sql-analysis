@@ -198,7 +198,7 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
 
   let sep1 = if alternative args then [B.unitSeparator] else "\n"
   let sep2 = if alternative args then [B.unitSeparator2] else "\n\n"
-  let sep3 = if alternative args then [B.unitSeparator] else "\t"
+  let sep3 = if alternative args then [B.unitSeparator3] else "\t"
   let printFloatL = if alternative args then show else printf "%0.6f"
   let printFloatS = if alternative args then show else printf "%0.2f"
 

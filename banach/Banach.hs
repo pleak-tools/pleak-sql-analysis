@@ -89,6 +89,9 @@ unitSeparator = chr 31
 unitSeparator2 :: Char
 unitSeparator2 = chr 30
 
+unitSeparator3 :: Char
+unitSeparator3 = chr 29
+
 epsilon :: Double
 epsilon = 1.0
 

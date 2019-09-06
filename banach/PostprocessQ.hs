@@ -360,13 +360,14 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   let numOfOutputs = fromIntegral $ length finalQrs
   let finalEpsilon = epsilon / numOfOutputs
 
+  -- we restore the betas that have been computed before (these betas are not cauchy-specific)
   let preciseBetas = map (\b -> finalEpsilon / (4 + 1) - b) finalBs
   let laplaceBs = map (\beta -> finalEpsilon - beta) preciseBetas
 
   -- TODO we would like to convert DP to GA also fo delta > 0
   -- TODO verify that the 'special case' of delta = 0 works as expected in all cases
-  -- if beta = 0 and sds = 1, we know that we are adding Lap(1), so we get delta = 0 case, but we cannot give better guarantees otherwise
-  let laplaceDeltas = zipWith3 (\sds beta b -> if beta == 0 then (if sds <= 1 then 0 else exp(-2)) else 2*exp(finalEpsilon-(1 + (finalEpsilon - b) / beta))) finalSdss preciseBetas laplaceBs
+  -- if beta = 0, we get delta = 0, but we cannot give better guarantees otherwise
+  let laplaceDeltas = zipWith3 (\sds beta b -> if beta == 0 then 0 else 2*exp(finalEpsilon-(1 + (finalEpsilon - b) / beta))) finalSdss preciseBetas laplaceBs
   let laplaceDelta = foldr max 0 laplaceDeltas
   let laplaceError = combinedErrs finalQrs laplaceBs finalSdss
   let laplaceNoise = combinedEtas laplaceBs finalSdss
@@ -394,10 +395,10 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
                     ("norm N: ",                     niceNormPrint norm),
                     ("beta-smooth sensitivity w.r.t. N: ",  show (map niceRound finalSdss)),
                     (show (round $ errorUB * 100) ++ "%-noise magnitude a (Laplace): ",
-                                                     if laplaceDelta > 0 then "cannot achive (epsilon,delta)-DP with delta=0 for Laplace noise"
+                                                     if laplaceDelta > 0 then "cannot achieve (epsilon,delta)-DP with delta=0 for Laplace noise"
                                                      else show (map (niceRound . (* noiseScaleLaplace)) laplaceNoise)),
                     (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y| (Laplace): ",
-                                                     if laplaceDelta > 0 then "cannot achive (epsilon,delta)-DP with delta=0 for Laplace noise"
+                                                     if laplaceDelta > 0 then "cannot achieve (epsilon,delta)-DP with delta=0 for Laplace noise"
                                                      else show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
                     ("Laplace noise distribution: ", "add noise a*z, where z ~ 1 / 2 * exp(-x)")]
 

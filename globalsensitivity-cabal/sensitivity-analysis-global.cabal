@@ -13,7 +13,7 @@ executable sqla
   ghc-options:          -Wall -fwarn-name-shadowing -O0
   build-depends:        base >= 4.8.2,
                         array,
-                        hssqlppp, text, groom,
+                        hssqlppp == 0.6.1, text, groom,
                         uniplate, optparse-applicative, semigroups,
                         containers, process, async,
                         HDBC, HDBC-postgresql

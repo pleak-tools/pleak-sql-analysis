@@ -27,7 +27,8 @@ data ProgramOptions
     getG             :: Maybe Double,
     numOfQueries     :: Int,
     errorUBprob      :: Double,
-    psqlDateStyle    :: String
+    psqlDateStyle    :: String,
+    getDelta      :: Double
   }
 
 programArgs :: Parser ProgramOptions
@@ -53,6 +54,7 @@ programArgs = ProgramOptions
   <*> option auto (short 'n' <> long "numOfQueries" <> value 1 <> help "Specify the limit on the number of queries applied to the same data (default is 1)")
   <*> option auto (long "errorUB" <> value 0.78055 <> help "Specify the probability with which the noise fits below noise magnitude")
   <*> strOption (long "datestyle" <> value "European" <> help "Specify the psql datestyle (default is 'European')")
+  <*> option auto (long "delta" <> value (2**(-40)) <> help "Specify the delta for (epsilon,delta)-DP (used only for Lapalce noise and only in DS/CS analysis)")
 
 getProgramOptions :: IO ProgramOptions
 getProgramOptions = execParser opts

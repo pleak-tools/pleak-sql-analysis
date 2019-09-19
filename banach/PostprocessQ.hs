@@ -16,6 +16,7 @@ import Text.PrettyPrint.Tabulate
 import qualified Text.PrettyPrint.Tabulate as T
 import qualified GHC.Generics as G
 import Data.Data
+import Numeric
 import Text.Printf
 import ErrorMsg
 
@@ -182,16 +183,20 @@ optimal_a_epsilon pos ga scaled_r scaled_rr expr a epsilon q p k n nq =
 performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO ()
 performDPAnalysis args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
-  let debug = not (alternative args)
-  let epsilon = getEpsilon args
-  let beta    = getBeta args
+  let debug    = not (alternative args)
+  let epsilon' = getEpsilon args
+  let beta     = getBeta args
+  let delta    = getDelta args
 
   -- do not look for optimal beta if it has been specified by the user
   (qmap,taskAggrMap) <- case beta of
-          Just _  -> performAnalysis args epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+          Just _  -> performAnalysis args epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
           Nothing -> do
-                         (_,q,tm,_,_) <- findBestBeta args outputTableName epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
+                         (_,q,tm,_,_) <- findBestBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
                          return (q,tm)
+
+  -- if we have a GroupBy query, we need to scale epsilon accordingly
+  let epsilon = epsilon' / (fromIntegral numOfOutputs)
 
   traceIOIfDebug debug ("===============================")
   traceIOIfDebug debug ("final qmap: " ++ (show qmap))
@@ -207,6 +212,7 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
   let sep3 = if alternative args then [B.unitSeparator3] else "\t"
   let printFloatL = if alternative args then show else printf "%0.6f"
   let printFloatS = if alternative args then show else printf "%0.2f"
+  let printFloatE = if alternative args then show else (\x -> showEFloat (Just 2) x "")
 
   let (_,normsExprs,normsAggrs) = unzip3 $ map BQ.getExtra tableExprData
   let inputTableNames = BQ.getTableNames tableExprData
@@ -215,8 +221,6 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
   traceIOIfDebug debug ("===============================")
   traceIOIfDebug debug ("Cauchy noise distribution:  add noise 'Cauchy  noise'*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)")
   traceIOIfDebug debug ("Laplace noise distribution: add noise 'Laplace noise'*z, where z ~ 1 / 2 * exp(-x)")
-  --traceIOIfDebug debug ("")
-  --traceIOIfDebug debug "table name               \tsensitivity\tquery result\tCauchy noise\tCauchy err(%)\tbeta\tdelta\tLaplace noise\tLaplace err(%)"
 
   let errorUB = errorUBprob args
   let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
@@ -224,19 +228,15 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
 
   traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
   traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
-   
-  -- if we have a GroupBy query, we need to scale epsilon accordingly
-  let finalEpsilon = epsilon / (fromIntegral numOfOutputs)
 
   let taskStr =
           map (\(taskName,res) ->
 
                   (taskName, (map (\ (tableName, zs) ->
-                      let (_,qrs,bs',sdss) = unzip4 zs in
-                      let bs  = map ( / noiseScaleCauchy) bs' in
+                      let (_,qrs,bs,sdss) = unzip4 zs in
                       let qr  = if length qrs == 1 then printFloatS (head qrs) else "[" ++ intercalate ", " (map printFloatS qrs) ++ "]" in
-                      let cauchyError = printFloatL $ (combinedErrs qrs bs sdss) * 100 in
-                      let cauchyNoise = (let xs = combinedEtas bs sdss in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+                      let cauchyError = printFloatL $ (combinedErrs qrs bs sdss) * noiseScaleCauchy * 100 in
+                      let cauchyNoise = (let xs = map (* noiseScaleCauchy) (combinedEtas bs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
                       let sds = printFloatL $ combinedSdss sdss in
                       let norm = if tableName == B.resultForAllTables then
                                       "an l_1-norm of all input table norms"
@@ -249,15 +249,21 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
                       in
 
                       -- these betas should all be the same in our implementation, otherwise DP w.r.t. several outputs is not well-defined
-                      let preciseBetas = map (\b -> finalEpsilon / (4 + 1) - b) bs in
-                      let finalBeta    = printFloatL $ foldr max 0 preciseBetas in
-                      let laplaceBs' = map (\beta -> finalEpsilon - beta) preciseBetas in
-                      let laplaceBs = map (/ noiseScaleLaplace) laplaceBs' in
-                      let laplaceDeltas = zipWith (\beta b -> if beta == 0 then exp(-2) else 2*exp(finalEpsilon-(1 + (finalEpsilon - b) / beta))) preciseBetas laplaceBs' in
-                      let laplaceDelta = printFloatL $ foldr max 0 laplaceDeltas in
-                      let laplaceError = printFloatL $ (combinedErrs qrs laplaceBs sdss) * 100 in
-                      --let laplaceNoise = (let xs = map (* 1.515) (combinedEtas laplaceBs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
-                      let laplaceNoise = (let xs = combinedEtas laplaceBs sdss in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+                      let allBetas = map (\b -> epsilon / (4 + 1) - b) bs in
+                      let finalBeta    = printFloatL $ foldr max 0 allBetas in
+
+                      -- if beta = 0, we get delta = 0 and b = eps - beta
+                      let deltaLB = 2*exp(epsilon-1-epsilon / (foldr max 0 allBetas)) in
+
+                      let laplaceDeltas = map (\beta    -> if deltaLB == 0 then 0 else max delta deltaLB) allBetas in
+                      let laplaceBs = zipWith (\beta d  -> if deltaLB == 0 then epsilon - beta else log ((d / deltaLB)**beta)) allBetas laplaceDeltas in
+
+                      let laplaceDelta   = printFloatE $ foldr min (1/0) laplaceDeltas in
+
+                      --trace ("laplace bs1: " ++ show laplaceBs) $
+
+                      let laplaceError = printFloatL $ (combinedErrs qrs laplaceBs sdss) * noiseScaleLaplace * 100 in
+                      let laplaceNoise = (let xs =  map (* noiseScaleLaplace) (combinedEtas laplaceBs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
                       [tableName,sds,qr,cauchyNoise,cauchyError,finalBeta,laplaceDelta,laplaceNoise,laplaceError,norm]) res)
 
           )) taskList
@@ -280,7 +286,10 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   let debug = not (alternative args)
   let ga = getEpsilon args
   let fixedBeta = getBeta args
-  let nq = numOfQueries args -- this basically scales epsilon nq times, assuming that up to nq queries may be run on the same data
+
+  -- this basically scales epsilon nq times, assuming that up to nq queries may be run on the same data
+  -- we actually have numOfOutputs as well, but that will be taken into account by Banach analyser
+  let nq = numOfQueries args
 
   -- process the policy and the attacker knowledge
   let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (preficedVarName tname x,y)) tmap) typeMap
@@ -321,7 +330,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a False ga plcExprExt scaled_rr nq
   let (a0,epsilon0,q0,p0) = optimal_a_epsilon False ga scaled_r scaled_rr plcExprExt init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
 
-  let epsilon = min epsilon0 epsilon1
+  let epsilon' = min epsilon0 epsilon1
 
   traceIOIfDebug debug ("plcExpr: " ++ show plcExpr)
   traceIOIfDebug debug ("plcExprExt: " ++ show plcExprExt)
@@ -342,51 +351,56 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   traceIOIfDebug debug ("q1: " ++ (show q1))
   traceIOIfDebug debug ("p1: " ++ (show p1))
 
-  -- if ga < prior, then the lower bound may be negative, and we take the bound 0 in this case
   let pr_pre  = p1 * 100
-  --let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
   let pr_post = 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100
 
-  (finalBeta,qmap,taskAggrMap,cauchyError,_) <- findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
+  -- the following output is more informative, but less understandable
+  -- if ga < prior, then the lower bound may be negative, and we take the bound 0 in this case
+  --let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
+
+  (finalBeta,qmap,taskAggrMap,cauchyError,_) <- findBestBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
 
   traceIOIfDebug debug ("===============================")
   traceIOIfDebug debug ("final qmap: " ++ (show qmap))
   traceIOIfDebug debug ("final taskAggr: " ++ (show taskAggrMap))
 
-  let expectedCost = ga * cost
-  traceIOIfDebug debug ("single-output Cauchy params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
+  -- if we have a GroupBy query, we need to scale epsilon accordingly
+  -- we already took into account numOfQueries, now we also need to include numOfOutputs
+  -- TODO check why we redefined numOfOutputs earlier, as done in the next line
+  -- let numOfOutputs = fromIntegral $ length finalQrs
+  let epsilon = epsilon' / (fromIntegral numOfOutputs)
+
+  --let expectedCost = ga * cost
+  traceIOIfDebug debug ("Cauchy params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
 
   -- additional outputs
   let (finalQrs, cauchyBs, finalSdss) = unzip3 $ map (\key -> extractFinalResult (if M.member key qmap then qmap ! key else 0) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys taskAggrMap)
   let cauchyNoise = combinedEtas cauchyBs finalSdss
 
-  -- if we have a GroupBy query, we need to scale epsilon accordingly
-  -- we already took into account numOfQueries, now we also need to include numOfOutputs
-  let numOfOutputs = fromIntegral $ length finalQrs
-  let finalEpsilon = epsilon / numOfOutputs
-
 
   -- (epsilon,delta)-DP related stuff:
 
   -- we restore the betas that have been computed before (these betas are not cauchy-specific)
-  let allBetas = map (\b -> finalEpsilon / (4 + 1) - b) cauchyBs
-  let (laplaceEpsilons,laplaceBs) = unzip $ zipWith (\sds beta -> findOptimalB sds beta finalEpsilon 0 1 0 0) finalSdss allBetas
- 
   -- if beta = 0, we get delta = 0
+  let allBetas = map (\b -> epsilon / (4 + 1) - b) cauchyBs
+  let (laplaceEpsilons,laplaceBs) = unzip $ zipWith3 (\sds beta b -> if epsilon < 1/0 then findOptimalB sds beta epsilon 0 0 0 else (1/0,1/0)) finalSdss allBetas cauchyBs
+
   let laplaceDeltas = zipWith4 (\sds beta b eps -> if beta == 0 then 0 else 2*exp(eps-1-(eps-b)/beta)) finalSdss allBetas laplaceBs laplaceEpsilons
-  let laplaceDelta = foldr min (1/0) laplaceDeltas
   let laplaceError = combinedErrs finalQrs laplaceBs finalSdss
   let laplaceNoise = combinedEtas laplaceBs finalSdss
+
+  -- if there are different (eps,delta) for several outputs, we show the minimal of them to the user for short representation
+  let laplaceDelta   = foldr min (1/0) laplaceDeltas
+  let laplaceEpsilon = foldr min (1/0) laplaceEpsilons
 
   traceIOIfDebug debug ("betas: " ++ show allBetas)
   traceIOIfDebug debug ("Cauchy bs: " ++ show cauchyBs)
   traceIOIfDebug debug ("laplace bs: " ++ show laplaceBs)
   traceIOIfDebug debug ("laplace deltas: " ++ show laplaceDeltas)
   traceIOIfDebug debug ("laplace epsilons: " ++ show laplaceEpsilons)
-  traceIOIfDebug debug ("Cauchy epsilon: " ++ show finalEpsilon)
+  traceIOIfDebug debug ("laplace alphas: " ++ show (map (\eps -> epsilon - eps) laplaceEpsilons))
+  traceIOIfDebug debug ("Cauchy epsilon: " ++ show epsilon)
   traceIOIfDebug debug ("(1 - delta/chi): " ++ show (zipWith3 (\delta sds b -> 1.0 - 2 * sds * delta / b) laplaceDeltas finalSdss laplaceBs))
-
-  --putStrLn $ intercalate (if alternative args then [B.unitSeparator2] else "\n\n") [show (pr_pre * 100.0), show (pr_post * 100.0), show expectedCost, show (cauchyError * 100.0)]
 
   let errorUB = errorUBprob args
   let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
@@ -395,6 +409,8 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
   traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
 
+
+  -- analyser output
   traceIOIfDebug debug ("===============================")
   let outputList = [("actual outputs y: ",           show (map niceRound finalQrs)),
                     (show (round $ errorUB * 100) ++ "%-noise magnitude a: ",   show (map (niceRound . (* noiseScaleCauchy)) cauchyNoise)),
@@ -402,16 +418,15 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
                     ("Cauchy (default) distribution: ",  "add noise a*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
                     ("prior (worst instance): ", show (niceRound pr_pre) ++ "%"),
                     ("posterior (worst instance): ", show (niceRound pr_post) ++ "%"),
-                    ("DP epsilon: ",                 show (niceRound finalEpsilon)),
+                    ("DP epsilon: ",                 show (niceRound epsilon)),
                     ("smoothness beta: ",            show (niceRound finalBeta)),
-                    ("delta (Laplace only): ",       show (niceRound laplaceDelta)),
-                    ("norm N: ",                     niceNormPrint norm),
+                    ("(epsilon,delta) for Laplace: ", "(" ++ show (niceRound laplaceEpsilon) ++
+                                                      "," ++ show (niceRound laplaceDelta) ++ ")"),
+                    ("norm N: ",                      niceNormPrint norm),
                     ("beta-smooth sensitivity w.r.t. N: ",  show (map niceRound finalSdss)),
                     (show (round $ errorUB * 100) ++ "%-noise magnitude a (Laplace): ",
-                                                     --if laplaceDelta > 0 then "cannot achieve (epsilon,delta)-DP with delta=0 for Laplace noise"
                                                      show (map (niceRound . (* noiseScaleLaplace)) laplaceNoise)),
                     (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y| (Laplace): ",
-                                                     --if laplaceDelta > 0 then "cannot achieve (epsilon,delta)-DP with delta=0 for Laplace noise"
                                                      show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
                     ("Laplace noise distribution: ", "add noise a*z, where z ~ 1 / 2 * exp(-x)")]
 
@@ -496,47 +511,23 @@ performAnalysis args epsilon beta dataPath separator initialQuery initQueries nu
   return (qmap, taskAggrMap)
 
 -- brute force search on b works well
-findOptimalB :: Double -> Double -> Double -> Double -> Double -> Double -> Double -> (Double,Double)
-findOptimalB sds beta eps mu muMax bestEps bestB =
+findOptimalB :: Double -> Double -> Double -> Double -> Double -> Double -> (Double,Double)
+findOptimalB sds beta eps alpha bestEps bestB =
 
-    if mu > muMax then (bestEps, bestB) else
-
-    let alpha = mu * eps in
+    if alpha > eps then (bestEps, bestB) else
     let newEps = eps - alpha in
+    let b = findOptimalB2 sds beta newEps alpha 0 0 in
+    let (newEps',b') = if (b > bestB) && (b + beta <= newEps) then (newEps, b) else (bestEps, bestB) in
+    --trace ("A: " ++ show ((alpha,b,1 - exp(-alpha), 4 * sds * exp(newEps-1-((newEps-b)/beta)) / b))) $
+    findOptimalB sds beta eps (alpha+(eps / 100)) newEps' b'
 
-    -- we get NaN from Lambert for beta = 0, but we know that the actual limit will be epsilon for Laplace noise
-    -- TODO prove it formally somewhere
-    let b  = if beta == 0 then newEps else - beta * (lambert (- 4 * sds * exp(newEps-1-(newEps/beta)) / (beta * (1 - exp(-alpha))) ) 10000) in
-
-    let (newEps',b') = if b > bestB then (newEps, b) else (bestEps, bestB) in
-    --trace ("Y: " ++ show ((mu,b,newEps,alpha,exp(-alpha),1 - 2 * sds * (2*exp(newEps-1-((newEps-b)/beta))) / b))) $
-    findOptimalB sds beta eps (mu + 0.01) muMax newEps' b'
-
--- binary search on b does not work, as the function has shape not compatible with binary search
-findOptimalB2 :: Double -> Double -> Double -> Double -> Double -> Double -> Double -> (Double,Double)
-findOptimalB2 sds beta eps muMin muMax bestEps bestB =
-
-    if (abs (muMax - muMin) < 0.01) then (bestEps, bestB) else
-    let mu = (muMin + muMax) / 2 in
-
-    let muL = mu - 0.005 in
-    let muR = mu + 0.005 in
-
-    let alphaL = muL * eps in
-    let newEpsL = eps - alphaL in
-    let bL  = - beta * (lambert (- 4 * sds * exp(newEpsL-1-(newEpsL/beta)) / (beta * (1 - exp(-alphaL))) ) 10000) in
-
-    let alphaR = muR * eps in
-    let newEpsR = eps - alphaR in
-    let bR = - beta * (lambert (- 4 * sds * exp(newEpsR-1-(newEpsR/beta)) / (beta * (1 - exp(-alphaR))) ) 10000) in
-
-    --do binary search
-    if (isNaN bR || bL >= bR) then
-        let (newEps,b) = if bL > bestB then (newEpsL, bL) else (bestEps, bestB) in
-        findOptimalB2 sds beta eps muMin mu newEps b
-    else
-        let (newEps,b) = if bR > bestB then (newEpsR, bR) else (bestEps, bestB) in
-        findOptimalB2 sds beta eps mu muMax newEps b
+findOptimalB2 :: Double -> Double -> Double -> Double -> Double -> Double -> Double
+findOptimalB2 sds beta eps alpha b bestB =
+    if b > eps - beta then bestB else
+    let z  = 4 * sds * exp(eps-1-((eps-b)/beta)) / b in
+    let b' = if (z >= 0) && (z <= 1 - exp(-alpha)) then b else bestB in
+    --trace ("    B: " ++ show ((b,beta,eps,1 - exp(-alpha), z))) $
+    findOptimalB2 sds beta eps alpha (b+((eps - beta) / 100)) b'
 
 allCombsOfLists [] = [[]]
 allCombsOfLists (xs:xss) =

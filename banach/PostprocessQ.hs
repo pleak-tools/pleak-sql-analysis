@@ -45,6 +45,7 @@ constructRR [v2,v3,v4,v5,v6,v7,v8,v9,v10] = RR {sensitivity = v2,
                                             laplace_relative_err = v9,
                                             norm = v10}
 
+numOfSearchSteps = 10
 niceRound x = fromIntegral (round (x * 1000)) / 1000
 
 -- lambert's W function: finds y such that y * exp(y) = x
@@ -190,9 +191,9 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
 
   -- do not look for optimal beta if it has been specified by the user
   (qmap,taskAggrMap) <- case beta of
-          Just _  -> performAnalysis args epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+          Just _  -> performAnalysis args False epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
           Nothing -> do
-                         (_,q,tm,_,_) <- findBestBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
+                         (_,q,tm,_) <- findOptimalBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
                          return (q,tm)
 
   -- if we have a GroupBy query, we need to scale epsilon accordingly
@@ -358,7 +359,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   -- if ga < prior, then the lower bound may be negative, and we take the bound 0 in this case
   --let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
 
-  (finalBeta,qmap,taskAggrMap,cauchyError,_) <- findBestBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
+  (finalBeta,qmap,taskAggrMap,cauchyError) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
 
   traceIOIfDebug debug ("===============================")
   traceIOIfDebug debug ("final qmap: " ++ (show qmap))
@@ -435,35 +436,38 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   putStrLn $ intercalate sep out
 
 
--- TODO it seems that we can remove sds (and maybe something else) since this is already a part of qmap
-findBestBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> AttMap -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
-findBestBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts = do
+findOptimalBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> AttMap -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+findOptimalBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts = do
 
-  let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
-  (finalBeta,finalQmap,finaltaskAggr,finalError,finalSds) <- case fixedBeta of
+    -- define the function that we will optimize
+    let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
+
+    -- take fixedBeta if it is defined, and optimize otherwise
+    (finalBeta,finalQmap,finaltaskAggr,finalError) <- case fixedBeta of
                     Nothing -> do
-                        initialBeta <- BQ.findMinimumBeta args epsilon Nothing dataPath separator initialQuery colNames typeMap [] tableExprData attMap [] colTableCounts
-                        (initialQmap,initialTaskAggr,initialError,initialSds) <- step (Just initialBeta)
-                        repeatUntilGetBestError step initialError initialBeta (epsilon / 5.0) initialBeta initialQmap initialTaskAggr initialError initialSds
+                        initialBeta' <- BQ.findMinimumBeta args False epsilon Nothing dataPath separator initialQuery colNames typeMap [] tableExprData attMap [] colTableCounts
+                        -- we cannot use beta=0 for combined sensitivity, as it would result in an infinite loop
+                        let betaMax = epsilon / 5.0
+                        let betaMin = if combinedSens args then betaMax / numOfSearchSteps else 0
+                        let initialBeta = if combinedSens args && initialBeta' == 0 then betaMax / numOfSearchSteps else initialBeta'
+                        (initialQmap,initialTaskAggr,initialError) <- step False (Just initialBeta)
+                        findOptimalBeta2 step betaMin betaMax initialBeta initialQmap initialTaskAggr initialError
                     Just beta' -> do
-                        (qmap',taskAggr',err',sds') <- step (Just beta')
-                        return (beta', qmap',taskAggr', err',sds')
-  return (finalBeta,finalQmap,finaltaskAggr,finalError,finalSds)
+                        (qmap',taskAggr',err') <- step False (Just beta')
+                        return (beta', qmap',taskAggr', err')
+    return (finalBeta,finalQmap,finaltaskAggr,finalError)
 
-repeatUntilGetBestError :: (Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double, [Double])) -> Double -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> [Double] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
-repeatUntilGetBestError step prevError betaMin betaMax bestBeta bestQmap bestTaskAggr bestError bestSds = do
-    let nextBeta = (betaMax + betaMin) / 2.0
-    (nextQmap, nextTaskAggr, nextError, nextSds) <- step (Just nextBeta)
-    let (bestBeta', bestQmap', bestTaskAggr', bestError', bestSds') = if nextError < bestError then (nextBeta, nextQmap, nextTaskAggr, nextError, nextSds) else (bestBeta, bestQmap, bestTaskAggr, bestError, bestSds)
-    if (betaMax - betaMin > 0.01) && (betaMax > 0.01) && (betaMin /= 1/0) && (betaMax /= 1/0)
-      then do
-        --do binary search
-        if (prevError <= nextError) then do
-            repeatUntilGetBestError step prevError betaMin nextBeta bestBeta' bestQmap' bestTaskAggr' bestError' bestSds'
-        else do
-            repeatUntilGetBestError step nextError nextBeta betaMax bestBeta' bestQmap' bestTaskAggr' bestError' bestSds'
-      else do
-        return (bestBeta', bestQmap', bestTaskAggr', bestError', bestSds')
+-- binary search on beta
+findOptimalBeta2 :: (Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+findOptimalBeta2 step beta betaMax bestBeta bestQmap bestTaskAggr bestError =
+
+    if (beta > betaMax) || (betaMax == 1/0) then do
+        return (bestBeta, bestQmap, bestTaskAggr, bestError)
+    else do
+        (qmap, taskAggr, err) <- step True (Just beta)
+        let (beta', qmap', taskAggr', err') = if err < bestError then (beta, qmap, taskAggr, err) else (bestBeta, bestQmap, bestTaskAggr, bestError)
+        findOptimalBeta2 step (beta+(betaMax / numOfSearchSteps)) betaMax beta' qmap' taskAggr' err'
+
 
 -- if we have several final groups, we combine errors into an l2-norm of errors
 extractFinalResults :: Double -> [(String, [(String, (Double, Double))])] -> [String] -> [((String,String),[([String], Double, Double, Double)])]
@@ -490,20 +494,20 @@ combinedErrs qrs bs sdss =
     errnorm / qnorm
     --sqrt $ sum $ zipWith3 (\qr b sds -> ((sds / b) / qr) ^ 2) qrs bs sdss
 
-performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double, [Double])
-performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts beta = do
+performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts silent beta = do
 
-  (qmap,taskAggrMap) <- performAnalysis args epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  (qmap,taskAggrMap) <- performAnalysis args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
   let (qrs, bs, sdss) = unzip3 $ map (\key -> extractFinalResult (qmap ! key) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys qmap)
   let err = combinedErrs qrs bs sdss
 
-  return (qmap,taskAggrMap,err,sdss)
+  return (qmap,taskAggrMap,err)
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
-performAnalysis args epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
+performAnalysis :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalysis args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
-  (qmap,taskAggrMap') <- BQ.performAnalyses args epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  (qmap,taskAggrMap') <- BQ.performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
 
   -- if we choose beta that is not compatible with epsilon during optimization, we get a negative b, so we set it to 0 to get Infinity relative error
   -- in policy analysis, this means that desired epsilon, and hence the guessing advantage bound, could not be achieved
@@ -519,7 +523,7 @@ findOptimalB sds beta eps alpha bestEps bestB =
     let b = findOptimalB2 sds beta newEps alpha 0 0 in
     let (newEps',b') = if (b > bestB) && (b + beta <= newEps) then (newEps, b) else (bestEps, bestB) in
     --trace ("A: " ++ show ((alpha,b,1 - exp(-alpha), 4 * sds * exp(newEps-1-((newEps-b)/beta)) / b))) $
-    findOptimalB sds beta eps (alpha+(eps / 100)) newEps' b'
+    findOptimalB sds beta eps (alpha+(eps / numOfSearchSteps)) newEps' b'
 
 findOptimalB2 :: Double -> Double -> Double -> Double -> Double -> Double -> Double
 findOptimalB2 sds beta eps alpha b bestB =
@@ -527,7 +531,7 @@ findOptimalB2 sds beta eps alpha b bestB =
     let z  = 4 * sds * exp(eps-1-((eps-b)/beta)) / b in
     let b' = if (z >= 0) && (z <= 1 - exp(-alpha)) then b else bestB in
     --trace ("    B: " ++ show ((b,beta,eps,1 - exp(-alpha), z))) $
-    findOptimalB2 sds beta eps alpha (b+((eps - beta) / 100)) b'
+    findOptimalB2 sds beta eps alpha (b+((eps - beta) / numOfSearchSteps)) b'
 
 allCombsOfLists [] = [[]]
 allCombsOfLists (xs:xss) =

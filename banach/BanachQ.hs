@@ -1116,9 +1116,9 @@ analyzeTableExprQ fr wh sensCond srt colNames sensitiveVarSet varStates colTable
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens sensCond srt subQueryMap te in
   AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
-performAnalyses :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
-performAnalyses args epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
-  let debug = not (alternative args)
+performAnalyses :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
+  let debug = not (alternative args) && not silent
   let tableGmap = M.fromList tableGs
   let tableGstr = intercalate "," $
                     map (\ tg -> case tg of (tbl,Nothing)               -> tbl
@@ -1162,11 +1162,11 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery initQuer
   --  let [fromPart, wherePart] = splitOn " WHERE " fromWhere
 
   when debug $ putStrLn "================================="
-  maxGsens <- case fixedBeta of Nothing -> do res <- findMaximumGsens args epsilon fixedBeta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts
+  maxGsens <- case fixedBeta of Nothing -> do res <- findMaximumGsens args silent epsilon fixedBeta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts
                                               when debug $ printf "maxGsens = %f\n" res
                                               return res
                                 Just _ -> return 0
-  minBeta <- case fixedBeta of Nothing -> findMinimumBeta args epsilon fixedBeta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts
+  minBeta <- case fixedBeta of Nothing -> findMinimumBeta args silent epsilon fixedBeta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts
                                Just beta1 -> return beta1
   when debug $ printf "epsilon = %0.6f\n" epsilon
   when debug $ printf "gamma = %0.6f\n" gamma
@@ -1199,7 +1199,6 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery initQuer
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " in task " ++ taskName ++ " ==="
     when debug $ print te
-    --let pa = performSubExprAnalysis args epsilon (Just beta) fromPart wherePart tableName taskName colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subQueryMap'
 
     let groupvars = getOneGroupColName group
     let groupkeys = getOneGroupValue group
@@ -1212,8 +1211,8 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery initQuer
     qrs <- if (dbSensitivity args) then sendStringListsDoublesQueryToDb args initQueryGroup else (do return [([],1/0)])
     let (groupStrings,qr) = if equal (length qrs) (round 0) then ([], 1/0) else head qrs
 
-    let f v x y w u = performAnalysis args epsilon (Just beta) qr x y sensCond tableName w taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts u v
-    let pa v = performSubExprAnalysis args fromPart wherePart sensCond tableName taskName group subQueryMap' (f v)
+    let f v x y w u = performAnalysis args silent epsilon (Just beta) qr x y sensCond tableName w taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts u v
+    let pa v = performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subQueryMap' (f v)
 
     case M.lookup tableName tableGmap of
       Nothing -> do
@@ -1334,8 +1333,8 @@ performAnalyses args epsilon' fixedBeta dataPath separator initialQuery initQuer
   return (qmap, taskAggr)
 
 -- find the minimum value of beta that is allowed for all tables
-findMinimumBeta :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
-findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
+findMinimumBeta :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
+findMinimumBeta args silent epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
     let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
     -- ######################
     -- subqueries are taken into account for computation of beta
@@ -1343,23 +1342,23 @@ findMinimumBeta args epsilon beta dataPath separator initialQuery colNames typeM
     --  findMinimumBeta1 args fromPart wherePart tableName colNames varStates sensitiveVarList M.empty te colTableCounts
     let tableExprData = getData tableExprData'
     (_,minBetas) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (sensCond,fromPart,wherePart),_, _) -> do
-        (newSubQueryMap,result) <- findMinimumBeta1 args fromPart wherePart sensCond tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
+        (newSubQueryMap,result) <- findMinimumBeta1 args silent fromPart wherePart sensCond tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
         return (newSubQueryMap, results' ++ [result])) (M.empty,[]) tableExprData
     -- ######################
     return $ maximum minBetas
 
 -- find the minimum value of beta that is allowed for a given (copy of a) table
-findMinimumBeta1 :: ProgramOptions -> String -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (OneGroupData,(M.Map String AnalysisResult)) -> TableExpr -> [Int] -> IO (M.Map String (OneGroupData,(M.Map String AnalysisResult)), Double)
-findMinimumBeta1 args fromPart wherePart sensCond tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
+findMinimumBeta1 :: ProgramOptions -> Bool -> String -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (OneGroupData,(M.Map String AnalysisResult)) -> TableExpr -> [Int] -> IO (M.Map String (OneGroupData,(M.Map String AnalysisResult)), Double)
+findMinimumBeta1 args silent fromPart wherePart sensCond tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
 
-    let debug = not (alternative args)
+    let debug = not (alternative args) && not silent
 
     let sensitiveVarSet = S.fromList sensitiveVarList
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
 
     let f x y _ w = let res = analyzeTableExprQ x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False w te in (do return (res,res))
-    (outputMap,results) <- performSubExprAnalysis args fromPart wherePart sensCond tableName taskName group subExprMap f
+    (outputMap,results) <- performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f
 
     let (_,ars) = unzip results
     let minBeta = foldr max 0 $ map (\ar -> subBeta (sdsf ar)) ars
@@ -1368,30 +1367,30 @@ findMinimumBeta1 args fromPart wherePart sensCond tableName taskName group colNa
 
 
 -- find the maximum value of gsens over all tables
-findMaximumGsens :: ProgramOptions -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
-findMaximumGsens args epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
+findMaximumGsens :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
+findMaximumGsens args silent epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
     let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
     -- ######################
     -- subqueries are taken into account for computation of beta
     let tableExprData = getData tableExprData'
     (_,maxGsenss) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (sensCond,fromPart,wherePart),_, _) -> do
-        (newSubQueryMap,result) <- findMaximumGsens1 args fromPart wherePart sensCond tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
+        (newSubQueryMap,result) <- findMaximumGsens1 args silent fromPart wherePart sensCond tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
         return (newSubQueryMap, results' ++ [result])) (M.empty,[]) tableExprData
     -- ######################
     return $ maximum maxGsenss
 
 -- find the maximum value of gsens for a given (copy of a) table
-findMaximumGsens1 :: ProgramOptions -> String -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (OneGroupData,(M.Map String AnalysisResult)) -> TableExpr -> [Int] -> IO (M.Map String (OneGroupData,(M.Map String AnalysisResult)), Double)
-findMaximumGsens1 args fromPart wherePart sensCond tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
+findMaximumGsens1 :: ProgramOptions -> Bool -> String -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (OneGroupData,(M.Map String AnalysisResult)) -> TableExpr -> [Int] -> IO (M.Map String (OneGroupData,(M.Map String AnalysisResult)), Double)
+findMaximumGsens1 args silent fromPart wherePart sensCond tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
 
-    let debug = not (alternative args)
+    let debug = not (alternative args) && not silent
 
     let sensitiveVarSet = S.fromList sensitiveVarList
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
 
     let f x y _ w = let res = analyzeTableExprQ x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
-    (outputMap,results) <- performSubExprAnalysis args fromPart wherePart sensCond tableName taskName group subExprMap f
+    (outputMap,results) <- performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f
 
     let (_,ars) = unzip results
     let maxGsens = foldr max 0 $ map gsens ars
@@ -1403,11 +1402,11 @@ findMaximumGsens1 args fromPart wherePart sensCond tableName taskName group colN
 
 
 
-performAnalysis :: ProgramOptions -> Double -> Maybe Double -> Double -> String -> String -> String -> String -> String -> String -> OneGroupData -> [String] -> [VarState] -> [String] -> TableExpr ->
+performAnalysis :: ProgramOptions -> Bool -> Double -> Maybe Double -> Double -> String -> String -> String -> String -> String -> String -> OneGroupData -> [String] -> [VarState] -> [String] -> TableExpr ->
                    IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] ->  M.Map String AnalysisResult -> Maybe Double ->
                    IO (AnalysisResult, (Double,Double,String,(Double,Double,Double,Double,Double)))
-performAnalysis args epsilon fixedBeta initialQr fromPart wherePart sensCond tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG = do
-    let debug = not (alternative args)
+performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensCond tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG = do
+    let debug = not (alternative args) && not silent
     --when debug $ printf "varStates = %s\n" (show varStates)
     let sensitiveVarSet = S.fromList sensitiveVarList
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
@@ -1537,12 +1536,12 @@ processIntermediateResults args beta taskName analyzedTable group ar subExprMap 
     sendQueriesToDb args intermediateTableCreateStatement
 
 
-performSubExprAnalysis :: ProgramOptions -> String -> String -> String -> String -> String -> OneGroupData-> M.Map String (OneGroupData,(M.Map String AnalysisResult))
+performSubExprAnalysis :: ProgramOptions -> Bool -> String -> String -> String -> String -> String -> OneGroupData-> M.Map String (OneGroupData,(M.Map String AnalysisResult))
                   -> (String -> String -> String -> M.Map String AnalysisResult -> IO (AnalysisResult,b))
                   -> IO(M.Map String (OneGroupData,(M.Map String AnalysisResult)), [(String,b)])
-performSubExprAnalysis args fromPart wherePart sensCond tableName taskName group subExprMap f = do
+performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f = do
 
-    let debug = not (alternative args)
+    let debug = not (alternative args) && not silent
 
     -- extract the variable names from the taskName and the tableName
     let varName = queryNameToPreficedVarName taskName

@@ -32,21 +32,27 @@ traceIOIfDebug debug msg = do
 
 
 -- this is used only for nice output printing
-data RR = RR {sensitivity :: String, query_result :: String, cauchy_noise :: String, cauchy_relative_err :: String,
+data Result = Result {sensitivity :: String, query_result :: String, cauchy_noise :: String, cauchy_relative_err :: String,
               beta :: String, delta :: String, laplace_noise :: String, laplace_relative_err :: String, norm :: String} deriving (Data, G.Generic, Show)
 
-constructRR [v2,v3,v4,v5,v6,v7,v8,v9,v10] = RR {sensitivity = v2,
-                                            query_result = v3,
-                                            cauchy_noise = v4,
-                                            cauchy_relative_err = v5,
-                                            beta = v6,
-                                            delta = v7,
-                                            laplace_noise = v8,
-                                            laplace_relative_err = v9,
-                                            norm = v10}
+constructResult [v2,v3,v4,v5,v6,v7,v8,v9,v10] = Result {sensitivity = v2,
+                                                query_result = v3,
+                                                cauchy_noise = v4,
+                                                cauchy_relative_err = v5,
+                                                beta = v6,
+                                                delta = v7,
+                                                laplace_noise = v8,
+                                                laplace_relative_err = v9,
+                                                norm = v10}
 
-numOfSearchSteps = 10
+-- number of steps in optimization
+numOfSearchSteps = fromIntegral 100
+
+-- nice printing
 niceRound x = fromIntegral (round (x * 1000)) / 1000
+printFloatL = printf "%0.6f"
+printFloatS = printf "%0.2f"
+printFloatE = (\x -> showEFloat (Just 2) x "")
 
 -- lambert's W function: finds y such that y * exp(y) = x
 lambert x 0 = 1
@@ -80,21 +86,26 @@ find_noise_range_binary f p lb ub =
     else if p > q then find_noise_range_binary f p a ub
     else find_noise_range_binary f p lb a
 
-compute_epsilon :: Bool -> Double -> Double -> Double -> Double -> Int -> Double
-compute_epsilon pos ga a q p nq =
+-- given max-distance d, aimed guessing advantage bound ga, and probailities p, q, compute epsilon
+compute_epsilon :: Bool -> Double -> Double -> Double -> Double -> Double
+compute_epsilon _ _ 1 1 _ = 1/0
+compute_epsilon pos ga' q p d =
 
     -- we know that the probability cannot grow above 100%
     if pos then
-        let d = min (1 - p) ga in
-        - (log (p / (q - p) * (1 / (d + p) - 1))) / (a * fromIntegral nq)
+        let ga = min (1 - p) ga' in
+        let z = p / (q - p) * (1 / (ga + p) - 1) in
+        --trace ("eps1: " ++ show p ++ " " ++ show q ++ " " ++ show ga ++ " " ++ show z ++ " " ++ show (- (log z) / d)) $
+        - (log z) / d
     else
-        let d = min (1 - (q - p)) ga in
-        - (log ((q - p) / p * (1 / ((1 - p) / (q - p) * (d + (1 - p) - (1 - q) / (1 - p))) - 1))) / (a * fromIntegral nq)
-        -- - (log ((q - p) / p * (1 / (d + (q - p)) - 1))) / (a * fromIntegral nq)
+        let ga = min p ga' in
+        let z = (q - p) / p * (q / (ga + (1 - p) - (1 - q)) - 1) in
+        --trace ("eps0: " ++ show p ++ " " ++ show q ++ " " ++ show ga ++ " " ++ show z ++ " " ++ show (- (log z) / d)) $
+        - (log z) / d
 
-compute_worst_epsilon :: Double -> Double -> Double -> Int -> Double
-compute_worst_epsilon ga a q nq =
-    2 / (a * fromIntegral nq) * (log ((sqrt q + sqrt (ga*(ga + q - 1))) / (1 - ga)))
+compute_worst_epsilon :: Double -> Double -> Double -> Double
+compute_worst_epsilon ga q d =
+    (2 / d) * (log ((sqrt q + sqrt (ga*(ga + q - 1))) / (1 - ga)))
 
 -- we know that, if the variable is the same, then only the r part can be different
 minPlcData (PlcData b ur r1 rr d g) (PlcData _ _ r2 _ _ _) =
@@ -107,12 +118,9 @@ fand ms1 ms2 = concat $ map (\(s2,m2) -> map (\(s1,m1) -> (s1*s2, M.unionWith mi
 for  :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)]
 for ms1 ms2 = ms1 ++ ms2 ++ map (\(s,v) -> (-s,v)) (fand ms1 ms2)
 
-compute_eps_for_a :: Bool -> Double -> PlcMap -> Double -> Int -> (Double,Double,Double,Double)
+-- given a bounding box with side length a, compute the epsilon required to hide a unit box there
+compute_eps_for_a :: Bool -> Double -> [(Int, M.Map [String] PlcData)] -> Double -> Int -> (Double,Double,Double,Double)
 compute_eps_for_a pos ga expr sample_a nq =
-
-
-    -- compute p and q using the equalities and P(A || B) = P(A) + P(B) - P(AB), P(AA) = P(A), P(AB) = P(A)*P(B)
-    let pqExpr = traverseExpr fand for (\x -> if x == 1 then [(1,M.empty)] else []) (\(var,pd) -> [(1, M.singleton var pd)]) expr in
 
     -- compute the weight of X' (distributions of some dimensions can be unknown)
     -- if different elements come with different probabilities, we consider all combinations
@@ -120,31 +128,36 @@ compute_eps_for_a pos ga expr sample_a nq =
 
                                     -- adjust proposed a to the actual bounds R
                                     -- we take 2a as distance since X' may be located somewhere in a corner, except the discrete case
-                                    let a = if not b then sample_a
-                                            else if d then rr
-                                            else max r $ min rr sample_a
-                                    in
-                                            if not b then ([1], sample_a)
-                                            else
+                                    -- the returned list 'as' is the list of max-distances
+
+                                    -- non-sensitive dimensions do not change anything
+                                    if not b then
+                                        ([1], 1)
+                                    else
+                                        -- this 'a' defines the probability area, and not the distance
+                                        let a = if d then rr
+                                                else max r $ min rr sample_a
+                                        in
                                                 case g (ur * a) of
-                                                    -- TODO something is still wrong with 'Nothing' case
-                                                    Nothing -> ([1], if d then 1.0 else rr)
+                                                    -- TODO something is still wrong with 'Nothing' case?
+                                                    Nothing -> ([1], if d then 1.0 else 2*rr)
                                                     Just vs -> (vs,  if d then 1.0 else 2*a)
                                     ) (M.elems m)
                                in
-                                    (map (((fromIntegral s) * ) . product) (allCombsOfLists vss), foldr max 1 as)) pqExpr
+                                    (map (((fromIntegral s) * ) . product) (allCombsOfLists vss), foldr max 1 as)) expr
     in
 
     let pss'  = map (\(s,m) -> let vss = map (\(PlcData b ur r _ _ g) -> if b then g (ur * r) else Just [1]) (M.elems m) in
                                if elem Nothing vss then Nothing
                                else
                                     let wss = allCombsOfLists $ (map fromJust) vss in
-                                    Just $ map ((((fromIntegral s) *) . product) ) wss) pqExpr
+                                    Just $ map ((((fromIntegral s) *) . product) ) wss) expr
     in
 
-    -- determine the unique bound a that is true for all dimensions
+    -- determine the unique bound 'a' that is true for all dimensions
     let (qss',as) = unzip qssAs in
     let a = foldr max 1 as in
+    let d = a * fromIntegral nq in
 
     let pss = allCombsOfMaybeLists pss' in
     let qss = allCombsOfLists qss' in
@@ -153,21 +166,21 @@ compute_eps_for_a pos ga expr sample_a nq =
     let results = zipWith (\ps qs ->
                        let q = sum qs in
                        if elem Nothing ps then
-                               let eps = compute_worst_epsilon ga a q nq in
-                               let p = min q ((sqrt q) * ((exp (eps / 2)) - (sqrt q)) / ((exp eps) - 1)) in
+                               let eps = compute_worst_epsilon ga q d in
+                               let p = min q ((sqrt q) * ((exp (d * eps / 2)) - (sqrt q)) / ((exp (d * eps)) - 1)) in
                                (a,eps,q,p)
                        else
                                let p = sum (map fromJust ps) in
-                               let eps = compute_epsilon pos ga a q p nq in
+                               let eps = compute_epsilon pos ga q p d in
                                (a,eps,q,p)
                   ) pss qss
     in
 
-    let (a,epsilon,q,p) = foldr (\x1@(_,e1,_,_) x2@(_,e2,_,_) -> if e1 < e2 then x1 else x2) (head results) (tail results) in
+    let (a,epsilon,q,p) = foldr (\x1@(_,e1,_,_) x2@(_,e2,_,_) -> if isNaN e2 || e1 < e2 then x1 else x2) (head results) (tail results) in
     (a,epsilon,q,p)
 
 
-optimal_a_epsilon :: Bool -> Double -> Double -> Double -> PlcMap -> Double -> Double -> Double -> Double
+optimal_a_epsilon :: Bool -> Double -> Double -> Double -> [(Int, M.Map [String] PlcData)] -> Double -> Double -> Double -> Double
                      -> Double -> Double -> Int -> (Double,Double,Double,Double)
 optimal_a_epsilon _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
 optimal_a_epsilon pos ga scaled_r scaled_rr expr a epsilon q p k n nq =
@@ -177,7 +190,7 @@ optimal_a_epsilon pos ga scaled_r scaled_rr expr a epsilon q p k n nq =
     let (a',epsilon',q',p') = compute_eps_for_a pos ga expr sample_a nq in
 
     --take the best values found so far
-    let (a'',epsilon'',q'',p'') = if (epsilon' > epsilon) then (a',epsilon',q',p') else (a,epsilon,q,p) in
+    let (a'',epsilon'',q'',p'') = if isNaN epsilon || epsilon' > epsilon then (a',epsilon',q',p') else (a,epsilon,q,p) in
     optimal_a_epsilon pos ga scaled_r scaled_rr expr a'' epsilon'' q'' p'' (k-1) n nq
 
 
@@ -193,7 +206,7 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
   (qmap,taskAggrMap) <- case beta of
           Just _  -> performAnalysis args False epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
           Nothing -> do
-                         (_,q,tm,_) <- findOptimalBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
+                         (_,q,tm,_) <- findOptimalBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
                          return (q,tm)
 
   -- if we have a GroupBy query, we need to scale epsilon accordingly
@@ -203,7 +216,8 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
   traceIOIfDebug debug ("final qmap: " ++ (show qmap))
   traceIOIfDebug debug ("final taskAggr: " ++ (show taskAggrMap))
 
-  -- TODO if a group is empty, we set its output to 0, but it is actually difficult to define for MIN/MAX queries
+  -- if a group is empty, we set its output to 0
+  -- TODO think how to define for MIN/MAX queries in a better way
   let outMap = M.fromListWith (++) $ concat $ map (\key -> extractFinalResults (if M.member key qmap then qmap ! key else 0) (taskAggrMap ! key) key) (M.keys taskAggrMap)
   let outList = map (\((taskName,tableName), zs) -> (taskName,[(tableName,zs)])) $ M.toList outMap
   let taskList = M.toList $ M.fromListWith (++) outList
@@ -211,9 +225,6 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
   let sep1 = if alternative args then [B.unitSeparator] else "\n"
   let sep2 = if alternative args then [B.unitSeparator2] else "\n\n"
   let sep3 = if alternative args then [B.unitSeparator3] else "\t"
-  let printFloatL = if alternative args then show else printf "%0.6f"
-  let printFloatS = if alternative args then show else printf "%0.2f"
-  let printFloatE = if alternative args then show else (\x -> showEFloat (Just 2) x "")
 
   let (_,normsExprs,normsAggrs) = unzip3 $ map BQ.getExtra tableExprData
   let inputTableNames = BQ.getTableNames tableExprData
@@ -272,13 +283,13 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
   when (alternative args) $ putStrLn $ intercalate sep2 $ map (\(taskName, xss) -> taskName ++ sep1 ++ intercalate sep1 (map (\xs -> intercalate sep3 xs) xss)) taskStr
   forM taskStr $ \(taskName,tableMap) -> do
           when debug $ putStrLn ("-------------------------\nTask: " ++ taskName)
-          let tableResultMap = M.fromList $ map (\(v : vs) -> (v, constructRR vs)) tableMap
+          let tableResultMap = M.fromList $ map (\(v : vs) -> (v, constructResult vs)) tableMap
           when debug $ T.printTable tableResultMap
   putStr ""
 
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] ->Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> PlcCostType -> AttMap -> [Int] -> IO ()
-performPolicyAnalysis args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData plcCostType attMap colTableCounts = do
+performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] ->Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> PlcCostType -> AttMap -> [Int] -> IO ()
+performPolicyAnalysis args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData plcCostType attMap colTableCounts = do
 
   let plcExpr = getStatement plcCostType
   let cost = getCost plcCostType
@@ -320,21 +331,27 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   let norm = deriveDbNorm attMap plcExpr
   let allSensVars = extract_vars plcExpr
 
+
+  -- compute p and q using the equalities and P(A || B) = P(A) + P(B) - P(AB), P(AA) = P(A), P(AB) = P(A)*P(B)
+  let pqExpr = traverseExpr fand for (\x -> if x == 1 then [(1,M.empty)] else []) (\(var,pd) -> [(1, M.singleton var pd)]) plcExprExt
+
   -- it seems that brute-forcing optimal epsilon and a works quite well
   -- we consider multidimensional space, where the radius is linf-norm
   let num_of_tries = 10000
 
   -- since 'a' is only an estimation parameter, we find the noise separately for the positive and the negative guess, and then take the largest noise
-  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a True ga plcExprExt scaled_rr nq
-  let (a1,epsilon1,q1,p1) = optimal_a_epsilon True ga scaled_r scaled_rr plcExprExt init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
 
-  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a False ga plcExprExt scaled_rr nq
-  let (a0,epsilon0,q0,p0) = optimal_a_epsilon False ga scaled_r scaled_rr plcExprExt init_a init_epsilon init_q init_p num_of_tries num_of_tries nq
+  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a True ga pqExpr scaled_rr nq
+  let (a1,epsilon1,q1,p1) = if ga == 0 then (init_a, init_epsilon, init_q, init_p) else optimal_a_epsilon True ga scaled_r scaled_rr pqExpr init_a init_epsilon init_q init_p numOfSearchSteps numOfSearchSteps nq
 
-  let epsilon' = min epsilon0 epsilon1
+  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a False ga pqExpr scaled_rr nq
+  let (a0,epsilon0,q0,p0) = if ga == 0 then (init_a, init_epsilon, init_q, init_p) else optimal_a_epsilon False ga scaled_r scaled_rr pqExpr init_a init_epsilon init_q init_p numOfSearchSteps numOfSearchSteps nq
+
+  let (a,epsilon',q,p) = if epsilon0 < epsilon1 then (a0,epsilon0,1-q0,1-p0) else (a1,epsilon1,q1,p1)
 
   traceIOIfDebug debug ("plcExpr: " ++ show plcExpr)
   traceIOIfDebug debug ("plcExprExt: " ++ show plcExprExt)
+  traceIOIfDebug debug ("pqExpr: " ++ show pqExpr)
   traceIOIfDebug debug ("allSensVars: " ++ show allSensVars)
   traceIOIfDebug debug ("--------")
   traceIOIfDebug debug ("GA: " ++ (show ga))
@@ -359,7 +376,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   -- if ga < prior, then the lower bound may be negative, and we take the bound 0 in this case
   --let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
 
-  (finalBeta,qmap,taskAggrMap,cauchyError) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts
+  (finalBeta,qmap,taskAggrMap,cauchyError) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap [] colTableCounts
 
   traceIOIfDebug debug ("===============================")
   traceIOIfDebug debug ("final qmap: " ++ (show qmap))
@@ -436,37 +453,55 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   putStrLn $ intercalate sep out
 
 
-findOptimalBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [BQ.DataWrtTable] -> AttMap -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
-findOptimalBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap tableExprData attMap colTableCounts = do
+findOptimalBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+findOptimalBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
     -- define the function that we will optimize
-    let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap [] tableExprData attMap [] colTableCounts
+    let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
 
     -- take fixedBeta if it is defined, and optimize otherwise
     (finalBeta,finalQmap,finaltaskAggr,finalError) <- case fixedBeta of
                     Nothing -> do
-                        initialBeta' <- BQ.findMinimumBeta args False epsilon Nothing dataPath separator initialQuery colNames typeMap [] tableExprData attMap [] colTableCounts
+                        initialBeta' <- BQ.findMinimumBeta args False epsilon Nothing dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData attMap tableGs colTableCounts
                         -- we cannot use beta=0 for combined sensitivity, as it would result in an infinite loop
                         let betaMax = epsilon / 5.0
-                        let betaMin = if combinedSens args then betaMax / numOfSearchSteps else 0
-                        let initialBeta = if combinedSens args && initialBeta' == 0 then betaMax / numOfSearchSteps else initialBeta'
+                        let betaMin = 0
+                        let unit = betaMax / numOfSearchSteps
+                        let initialBeta = if combinedSens args && initialBeta' == 0 then unit else initialBeta'
                         (initialQmap,initialTaskAggr,initialError) <- step False (Just initialBeta)
-                        findOptimalBeta2 step betaMin betaMax initialBeta initialQmap initialTaskAggr initialError
+                        findOptimalBeta2 unit step betaMin betaMax initialBeta initialQmap initialTaskAggr initialError
                     Just beta' -> do
                         (qmap',taskAggr',err') <- step False (Just beta')
                         return (beta', qmap',taskAggr', err')
     return (finalBeta,finalQmap,finaltaskAggr,finalError)
 
 -- binary search on beta
-findOptimalBeta2 :: (Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
-findOptimalBeta2 step beta betaMax bestBeta bestQmap bestTaskAggr bestError =
+findOptimalBeta2 :: Double -> (Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+findOptimalBeta2 unit step betaMin betaMax bestBeta bestQmap bestTaskAggr bestError =
+
+    if abs(betaMax - betaMin) <= unit || (betaMax == 1/0) then do
+        return (bestBeta, bestQmap, bestTaskAggr, bestError)
+    else do
+        let betaU = (betaMin + betaMax + unit) / 2.0
+        let betaL = (betaMin + betaMax - unit) / 2.0
+        (qmapU, taskAggrU, errU) <- step True (Just betaU)
+        (qmapL, taskAggrL, errL) <- step True (Just betaL)
+        let (beta, qmap, taskAggr, err, betaMin',betaMax') = if errU < errL then (betaU, qmapU, taskAggrU, errU, betaU, betaMax) else (betaL, qmapL, taskAggrL, errL, betaMin, betaL)
+        let (beta', qmap', taskAggr', err') = if err < bestError then (beta, qmap, taskAggr, err) else (bestBeta, bestQmap, bestTaskAggr, bestError)
+        findOptimalBeta2 unit step betaMin' betaMax' beta' qmap' taskAggr' err'
+
+
+-- linear search on beta (experimental, currently not used)
+-- remember that we need to start from beta > 0 in CS analysis
+findOptimalBetaL :: (Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+findOptimalBetaL step beta betaMax bestBeta bestQmap bestTaskAggr bestError =
 
     if (beta > betaMax) || (betaMax == 1/0) then do
         return (bestBeta, bestQmap, bestTaskAggr, bestError)
     else do
         (qmap, taskAggr, err) <- step True (Just beta)
         let (beta', qmap', taskAggr', err') = if err < bestError then (beta, qmap, taskAggr, err) else (bestBeta, bestQmap, bestTaskAggr, bestError)
-        findOptimalBeta2 step (beta+(betaMax / numOfSearchSteps)) betaMax beta' qmap' taskAggr' err'
+        findOptimalBetaL step (beta+(betaMax / numOfSearchSteps)) betaMax beta' qmap' taskAggr' err'
 
 
 -- if we have several final groups, we combine errors into an l2-norm of errors
@@ -518,7 +553,7 @@ performAnalysis args silent epsilon beta dataPath separator initialQuery initQue
 findOptimalB :: Double -> Double -> Double -> Double -> Double -> Double -> (Double,Double)
 findOptimalB sds beta eps alpha bestEps bestB =
 
-    if alpha > eps then (bestEps, bestB) else
+    if (eps == 0) || (alpha > eps) then (bestEps, bestB) else
     let newEps = eps - alpha in
     let b = findOptimalB2 sds beta newEps alpha 0 0 in
     let (newEps',b') = if (b > bestB) && (b + beta <= newEps) then (newEps, b) else (bestEps, bestB) in
@@ -527,7 +562,7 @@ findOptimalB sds beta eps alpha bestEps bestB =
 
 findOptimalB2 :: Double -> Double -> Double -> Double -> Double -> Double -> Double
 findOptimalB2 sds beta eps alpha b bestB =
-    if b > eps - beta then bestB else
+    if (eps - beta) == 0 || (b > eps - beta) then bestB else
     let z  = 4 * sds * exp(eps-1-((eps-b)/beta)) / b in
     let b' = if (z >= 0) && (z <= 1 - exp(-alpha)) then b else bestB in
     --trace ("    B: " ++ show ((b,beta,eps,1 - exp(-alpha), z))) $

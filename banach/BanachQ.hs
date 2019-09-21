@@ -1426,7 +1426,7 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
     let b = epsilon / (gamma + 1) - beta
     when debug $ printf "b = %0.6f\n" b
 
-    processIntermediateResults args beta taskName analyzedTable group ar subExprMap
+    processIntermediateResults args silent beta taskName analyzedTable group ar subExprMap
 
     let qr = constProp $ fx ar
     when debug $ putStrLn "Query result:"
@@ -1497,12 +1497,12 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
     --return (b,sds_value,combinedRes)
 
 
-processIntermediateResults :: ProgramOptions -> Double -> String -> String -> OneGroupData -> AnalysisResult -> M.Map String AnalysisResult -> IO ()
-processIntermediateResults args beta taskName analyzedTable group ar subExprMap = do
+processIntermediateResults :: ProgramOptions -> Bool -> Double -> String -> String -> OneGroupData -> AnalysisResult -> M.Map String AnalysisResult -> IO ()
+processIntermediateResults args silent beta taskName analyzedTable group ar subExprMap = do
 
   if (not (isIntermediateQueryName taskName)) then (do return ())
   else do
-    let debug = not (alternative args)
+    let debug = not (alternative args) && not silent
     let outputTableName = queryNameToTableName taskName
 
     -- store the intermediate result into a database

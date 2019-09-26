@@ -32,6 +32,7 @@ data AExpr a
   | AOrs  [AExpr a]
   | AXors [AExpr a] -- we assume that it is applied only to mutually exclusive conditions
   | AVector [AExpr a]
+  | AIfThenElse (AExpr a) (AExpr a) (AExpr a)
   deriving (Show)
 
 data AUnOp
@@ -74,6 +75,8 @@ stringToAType "float" = AFloat
 stringToAType "bool"  = ABool
 stringToAType "text"  = AString
 stringToAType t     = error $ error_typeDoesNotExist t
+
+isInteger c = (ceiling c == floor c)
 
 -- this has been stolen from Data.Logic.Propositional.NormalForms and adjusted to our data types
 neg :: AExpr a -> AExpr a
@@ -579,6 +582,8 @@ aexprToString aexpr =
             where ts = zipWith (\x1 x2 -> "((" ++ aexprToString x1 ++ ") - (" ++ aexprToString x2 ++ "))^2") xs1 xs2
         ABinary ADistance x1 x2 -> "(" ++ aexprToString x1 ++ " <@> " ++ aexprToString x2 ++ ")"
 
+        AIfThenElse b x1 x2 -> "(case when " ++ aexprToString b ++ " then " ++ aexprToString x1 ++ " else " ++ aexprToString x1 ++ " end)"
+
 ------------------------------------------------------------------------------------
 updatePreficesAexpr :: (S.Set String) -> VarName -> AExpr VarName -> AExpr VarName
 updatePreficesAexpr fullTablePaths prefix aexpr =
@@ -874,11 +879,10 @@ applyAexprTypes typeMap aexpr =
 
         ABinary AEQstr x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary AEQstr y1 y2)
         ABinary ALike x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary ALike y1 y2)
-        ABinary ADistance x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary ADistance y1 y2)
+        ABinary ADistance x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AFloat, ABinary ADistance y1 y2)
    where processRec xs =
              let (types,aexprs) = unzip (map (applyAexprTypes typeMap) xs) in
              (foldr max AUnit types, aexprs)
-         isInteger c = (ceiling c == floor c)
 
 
 
@@ -886,7 +890,7 @@ applyAexprTypes typeMap aexpr =
 -- symbolic execution of intervals
 
 -- TODO if the sensitive variable is in a non-sensitive row, we may also consider its exact value
-
+-- TODO ideally, we want to use sql-constraint-propagation code here
 aexprRange :: M.Map String String -> M.Map String String -> M.Map String (VState (AExpr String)) -> S.Set VarName -> AExpr String
               -> VState (AExpr String)
 aexprRange subTableAliasMap typeMap attMap sensVars aexpr =
@@ -923,7 +927,7 @@ aexprRange subTableAliasMap typeMap attMap sensVars aexpr =
                               unknown
 
         AZeroSens x  -> processRec x
-        AAbs x       -> let y = processRec x in rangeAbsPoly zero fabs fle fmul fmin fmax y
+        AAbs x       -> let y = processRec x in rangeAbsPoly zero fabs fle fand fmin fmax fif y
 
         ASum xs  -> let ys = map processRec xs in rangeSumPoly fadd ys
         AProd xs -> let ys = map processRec xs in rangeProductPoly fmul fmins fmaxs ys
@@ -938,7 +942,11 @@ aexprRange subTableAliasMap typeMap attMap sensVars aexpr =
         AUnary ANeg x       -> let y = processRec x in rangeNegPoly fneg y
         AUnary ANot x       -> let y = processRec x in rangeNotPoly fnot y
         AUnary (AExp c) x   -> let y = processRec x in rangeMonotonePoly (AUnary (AExp c)) y
-        AUnary (APower c) x -> let y = processRec x in rangeMonotonePoly (AUnary (APower c)) y
+        AUnary (APower c) x -> let y = processRec x in
+                                   if (c > 1) && (isInteger c) && (mod (round c) 2 == 0) then
+                                       rangeAbsPoly zero (fpow c) fle fand fmin fmax fif y
+                                   else
+                                       rangeMonotonePoly (fpow c) y
 
         ABinary ADiv x1 x2  -> let y1 = processRec x1 in
                                let y2 = processRec x2 in
@@ -1010,8 +1018,8 @@ aexprRange subTableAliasMap typeMap attMap sensVars aexpr =
         ABinary ADistance (AVector xs1) (AVector xs2) ->
                                 let ys1 = map processRec xs1 in
                                 let ys2 = map processRec xs2 in
-                                let ys  = map (rangeAbsPoly zero fabs fle fmul fmin fmax) $ zipWith (rangeSubPoly fadd fneg) ys1 ys2 in
-                                rangeLpNormPoly 2 inf ninf zero fabs fle fmul fmin fmax aexprLpnorm ys
+                                let ys  = zipWith (rangeSubPoly fadd fneg) ys1 ys2 in
+                                rangeLpNormPoly 2 inf ninf zero fabs fle fand fmin fmax fif aexprLpnorm ys
 
         _                        -> error $ error_badRangeAexpr aexpr
 
@@ -1024,13 +1032,17 @@ aexprRange subTableAliasMap typeMap attMap sensVars aexpr =
          flt  = ABinary ALT
          fmin = ABinary AMin
          fmax = ABinary AMax
+         fand = ABinary AAnd
 
-         fneg = AUnary ANeg
-         fnot = AUnary ANot
+         fneg   = AUnary ANeg
+         fnot   = AUnary ANot
+         fpow c = AUnary (APower c)
 
          fmins = AMins
          fmaxs = AMaxs
          fabs  = AAbs
+
+         fif = AIfThenElse
 
          zero = AConst 0
          ninf = AConst (-99999.99)

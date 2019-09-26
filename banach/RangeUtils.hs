@@ -92,26 +92,26 @@ rangeMulPoly fmul fmins fmaxs (Range x1 x2) (Range y1 y2) = Range (fmins xys) (f
 rangeProductPoly :: (a -> a -> a) -> ([a] -> a) -> ([a] -> a) -> [VState a] -> VState a
 rangeProductPoly fmul fmins fmaxs = foldl1 (rangeMulPoly fmul fmins fmaxs)
 
-rangeAbsPoly :: a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> VState a -> VState a
-rangeAbsPoly zero fabs fle fmul fmin fmax (Range x y) = Range lb ub
+rangeAbsPoly :: a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a -> a) -> VState a -> VState a
+rangeAbsPoly zero fabs fle fand fmin fmax fif (Range x y) = Range lb ub
   where
     ub = fmax (fabs x) (fabs y)
-    lb = fmul (fmax (fle zero x) (fle y zero)) (fmin (fabs x) (fabs y))
+    lb = fif (fand (fle zero x) (fle y zero)) zero (fmin (fabs x) (fabs y))
 
-rangeLpNormPoly :: Double -> a -> a -> a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (Double -> [a] -> a)
+rangeLpNormPoly :: Double -> a -> a -> a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a -> a) -> (Double -> [a] -> a)
                    -> [VState a] ->  VState a
-rangeLpNormPoly p inf ninf zero fabs fle fmul fmin fmax flpnorm rs0 =
-  let rs = map (rangeAbsPoly zero fabs fle fmul fmin fmax) rs0
+rangeLpNormPoly p inf ninf zero fabs fle fand fmin fmax fif flpnorm rs0 =
+  let rs = map (rangeAbsPoly zero fabs fle fand fmin fmax fif) rs0
       ubs = map (getUbFromVsPoly inf) rs
       lbs = map (getLbFromVsPoly ninf) rs
       ub = flpnorm p ubs
       lb = flpnorm p lbs
   in Range lb ub
 
-rangeLInfNormPoly :: a -> a -> a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> ([a] -> a)
+rangeLInfNormPoly :: a -> a -> a -> (a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a) -> (a -> a -> a -> a) -> ([a] -> a)
                    -> [VState a] ->  VState a
-rangeLInfNormPoly inf ninf zero fabs fle fmul fmin fmax flinfnorm rs0 =
-  let rs = map (rangeAbsPoly zero fabs fle fmul fmin fmax) rs0
+rangeLInfNormPoly inf ninf zero fabs fle fand fmin fmax fif flinfnorm rs0 =
+  let rs = map (rangeAbsPoly zero fabs fle fand fmin fmax fif) rs0
       ubs = map (getUbFromVsPoly inf) rs
       lbs = map (getLbFromVsPoly ninf) rs
       ub = flinfnorm ubs

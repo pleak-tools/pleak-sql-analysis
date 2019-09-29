@@ -1,35 +1,31 @@
-# SQL analysis tool for pleak.io
+# SQL analysis tools for pleak.io
+
+This repository contains three different analysers:
+
+1) [SQL global sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/globalsensitivity-cabal)
+
+2) [SQL local sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/localsensitivity-cabal)
+
+3) [SQL derivative sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/banach)
 
 ## Prerequisites
 
-To set up the SQL analysis tool, you need:
+To set up SQL analysis tools, you need to install:
 
-1) Haskell Tool Stack - to install, execute `wget -qO- https://get.haskellstack.org/ | sh`
+1) Postgresql - `sudo apt install postgresql postgresql-contrib`
 
-2) Z3 Theorem Prover - to install, you can clone it from [https://github.com/Z3Prover/z3](https://github.com/Z3Prover/z3) and compile it yourself or (on some Linux versions, for example Ubuntu 16.4) execute `apt install z3`. You will need Z3 to be in the PATH.
+2) Libpq - `sudo apt-get install libpq-dev`
+
+3) Cabal-install - `sudo apt-get install cabal-install`
+
+4) GHC - `sudo apt-get install ghc`
+
+5) Z3 Theorem Prover - to install, you can clone it from [https://github.com/Z3Prover/z3](https://github.com/Z3Prover/z3) and compile it yourself or (on some Linux versions, for example Ubuntu 16.4) execute `apt install z3`. You will need Z3 to be in the PATH.
 
 ## Building
 
-Building is most convenient with stack. Check the project out with git and in the root project directory:
+All three analysers can be build using cabal. Find specific details in [SQL global sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/globalsensitivity-cabal), [SQL local sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/localsensitivity-cabal) and [SQL derivative sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/banach) directories.
 
-```bash
-git submodule init
-git submodule update
-stack setup
-stack build
-```
-And follow the instructions that stack provides.
+## License
 
-## Using
-
-You will need Z3 to be in the PATH. Z3 location can can also be specified with  `--z3-path` flag. See `--help` for more usage information.
-
-Compilation creates a file .sqla into .stack-work/install/x86_64-linux/lts-7.19/8.0.1/bin directory (or some other similarly named directory) that you can link to your root directory by executing `ln -s .stack-work/install/x86_64-linux/lts-7.19/8.0.1/bin/sqla .`. After that, you can:
-
-Execute `./sqla -h` to see different keys.
-
-Execute `./sqla example/schema.sql example/query.sql` to run the analyser on example files.
-
-## Updating
-
-To update the analyser, execute `git pull` and `stack build`.
+MIT

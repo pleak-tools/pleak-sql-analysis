@@ -1,2 +1,9 @@
 .stack-work/
 *.swp
+.cabal-sandbox
+banach/.cabal-sandbox
+localsensitivity-cabal/.cabal-sandbox
+globalsensitivity-cabal/.cabal-sandbox
+banach/dist
+localsensitivity-cabal/dist
+globalsensitivity-cabal/dist

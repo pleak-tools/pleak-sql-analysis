@@ -2,29 +2,29 @@
 
 Building for the first time:
 
-    `cabal sandbox init`
+`cabal sandbox init`
 
-    `cabal update`
+`cabal update`
 
-    `cabal install happy`
+`cabal install happy`
 
-    `cabal install --only-dependencies`
+`cabal install --only-dependencies`
 
-    `cabal configure`
+`cabal configure`
 
-    `cabal build`
+`cabal build`
 
-Later, only
-    `cabal build`
+Later, only 
+`cabal build` 
 is required to rebuild when files have changed.
 
 If dependencies or project structure has changed then
 
-    `cabal install --only-dependencies`
+`cabal install --only-dependencies`
 
-    `cabal configure`
+`cabal configure`
 
-    `cabal build`
+`cabal build`
 
 may be necessary.
 

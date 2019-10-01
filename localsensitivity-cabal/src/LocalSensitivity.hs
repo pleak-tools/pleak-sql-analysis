@@ -718,6 +718,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
           let dwheres2 = map (\ (a1,a2) -> printf "%s = %s" (showAddrCol a1) (showAddrCol a2)) dwheres2raw
           let dselects = concat dselectss
           let dwheresList = dwheres1 ++ dwheres2
+          let dfromsList = filter (not . null) $ zipWith (\ ot t -> if isTableNameIncluded t then ot ++ " AS " ++ t else "") origTableNames tableNames
           let groupByList = intercalate ", " $ flip map dselects $ \ (b, a) -> let (t,c) = addrToTblCol ! a in '_' : c
           putStr ""
           return $
@@ -731,8 +732,8 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
                  _ -> error ("Aggregation operation " ++ show aggrOp ++ " not supported")
                ++ " AS _derivative"
                | ((se,tables),aggrOp) <- zip sumExprsAndTables aggrOps]) ++
-            " FROM " ++
-            intercalate ", " (filter (not . null) $ zipWith (\ ot t -> if isTableNameIncluded t then ot ++ " AS " ++ t else "") origTableNames tableNames) ++
+            (if null dfromsList then "" else " FROM ") ++
+            intercalate ", " dfromsList ++
             (if null dwheresList then "" else " WHERE ") ++
             intercalate " AND " dwheresList ++
             " GROUP BY " ++ groupByList
@@ -751,7 +752,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
                                 map (\ i -> 'd' : show i ++ "._derivative AS _d" ++ show i) [1..numTables-1]) ++
               " FROM " ++
               intercalate ", " (('(' : d ++ ") AS d") : zipWith (\ i d1 -> '(' : d1 ++ ") AS d" ++ show i) [1..] ds) ++
-              " WHERE " ++
+              (if numTables <= 1 then "" else " WHERE ") ++
               intercalate " AND " ['(' : qcn ++ " = " ++ "d._" ++ cn ++ " OR " ++ qcn ++ " IS NULL)" | i <- [1..numTables-1], cn <- colNames, let qcn = 'd' : show i ++ "._" ++ cn]
           putStrLn bigQuery
           return bigQuery

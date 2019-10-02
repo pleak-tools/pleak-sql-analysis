@@ -1,22 +1,32 @@
 # SQL derivative sensitivity analysis tool for pleak.io
 
 Building for the first time:
-    cabal sandbox init
-    cabal install --only-dependencies
-    cabal configure
-    cabal build
+
+`cabal sandbox init`
+
+`cabal update`
+
+`cabal install --only-dependencies`
+
+`cabal configure`
+
+`cabal build`
 
 The executable is created in the subdirectory dist/build/banach, thus to execute it:
     dist/build/banach/banach
 
-Later, only
-    cabal build
+Later, only 
+`cabal build`
 is required to rebuild when files have changed.
 
 If dependencies or project structure has changed then
-    cabal install --only-dependencies
-    cabal configure
-    cabal build
+
+`cabal install --only-dependencies`
+
+`cabal configure`
+
+`cabal build`
+
 may be necessary.
 
 
@@ -35,19 +45,19 @@ Here is an example of how to do it with Ubuntu system:
 
 Now try to log in under USERNAME:
 
-   postgres@xxxx:~$ exit
-   logout
-   USERNAME@xxxx:~$ psql
-   psql (9.5.13)
-   Type "help" for help.
+    postgres@xxxx:~$ exit
+    logout
+    USERNAME@xxxx:~$ psql
+    psql (9.5.13)
+    Type "help" for help.
 
 Finally, create the database named 'banach'
 
-   USERNAME=# create database banach;
-   CREATE DATABASE
-   USERNAME=# \c banach;
-   You are now connected to database "banach" as user USERNAME.
-   USERNAME=# \q
+    USERNAME=# create database banach;
+    CREATE DATABASE
+    USERNAME=# \c banach;
+    You are now connected to database "banach" as user USERNAME.
+    USERNAME=# \q
 
 All required components should now have been installed and configured.
 The executable is created in the subdirectory dist/build/banach, thus to execute it:

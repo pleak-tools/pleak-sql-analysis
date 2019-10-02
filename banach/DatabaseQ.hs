@@ -63,3 +63,10 @@ sendStringListsDoublesQueryToDb args q' = do
   let q = replaceImproperSymbols q'
   results <- sendQueryToDb args q
   return $ map (\ res -> (map (\r -> if r == SqlNull then "" else fromSql r) (init res), if (last res) == SqlNull then 0.0 else fromSql (last res))) results
+
+-- we need to be careful when using these functions, as we may ignore an important SqlNull
+sqlToString :: SqlValue -> String
+sqlToString res = if res == SqlNull then "" else "\'" ++ fromSql res ++ "\'"
+
+sqlToDouble :: SqlValue -> Double
+sqlToDouble res = if res == SqlNull then 77.0 else fromSql res

@@ -22,8 +22,10 @@ import ErrorMsg
 
 import qualified Banach as B
 import qualified BanachQ as BQ
+import DatabaseQ
 import PolicyQ
 import GroupQ
+import AexprQ
 
 traceIOIfDebug :: Bool -> String -> IO ()
 traceIOIfDebug debug msg = do
@@ -119,39 +121,53 @@ for  :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(
 for ms1 ms2 = ms1 ++ ms2 ++ map (\(s,v) -> (-s,v)) (fand ms1 ms2)
 
 -- given a bounding box with side length a, compute the epsilon required to hide a unit box there
-compute_eps_for_a :: Bool -> Double -> [(Int, M.Map [String] PlcData)] -> Double -> Int -> (Double,Double,Double,Double)
-compute_eps_for_a pos ga expr sample_a nq =
+compute_eps_for_a :: Bool -> Double -> Int -> M.Map String [Either Double String] -> [(Int, M.Map [String] PlcData)] -> Double -> Int -> (Double,Double,Double,Double)
+compute_eps_for_a pos ga numOfRows xmap expr sample_a nq =
 
     -- compute the weight of X' (distributions of some dimensions can be unknown)
     -- if different elements come with different probabilities, we consider all combinations
-    let qssAs = map (\(s,m) -> let (vss,as) = unzip $ map (\(PlcData b ur r rr d g) ->
+    --trace ("xmap: " ++ show xmap) $
+    --trace ("expr: " ++ show expr) $
+    let qssAs = map (\(s,m) -> let (vss,ass) = unzip $ map (\varNames ->
 
-                                    -- adjust proposed a to the actual bounds R
-                                    -- we take 2a as distance since X' may be located somewhere in a corner, except the discrete case
+                                    -- adjust proposed sample_a to the actual bounds R
                                     -- the returned list 'as' is the list of max-distances
+                                    let (PlcData b ur r rr d g) = m ! varNames in
+                                    let xss = map (xmap !) varNames in
 
                                     -- non-sensitive dimensions do not change anything
                                     if not b then
-                                        ([1], 1)
+                                        unzip $ replicate numOfRows (1.0, 1.0)
                                     else
-                                        -- this 'a' defines the probability area, and not the distance
-                                        let a = if d then rr
+                                        -- this 'aa' defines the probability area, and not the distance
+                                        let aa = if d then rr
                                                 else max r $ min rr sample_a
-                                        in
-                                                case g (ur * a) of
-                                                    -- TODO something is still wrong with 'Nothing' case?
-                                                    Nothing -> ([1], if d then 1.0 else 2*rr)
-                                                    Just vs -> (vs,  if d then 1.0 else 2*a)
-                                    ) (M.elems m)
+                                        in unzip $ map (\xs -> case g xs (ur * aa) of
+                                                          Nothing   -> (1.0, if d then 1.0 else 2.0*rr)
+                                                          Just (v,a)-> (v,a)) xss
+                                    ) (M.keys m)
                                in
-                                    (map (((fromIntegral s) * ) . product) (allCombsOfLists vss), foldr max 1 as)) expr
+                                    (map (((fromIntegral s) * ) . product) (transpose vss), foldr max 1.0 (concat ass))) expr
     in
 
-    let pss'  = map (\(s,m) -> let vss = map (\(PlcData b ur r _ _ g) -> if b then g (ur * r) else Just [1]) (M.elems m) in
-                               if elem Nothing vss then Nothing
-                               else
-                                    let wss = allCombsOfLists $ (map fromJust) vss in
-                                    Just $ map ((((fromIntegral s) *) . product) ) wss) expr
+    let pss'  = map (\(s,m) -> let vss = map (\varNames ->
+
+                                    let (PlcData b ur r _ _ g) = m ! varNames in
+                                    let xss = map (xmap !) varNames in
+
+                                    if not b then
+                                         Just $ replicate numOfRows 1.0
+                                    else
+                                         let vs = map (\xs -> case g xs (ur * r) of
+                                                          Nothing   -> Nothing
+                                                          Just (v,a)-> Just v) xss
+                                         in (if elem Nothing vs then Nothing else Just (map fromJust vs))
+                                    ) (M.keys m)
+                               in
+                                    if elem Nothing vss then replicate numOfRows Nothing
+                                    else
+                                        let wss = transpose $ (map fromJust) vss in
+                                        map ((Just . ((fromIntegral s) *) . product) ) wss) expr
     in
 
     -- determine the unique bound 'a' that is true for all dimensions
@@ -159,8 +175,12 @@ compute_eps_for_a pos ga expr sample_a nq =
     let a = foldr max 1 as in
     let d = a * fromIntegral nq in
 
-    let pss = allCombsOfMaybeLists pss' in
-    let qss = allCombsOfLists qss' in
+    let pss = transpose pss' in
+    let qss = transpose qss' in
+
+    --trace (show sample_a)
+    --trace ("pss: " ++ show pss) $
+    --trace ("qss: " ++ show qss) $
 
     -- compute the epsilon (use worst-case p if p is unknown)
     let results = zipWith (\ps qs ->
@@ -176,22 +196,23 @@ compute_eps_for_a pos ga expr sample_a nq =
                   ) pss qss
     in
 
+    -- if there are many possible values of p in the given set of sensitive rows, then choose the worst one
     let (a,epsilon,q,p) = foldr (\x1@(_,e1,_,_) x2@(_,e2,_,_) -> if isNaN e2 || e1 < e2 then x1 else x2) (head results) (tail results) in
     (a,epsilon,q,p)
 
 
-optimal_a_epsilon :: Bool -> Double -> Double -> Double -> [(Int, M.Map [String] PlcData)] -> Double -> Double -> Double -> Double
+optimal_a_epsilon :: Bool -> Double -> Int -> M.Map String [Either Double String] -> Double -> Double -> [(Int, M.Map [String] PlcData)] -> Double -> Double -> Double -> Double
                      -> Double -> Double -> Int -> (Double,Double,Double,Double)
-optimal_a_epsilon _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
-optimal_a_epsilon pos ga scaled_r scaled_rr expr a epsilon q p k n nq =
+optimal_a_epsilon _ _ _ _ _ _ _ a epsilon q p 0 _ _ = (a,epsilon,q,p)
+optimal_a_epsilon pos ga numOfRows xmap scaled_r scaled_rr expr a epsilon q p k n nq =
 
     -- compute the sample value for a and check how good it is
     let sample_a = scaled_r + k * (scaled_rr - scaled_r) / n in
-    let (a',epsilon',q',p') = compute_eps_for_a pos ga expr sample_a nq in
+    let (a',epsilon',q',p') = compute_eps_for_a pos ga numOfRows xmap expr sample_a nq in
 
     --take the best values found so far
     let (a'',epsilon'',q'',p'') = if isNaN epsilon || epsilon' > epsilon then (a',epsilon',q',p') else (a,epsilon,q,p) in
-    optimal_a_epsilon pos ga scaled_r scaled_rr expr a'' epsilon'' q'' p'' (k-1) n nq
+    optimal_a_epsilon pos ga numOfRows xmap scaled_r scaled_rr expr a'' epsilon'' q'' p'' (k-1) n nq
 
 
 performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO ()
@@ -291,9 +312,6 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
 performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] ->Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> PlcCostType -> AttMap -> [Int] -> IO ()
 performPolicyAnalysis args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData plcCostType attMap colTableCounts = do
 
-  let plcExpr = getStatement plcCostType
-  let cost = getCost plcCostType
-
   -- the input epsilon now works as GA, the upper bound on attacker's advantage
   let debug = not (alternative args)
   let ga = getEpsilon args
@@ -303,9 +321,37 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   -- we actually have numOfOutputs as well, but that will be taken into account by Banach analyser
   let nq = numOfQueries args
 
+  -- extract the sensitive expression and the variables used within it
+  let plcExpr = getStatement plcCostType
+  let allSensVars = extract_vars plcExpr
+  let sensVarList = nub $ concat allSensVars
+
+  -- construct the query that reads sensitive data from source tables
+  let plcFilterMap = M.fromList $ getFilters plcCostType
+  let sensTableNames = M.keys plcFilterMap
+
+  let selStr   = intercalate ", " sensVarList
+  let fromStr  = intercalate ", " sensTableNames
+  let whereStr = intercalate " AND " $ map (\tn -> let prefix = tn ++ [tsep] in
+                                                   aexprToString $ updatePreficesAexpr (S.fromList sensTableNames) prefix (plcFilterMap ! tn)
+                                            ) (M.keys plcFilterMap)
+  let dataQuery = "SELECT " ++ selStr ++ " FROM " ++ fromStr ++ " WHERE " ++ whereStr ++ ";"
+
   -- process the policy and the attacker knowledge
   let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (preficedVarName tname x,y)) tmap) typeMap
   let plainTypeMap  = M.fromList $ concat plainTypeMaps
+
+  -- extract the actual data (we will need it to compute priors)
+  results <- sendQueryToDb args dataQuery
+  let numOfRows = length results
+  let xmap = M.fromList $ zipWith (\var rs -> if plainTypeMap ! var == "text" then
+                                                  (var, map (Right . sqlToString) rs)
+                                              else
+                                                  (var, map (Left . sqlToDouble) rs) ) sensVarList (transpose results)
+
+  traceIOIfDebug debug ("type map: " ++ show plainTypeMap)
+  traceIOIfDebug debug ("data query: " ++ show dataQuery)
+  --traceIOIfDebug debug ("xmap: " ++ show xmap)
 
   -- compute parameters of the sensitivie attributes
   let unit_r_map =  traverseExpr (M.unionWith min) (M.unionWith min) (const M.empty) (\(var,plcState) ->
@@ -329,7 +375,6 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
 
   -- this norm is used only to show it in the output
   let norm = deriveDbNorm attMap plcExpr
-  let allSensVars = extract_vars plcExpr
 
 
   -- compute p and q using the equalities and P(A || B) = P(A) + P(B) - P(AB), P(AA) = P(A), P(AB) = P(A)*P(B)
@@ -340,12 +385,11 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   let num_of_tries = 10000
 
   -- since 'a' is only an estimation parameter, we find the noise separately for the positive and the negative guess, and then take the largest noise
+  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a True ga numOfRows xmap pqExpr scaled_rr nq
+  let (a1,epsilon1,q1,p1) = if ga == 0 then (init_a, init_epsilon, init_q, init_p) else optimal_a_epsilon True ga numOfRows xmap scaled_r scaled_rr pqExpr init_a init_epsilon init_q init_p numOfSearchSteps numOfSearchSteps nq
 
-  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a True ga pqExpr scaled_rr nq
-  let (a1,epsilon1,q1,p1) = if ga == 0 then (init_a, init_epsilon, init_q, init_p) else optimal_a_epsilon True ga scaled_r scaled_rr pqExpr init_a init_epsilon init_q init_p numOfSearchSteps numOfSearchSteps nq
-
-  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a False ga pqExpr scaled_rr nq
-  let (a0,epsilon0,q0,p0) = if ga == 0 then (init_a, init_epsilon, init_q, init_p) else optimal_a_epsilon False ga scaled_r scaled_rr pqExpr init_a init_epsilon init_q init_p numOfSearchSteps numOfSearchSteps nq
+  let (init_a, init_epsilon, init_q, init_p) = compute_eps_for_a False ga numOfRows xmap pqExpr scaled_rr nq
+  let (a0,epsilon0,q0,p0) = if ga == 0 then (init_a, init_epsilon, init_q, init_p) else optimal_a_epsilon False ga numOfRows xmap scaled_r scaled_rr pqExpr init_a init_epsilon init_q init_p numOfSearchSteps numOfSearchSteps nq
 
   let (a,epsilon',q,p) = if epsilon0 < epsilon1 then (a0,epsilon0,1-q0,1-p0) else (a1,epsilon1,q1,p1)
 
@@ -369,6 +413,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   traceIOIfDebug debug ("q1: " ++ (show q1))
   traceIOIfDebug debug ("p1: " ++ (show p1))
 
+  --error "STOP"
   let pr_pre  = p1 * 100
   let pr_post = 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100
 

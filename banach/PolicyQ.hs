@@ -5,6 +5,7 @@ import Data.Bits
 import Data.Char
 import Data.Either
 import Data.List
+import Data.Maybe
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Void
@@ -26,7 +27,7 @@ getStatement (plcExpr,_,_) = plcExpr
 getCost (_,cost,_) = cost
 getFilters (_,_,fs) = fs
 
-data PlcData = PlcData Bool Double Double Double Bool (Double -> Maybe [Double])
+data PlcData = PlcData Bool Double Double Double Bool ([Either Double String] -> Double -> Maybe (Double,Double))
 get_b  (PlcData b _  _ _ _ _) = b
 get_ur (PlcData _ ur _ _ _ _) = ur
 get_r  (PlcData _ _  r _ _ _) = r
@@ -293,64 +294,95 @@ extract_p plcState =
             _ -> error $ err_badPolicy plcState
 
 -- extract the function computing probabilities in total space
-extract_gs :: M.Map String VarState -> PlcExpr -> [Double -> Maybe [Double]]
+-- we let 'g' return two outputs: the probability 'p', as well as max-distance (which can be different from initial 'a')
+extract_gs :: M.Map String VarState -> PlcExpr -> [[Either Double String] -> Double -> Maybe (Double,Double)]
 extract_gs attMap plcExpr =
     traverseExpr (++) (++) (const []) (\(xs,_) -> [extract_g attMap xs]) plcExpr
 
--- we assume that attacker known bounds hold w.r.t. the same lp-norm that is used in sensitive set
+-- vs is the vector being approximated
+-- we assume that attacker known bounds hold w.r.t. the same lp-norm that is used by vs
 -- otherwise, it would be more complicated to compute the weight of a circle w.r.t. a square, and using same lp-norm is more reasonable
-extract_g :: M.Map String VarState -> [String] -> (Double -> Maybe [Double])
+extract_g :: M.Map String VarState -> [String] -> ([Either Double String] -> Double -> Maybe (Double,Double))
 extract_g attMap vs =
   let attStates = map (\v -> if M.member v attMap then attMap ! v else None) vs in
   let fs = map (\attState ->
           case attState of
-            Exact        -> const $ Just [1.0]   -- a leaked sensitive region has probability weight 1
-            None         -> const Nothing        -- no knowledge
+            Exact        -> const $ const $ Just (1.0, 1.0)   -- a leaked sensitive region has probability weight 1
+            None         -> const $ const Nothing             -- no knowledge
 
             -- unknown distribution
-            Total n      -> const Nothing
-            SubSet xs    -> const Nothing
-            IntSubSet xs -> const Nothing
-            Range lb ub  -> const Nothing
+            Total n      -> const $ const Nothing
+            SubSet xs    -> const $ const Nothing
+            IntSubSet xs -> const $ const Nothing
+            Range lb ub  -> const $ const Nothing
 
             -- uniform distribution
-            -- since the distance does not depend on x, it always makes sense to take the entire space for a > 1
-            TotalUn n      -> (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
-            SubSetUn xs    -> let n = length xs in (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
-            IntSubSetUn xs -> let n = length xs in (\x -> if x == 1 then Just [1 / fromIntegral n] else Just [1.0])
-            -- here the distance does depend on x
-            RangeUn lb ub  -> let rr = (ub - lb) / 2.0 in (\x -> Just [x / rr])
+            -- since the distance does not depend on x, it always makes sense to take the entire space for r > 1
+            TotalUn n      -> (\_ r -> if r == 1 then Just (1.0 / fromIntegral n, 1.0) else Just (1.0,1.0))
+            SubSetUn xs    -> let n = length xs in (\_ r -> if r == 1 then Just (1 / fromIntegral n, 1.0) else Just (1.0,1.0))
+            IntSubSetUn xs -> let n = length xs in (\_ r -> if r == 1 then Just (1 / fromIntegral n, 1.0) else Just (1.0,1.0))
+            -- here the distance does depend on both r and x
+            RangeUn lb ub  -> (\z r -> case z of
+                                           Left x -> let xub = min (x + r) ub in
+                                                     let xlb = max (x - r) lb in
+                                                     Just ((xub - xlb) / (ub - lb), xub - xlb)
+                                           Right x -> error $ error_badPolicyString x)
 
             -- customized distribution
-            -- we look at all possiblilities for "g 1", and take "g a = 1" for a > 1
+            -- we take "g a = 1" for a > 1
             -- we do not define lp-norms over discrete sets
-            SubSetPr mp    -> if length vs > 1 then error (error_badPolicyFormatLpDiscrete vs) else (\x -> if x == 1 then Just (M.elems mp) else Just (replicate (M.size mp) 1.0))
-            IntSubSetPr mp -> if length vs > 1 then error (error_badPolicyFormatLpDiscrete vs) else (\x -> if x == 1 then Just (M.elems mp) else Just (replicate (M.size mp) 1.0))
+            SubSetPr mp    -> if length vs > 1 then error $ error_badPolicyFormatLpDiscrete vs
+                              else (\z r -> case z of
+                                                Left x  -> error $ error_badPolicyDouble x
+                                                Right x -> if r == 1 then
+                                                              if M.member x mp then Just (mp ! x, 1.0) else error $ error_badPolicyFormatUnknownSetVar x mp
+                                                           else Just (1.0,1.0))
+
+            IntSubSetPr mp -> if length vs > 1 then error $ error_badPolicyFormatLpDiscrete vs
+                              else (\z r -> case z of
+                                                Right x -> error $ error_badPolicyString x
+                                                Left x  -> if r == 1 then
+                                                              let xx = round x in
+                                                              if M.member xx mp then Just (mp ! xx, 1.0) else error $ error_badPolicyFormatUnknownSetVar xx mp
+                                                           else Just (1.0,1.0))
 
             -- if the range is given in several segments, we assume that the distribution inside each segment is uniform
-            -- TODO can we do something better?
-            RangePr lb mp  -> (\x ->
-                                       -- compute the weight of blocks that are fully under x
-                                       let p1 = sum $ map (\ub -> if ub - lb <= x then mp ! ub else 0) (M.keys mp) in
-                                       -- compute the partial weight of the block where x locates
-                                       let ubsL = takeWhile (<= x) (M.keys mp) in
-                                       let ubsR = dropWhile (<  x) (M.keys mp) in
-                                       let ubL = if length ubsL > 0 then last ubsL else lb in
-                                       let ubR = if length ubsR > 0 then head ubsR else getUb lb mp in
-                                       let p2 = if ubL == ubR then 0 else ((x + lb) - ubL) / (ubR - ubL) * (mp ! ubR) in
-                                       Just [p1 + p2])
+            RangePr lb mp -> (\z r -> case z of
+                                          Right x -> error $ error_badPolicyString x
+                                          Left x ->
+                                              let ub = foldr max lb (M.keys mp) in
+                                              let xub = min (x + r) ub in
+                                              let xlb = max (x - r) lb in
+
+                                              -- compute the total weight of blocks fully in (x-r,x+r)
+                                              let xLD = dropWhile (<= x - r) (M.keys mp) in
+                                              let xLT = takeWhile (<= x - r) (M.keys mp) in
+                                              let xRD = dropWhile (<  x + r) (M.keys mp) in
+                                              let xRT = takeWhile (<  x + r) (M.keys mp) in
+
+                                              let (lbR, xLD0) = if length xLD == 0 then (ub, []) else (head xLD, tail xLD) in
+                                              let pkeys = S.toList $ S.intersection (S.fromList xLD0) (S.fromList xRT) in
+                                              let p1 = sum $ map (mp ! ) pkeys in
+
+                                              -- include those partially in (x-r,x+r)
+                                              let lbL = if length xLT == 0 then lb else last xLT in
+                                              let ubL = if length xRT == 0 then lb else last xRT in
+                                              let ubR = if length xRD == 0 then ub else last xRD in
+
+                                              let p2 = if ubL == ubR then 0 else (mp ! ubR) * (xub - ubL) / (ubR - ubL) in
+                                              let p3 = if lbL == lbR then 0 else (mp ! lbR) * (lbR - xlb) / (lbR - lbL) in
+                                              let p0 = p2 + p3 - (if ubL == lbL then (mp ! ubR) else 0) in
+
+                                              Just (p1 + p0, xub - xlb))
 
             _ -> error $ err_badAttackerPolicy attState) attStates in
 
-  -- for discrete variables, we cannot have longer combinations of lp-norms
-  if length vs == 1 then head fs else
   -- if we do not know some dimension, then the total weight is unknown as well
-  if elem Nothing (zipWith (\f x -> f x) fs (replicate (length fs) 0)) then const Nothing else
-  (\r ->
-          -- if all variables are non-discrete, then we have exactly one element in each list under Just
-          let zs = map (\f -> (head . (\(Just z) -> z) . f) r) fs in
-          Just [product zs])
-
+  (\xs r ->
+          let ws = zipWith (\f x -> f x r) fs xs in
+          if elem Nothing ws then Nothing else
+          let (zs,as) = unzip $ map fromJust ws in
+          Just (product zs, foldr max 1 as))
 
 -- extract the total space radius
 -- assume that attacker known bounds hold w.r.t. the same lp-norm that is used in sensitive set

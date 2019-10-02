@@ -127,6 +127,10 @@ error_badPolicyFormat preficedVar = errorTag ++ " policy format error, \"" ++ pr
 error_badPolicyFormatEmptyVars = errorTag ++ " policy format error, an empty variable list is being approximated"
 error_badPolicyFormatLpMixedTables prefices = errorTag ++ " columns of different tables \"" ++ show prefices ++ "\" cannot be combined into a vector in sensitive data description\""
 error_badPolicyFormatLpDiscrete xs = errorTag ++ " discrete table columns \"" ++ show xs ++ "\" cannot be combined into a vector in sensitive data description\""
+error_badPolicyFormatUnknownSetVar x mp = errorTag ++ " data contains the value " ++ show x ++ " whose probability has not been defined in " ++ show mp ++ "."
+error_badPolicyFormatBadRange x lb ub = errorTag ++ show x ++ " is out of input range (" ++ show lb ++ "," ++ show ub ++ ")."
+error_badPolicyString x = errorTag ++ " actual data " ++ show x ++ " is a string, but we need a double."
+error_badPolicyDouble x = errorTag ++ " actual data " ++ show x ++ " is a double, but we need a string."
 error_badSetPolicyFormat xs1 xs2 = errorTag ++ " policy format error, should not use strings " ++ show xs1 ++ " and integers " ++ show xs2 ++ " in one set."
 error_badPolicySensRows vs    = errorTag ++ " the sensitive rows should be listed as \'Range a b\', but we got " ++ show vs ++ " instead."
 

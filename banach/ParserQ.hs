@@ -677,6 +677,7 @@ varStateAttVal = varStateExact
   <|> varStateSetPrior
   <|> varStateRange
   <|> varStateSet
+  <|> varStateNormal
 
 varStatePlcVal :: Parser VarState
 varStatePlcVal = varStateExact
@@ -715,6 +716,14 @@ varStateRange = do
   lb <- signedFloat
   ub <- signedFloat
   return (Range lb ub)
+
+-- assume that the input is given as N(mu,sigma^2)
+varStateNormal = do
+  keyWord "normal"
+  mean <- signedFloat
+  variance <- signedFloat
+  let stdev = if variance < 0 then error $ err_badAttackerPolicy_normal variance else sqrt variance
+  return (Normal mean stdev)
 
 varStateSet = do
   keyWord "set"

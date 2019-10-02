@@ -10,6 +10,8 @@ infinity = 1/0
 -- just convert them to a Range
 anyVarStateToRange (RangeUn lb ub) = Range lb ub
 anyVarStateToRange (RangePr lb mp) = Range lb (getUb lb mp)
+-- although normal distribution is infinite, we take values in range 'mu += 3 * (sqrt 2) * sigma', which covers erf(3) ~ 0.9999779 of the space
+anyVarStateToRange (Normal mu sigma) = Range (mu - 3 * (sqrt 2) * sigma) (mu + 3 * (sqrt 2) * sigma)
 anyVarStateToRange x               = x
 
 -- upper bound on the absolute value

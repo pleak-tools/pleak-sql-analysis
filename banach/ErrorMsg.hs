@@ -118,6 +118,7 @@ error_badAttackerPolicyCombination attState plcState = errorTag ++ " the combina
 err_badAttackerPolicy_n x     = errorTag ++ " negative number of choices in " ++ show x
 err_badAttackerPolicy_range x = errorTag ++ " lower bound is smaller than upper bound in " ++ show x
 err_badAttackerPolicy_Pr x    = errorTag ++ " the probabilities should be nonnegative and sum up to 1 in " ++ show x
+err_badAttackerPolicy_normal x = errorTag ++ " normal distribution has format 'normal mu sigma^2', where sigma^2 should be >= 0, but we have " ++ show x
 err_badAttackerPolicy x       = errorTag ++ " unsupported attacker state " ++ show x
 err_badPolicy_r x             = errorTag ++ " bad radius in sensitive data state " ++ show x
 err_badPolicy x               = errorTag ++ " unsupported sensitive data state " ++ show x
@@ -137,6 +138,7 @@ error_badPolicySensRows vs    = errorTag ++ " the sensitive rows should be liste
 -- groupBy-related messages
 error_badGroupType groupName groupValue groupType = errorTag ++ " bad group by " ++ groupName ++ " the value " ++ groupValue ++ " is not of type " ++ groupType ++ "."
 error_noAttMapBounds x = errorTag ++ " no set of possible values is specified for " ++ x ++ ", which is essential for GROUP BY queries. Specify \'set x1 ... xn\' or \'range x y\' in the attacker file."
+error_floatAttMapBounds x t = errorTag ++ " cannot group by a floating-point value " ++ show x ++ " from distribution " ++ show t ++ " in a GROUP BY query."
 error_badAttMapBounds x t = errorTag ++ " bad set of possible values " ++ show t ++ " for " ++ x ++ ", which is essential for GROUP BY queries. Use \'set x1 ... xn\' or \'range x y\' in the attacker file. Note that GROUP BY variables need to have table name prefices."
 error_noCSGroupSupport = errorTag ++ " GROUP BY is not support in combined sensitivity. Use plain derivative sensitivity (i.e. without \'-c\' parameter)."
 

@@ -57,6 +57,22 @@ niceADoublePrint = niceADouble
 getRangeLB (Range lb _ ) = lb
 getRangeUB (Range _  ub) = ub
 
+-- this is NOT our contribution, and is taken directly from https://www.johndcook.com/blog/haskell-erf/
+erf :: Double -> Double
+erf x = sign*y
+    where
+        a1 =  0.254829592
+        a2 = -0.284496736
+        a3 =  1.421413741
+        a4 = -1.453152027
+        a5 =  1.061405429
+        p  =  0.3275911
+
+        -- Abramowitz and Stegun formula 7.1.26
+        sign = if x > 0 then 1 else -1
+        t  =  1.0/(1.0 + p* abs x)
+        y  =  1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*exp(-x*x)
+
 -- traverse the aexpr formula
 -- apply the function fvar to a variable and fconst to a constant
 -- combine the results using the functions fand and for
@@ -126,6 +142,8 @@ isBadAttState x =
                               if length (filter (< 0) prs) == 0 && abs(sum prs - 1) < 0.000001 then (False,"")
                               else (True, err_badAttackerPolicy_Pr x)
 
+            Normal mu sigma -> if sigma >= 0 then (False,"") else (True, err_badAttackerPolicy_normal sigma)
+
             _ -> (True, err_badAttackerPolicy x)
 
 -- get all possible values from a state description
@@ -145,6 +163,8 @@ getStateValues attMap varName =
                 IntSubSet   xs -> map Left xs
                 IntSubSetUn xs -> map Left xs
                 IntSubSetPr mp -> map Left $ M.keys mp
+
+                Normal _ _ -> error $ error_floatAttMapBounds varName varState
 
                 _ -> error $ error_badAttMapBounds varName varState
     else error $ error_noAttMapBounds varName
@@ -166,14 +186,17 @@ isLeakedVar plcState attState =
             (Range   lb ub,  Approx r) -> (ub - lb) <= r
             (RangeUn lb ub,  Approx r) -> (ub - lb) <= r
             (RangePr lb ubs, Approx r) -> (sum $ map (\ub -> if (ub - lb) / 2 <= r then ubs ! ub else 0) (M.keys ubs)) == 1
+            (Normal mu sigma, Approx r) -> 3 * (sqrt 2) * sigma <= r
 
             (Range   lb ub,  ApproxWrtLp _ r) -> (ub - lb) <= r
             (RangeUn lb ub,  ApproxWrtLp _ r) -> (ub - lb) <= r
             (RangePr lb ubs, ApproxWrtLp _ r) -> (sum $ map (\ub -> if (ub - lb) / 2 <= r then ubs ! ub else 0) (M.keys ubs)) == 1
+            (Normal mu sigma,  ApproxWrtLp _ r) -> 3 * (sqrt 2) * sigma <= r
 
             (Range   lb ub,  ApproxWrtLinf r) -> (ub - lb) <= r
             (RangeUn lb ub,  ApproxWrtLinf r) -> (ub - lb) <= r
             (RangePr lb ubs, ApproxWrtLinf r) -> (sum $ map (\ub -> if (ub - lb) / 2 <= r then ubs ! ub else 0) (M.keys ubs)) == 1
+            (Normal mu sigma, ApproxWrtLinf r) -> 3 * (sqrt 2) * sigma <= r
 
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
@@ -375,6 +398,10 @@ extract_g attMap vs =
 
                                               Just (p1 + p0, xub - xlb))
 
+            Normal mu sigma -> (\z r -> case z of
+                                            Right x -> error $ error_badPolicyString x
+                                            Left  x -> Just ((erf ((abs (x - mu) + r) / (sigma * (sqrt 2))) - erf ((abs (x - mu) - r) / (sigma * (sqrt 2)))) / 2.0, 2.0 * r))
+
             _ -> error $ err_badAttackerPolicy attState) attStates in
 
   -- if we do not know some dimension, then the total weight is unknown as well
@@ -417,6 +444,10 @@ extract_R attMap typeMap plcState vs =
             (Range   lb ub,_)  -> (ub - lb) / 2.0
             (RangeUn lb ub,_)  -> (ub - lb) / 2.0
             (RangePr lb mp,_)  -> let ub = getUb lb mp in (ub - lb) / 2.0
+
+            -- although normal distribution is infinite, we take '3 * (sqrt 2) * sigma', which covers erf(3) ~ 0.9999779 of the space
+            (Normal _ sigma,_)  -> 3 * (sqrt 2) * sigma
+
             _ -> error $ err_badAttackerPolicy attState) vs
     in
     case plcState of
@@ -494,6 +525,9 @@ update_varState attMap typeMap var =
             (Range   lb ub,t)  -> if t == "int" || t == "float" then (var, Just attState) else (var, Nothing)
             (RangeUn lb ub,t)  -> if t == "int" || t == "float" then (var, Just attState) else (var, Nothing)
             (RangePr lb mp,t)  -> if t == "int" || t == "float" then (var, Just attState) else (var, Nothing)
+
+            -- normal distribution is compatible with int and float
+            (Normal mu sigma,t)  -> if t == "int" || t == "float" then (var, Just attState) else (var, Nothing)
             _ -> error $ err_badAttackerPolicy attState
 
 filterWith [] [] = []

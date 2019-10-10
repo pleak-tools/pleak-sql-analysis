@@ -3,6 +3,7 @@ import PreprocessQ as PQ
 import Banach as B
 import ProgramOptions
 import PostprocessQ
+import TimeSeriesQ as TSQ
 
 import Control.Monad
 
@@ -18,7 +19,8 @@ main = do
           performPolicyAnalysis args outputTableName dataPath (delimiter args) initialQuery initQueries numOfoutputs colNames typeMap taskMap sensitiveVarList tableExprData plcMaps attMap colTableCounts
         else do
           (outputTableName,_,attMap,dataPath,initialQuery,initQueries,numOfoutputs,colNames,typeMap,taskMap,sensitiveVarList,tableExprData,tableGs,colTableCounts) <- PQ.getBanachAnalyserInput args (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
-          performDPAnalysis args outputTableName dataPath (delimiter args) initialQuery initQueries numOfoutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+          (case timeSeries args of Just timeCol -> TSQ.performTimeSeriesDPAnalysis timeCol; Nothing -> performDPAnalysis)
+                  args outputTableName dataPath (delimiter args) initialQuery initQueries numOfoutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
 
     else do
       (outputTableName,qr,table,taskMap,tableExprData,colNames) <- P.getBanachAnalyserInput debug (inputFp2 args)

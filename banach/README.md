@@ -78,6 +78,17 @@ Examples:
 
 The parameter --db-create-tables reads data from .db files and stores it to PostgreSQL database. Hence, if the data has already been uploaded once and it has not been updated, there is no need to create the tables again, and --db-create-tables can be removed.
 
+ * Derivative sensitivity analysis for time series:
+
+      dist/build/banach/banach -QDt ts0.c1 --db-create-tables tsschema.sql tsquery1.sql empty_attacker.att --epsilon 1.0 --beta 0.1
+
+   where
+   - column c1 of table ts0 contains the times when each row is added to table ts0
+
+   The analysis is interactive, it reads lines from standard input.
+   Each line contains an integer denoting a time. After reading it, the analyzer then processes the rows added at that time and outputs the results about
+   that time point and the combined results so far.
+
  * Guessing advantage analysis:
 
      dist/build/banach/banach -QDp --db-create-tables demo_schema.sql demo_query.sql demo_attacker.att --policy=demo_policy.plc --epsilon 0.3 --beta 0.0

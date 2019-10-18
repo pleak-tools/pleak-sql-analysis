@@ -15,11 +15,11 @@ main = do
     then do
       if policyAnalysis args
         then do
-          (outputTableName,plcMaps,attMap,dataPath,initialQuery,initQueries,numOfoutputs,colNames,typeMap,taskMap,sensitiveVarList,tableExprData,_,colTableCounts) <- PQ.getBanachAnalyserInput args (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
+          (outputTableName,plcMaps,attMap,dataPath,initialQuery,initQueries,numOfoutputs,colNames,typeMap,taskMap,sensitiveVarList,tableExprData,_,colTableCounts,_tableNames,_tableAliases) <- PQ.getBanachAnalyserInput args (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
           performPolicyAnalysis args outputTableName dataPath (delimiter args) initialQuery initQueries numOfoutputs colNames typeMap taskMap sensitiveVarList tableExprData plcMaps attMap colTableCounts
         else do
-          (outputTableName,_,attMap,dataPath,initialQuery,initQueries,numOfoutputs,colNames,typeMap,taskMap,sensitiveVarList,tableExprData,tableGs,colTableCounts) <- PQ.getBanachAnalyserInput args (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
-          (case timeSeries args of Just timeCol -> TSQ.performTimeSeriesDPAnalysis timeCol; Nothing -> performDPAnalysis)
+          (outputTableName,_,attMap,dataPath,initialQuery,initQueries,numOfoutputs,colNames,typeMap,taskMap,sensitiveVarList,tableExprData,tableGs,colTableCounts,tableNames,tableAliases) <- PQ.getBanachAnalyserInput args (inputFp1 args) (inputFp2 args) (inputFp3 args) (inputFp4 args)
+          (case timeSeries args of Just timeCol -> TSQ.performTimeSeriesDPAnalysis timeCol tableNames tableAliases; Nothing -> performDPAnalysis)
                   args outputTableName dataPath (delimiter args) initialQuery initQueries numOfoutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
 
     else do

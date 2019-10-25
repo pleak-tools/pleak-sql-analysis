@@ -4,6 +4,7 @@ import Control.Monad
 import Data.List
 import Data.List.Split
 import Text.Printf
+import qualified Data.Set as Set
 import qualified Data.Map as Map
 
 import ProgramOptions
@@ -15,8 +16,11 @@ import BanachQ(AnalysisDataWrtTable(..), DataWrtTable(..), TaskMap, performAnaly
 budgetSuffix :: String
 budgetSuffix = "_budget"
 
+provenanceBudgetTable :: String
+provenanceBudgetTable = "provenancebudget"
+
 addWhereCond :: String -> DataWrtTable -> DataWrtTable
-addWhereCond cond (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = DWT (ADWT x1 x2 x3 (x4sensCond,x4from, if x4where == "" then cond else cond ++ " AND (" ++ x4where ++ ")")) x5 x6 x7 x8
+addWhereCond cond (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = DWT (ADWT x1 x2 x3 (x4sensCond,x4from, if x4where == "" then cond else "(" ++ cond ++ ") AND (" ++ x4where ++ ")")) x5 x6 x7 x8
 
 getFromAndWhere :: DataWrtTable -> String
 getFromAndWhere (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = (if x4from == "" then "" else " FROM " ++ x4from) ++ (if x4where == "" then "" else " WHERE " ++ x4where)
@@ -46,16 +50,59 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
   let tablesAndAliases = groupByFst $ zip tableNames tableAliases
   let tableToAliasesMap = Map.fromList tablesAndAliases
   let uniqueTables = map fst tablesAndAliases
-  createBudgetTablesQueries <- fmap concat $ forM uniqueTables $ \ t -> do
-    let budgetTable = t ++ budgetSuffix
-    let query1 = "DROP TABLE IF EXISTS " ++ budgetTable
-    let query2 = "CREATE TABLE " ++ budgetTable ++ " (ID int8, budget double precision)"
-    when debug $ putStrLn query1
-    when debug $ putStrLn query2
-    return [query1, query2]
+
+  let timeCols = splitOn "," timeCol
+  let
+    addTimeCols =
+      concatMap (\ tc -> let [table,col] = splitOn "." tc in
+                         case splitOn ":" col of
+                           addCol : _ | not (null addCol) ->
+                               let tas = tableToAliasesMap Map.! table in
+                               map (\ ta -> ta ++ "." ++ addCol) tas
+                           _ -> [])
+          timeCols
+    removeTimeCols =
+      concatMap (\ tc -> let [table,col] = splitOn "." tc in
+                         case splitOn ":" col of
+                           addCol : removeCol : _ | not (null removeCol) ->
+                               let tas = tableToAliasesMap Map.! table in
+                               if null addCol
+                                 then error ("Cannot have a remove time column without an add time column in table " ++ table)
+                                 else map (\ ta -> ta ++ "." ++ removeCol) tas
+                           _ -> [])
+          timeCols
+    provenanceTablesAndCols =
+      concatMap (\ tc -> let [table,col] = splitOn "." tc in
+                         case splitOn ":" col of
+                           _ : _ : provCol : _ | not (null provCol) -> [(table, provCol)]
+                           _ -> [])
+          timeCols
+    provenanceCols = concatMap (\ (table,col) -> let tas = tableToAliasesMap Map.! table in map (\ ta -> ta ++ "." ++ col) tas) provenanceTablesAndCols
+    provenanceTablesSet = Set.fromList (map fst provenanceTablesAndCols)
+  let addTimeStr = case addTimeCols of [c] -> c
+                                       cs  -> "GREATEST(" ++ intercalate "," cs ++ ")"
+  when debug $ printf "addTimeStr = %s\n" addTimeStr
+  let removeTimeStr = case removeTimeCols of []  -> ""
+                                             [c] -> c
+                                             cs  -> "LEAST(" ++ intercalate "," cs ++ ")"
+  let removesUsed = not (null removeTimeCols)
+  let addsUsed = not (null addTimeCols)
+  unless addsUsed $ fail "At least one add time column must be given for time series analysis"
+  let provenancesUsed = not (null provenanceTablesAndCols)
+
+  let
+    createBudgetTableQueries :: String -> IO [String]
+    createBudgetTableQueries budgetTable = do
+      let query1 = "DROP TABLE IF EXISTS " ++ budgetTable
+      let query2 = "CREATE TABLE " ++ budgetTable ++ " (ID int8, budget double precision)"
+      when debug $ putStrLn query1
+      when debug $ putStrLn query2
+      return [query1, query2]
+  let budgetTables = map (++ budgetSuffix) (filter (`Set.notMember` provenanceTablesSet) uniqueTables) ++ (if provenancesUsed then [provenanceBudgetTable] else [])
+  createBudgetTablesQueries <- fmap concat $ mapM createBudgetTableQueries budgetTables
   sendQueriesToDbAndCommit args createBudgetTablesQueries
 
-  let getMaxBudgetQuery = "SELECT max(m) FROM (" ++ (intercalate " UNION " $ map (\ t -> "(SELECT max(budget) as m FROM " ++ t ++ budgetSuffix ++ ")") uniqueTables) ++ ") as sub"
+  let getMaxBudgetQuery = "SELECT max(m) FROM (" ++ (intercalate " UNION " $ map (\ t -> "(SELECT max(budget) as m FROM " ++ t ++ ")") budgetTables) ++ ") as sub"
   when debug $ putStrLn getMaxBudgetQuery
 
   contents <- getContents
@@ -69,37 +116,62 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
       releaseInterval :: Int -> Int -> IO (Double,Double)
       releaseInterval time1 time2 = do
         printf "Releasing time interval %d-%d\n" time1 time2
-        let timeCols = splitOn "," timeCol
-        let
-          timeCols2 =
-            concatMap (\ tc -> let [table,col] = splitOn "." tc in
-                               let tas = tableToAliasesMap Map.! table in
-                               map (\ ta -> ta ++ "." ++ col) tas)
-                timeCols
-        let maxTimeStr = case timeCols2 of [c] -> c
-                                           cs  -> "GREATEST(" ++ intercalate "," cs ++ ")"
-        when debug $ printf "maxTimeStr = %s\n" maxTimeStr
-        let tableExprData2 = map (addWhereCond (maxTimeStr ++ " BETWEEN " ++ show time1 ++ " AND " ++ show time2)) tableExprData
-        when debug $ putStrLn "tableExprData2:"
-        when debug $ print tableExprData2
+        let addCond1 = addTimeStr ++ " BETWEEN " ++ show time1 ++ " AND " ++ show time2
+        let addCond2 = removeTimeStr ++ " > " ++ show time2
+        let addCond12 = "(" ++ addCond1 ++ ") AND (" ++ addCond2 ++ ")"
+        let tableExprData_adds = map (addWhereCond (if removesUsed then addCond12 else addCond1)) tableExprData
+        let removeCond1 = removeTimeStr ++ " BETWEEN " ++ show time1 ++ " AND " ++ show time2
+        let removeCond2 = addTimeStr ++ " < " ++ show time1
+        let removeCond12 = "(" ++ removeCond1 ++ ") AND (" ++ removeCond2 ++ ")"
+        let tableExprData_removes = map (addWhereCond (if removesUsed then removeCond12 else "false")) tableExprData
+        let addOrRemoveCond = "(" ++ addCond12 ++ ") OR (" ++ removeCond12 ++ ")"
+        let tableExprData_addsOrRemoves = map (addWhereCond (if removesUsed then addOrRemoveCond else addCond1)) tableExprData
+        when debug $ putStrLn "tableExprData_adds:"
+        when debug $ print tableExprData_adds
+        when debug $ putStrLn "tableExprData_removes:"
+        when debug $ print tableExprData_removes
+        when debug $ putStrLn "tableExprData_addsOrRemoves:"
+        when debug $ print tableExprData_addsOrRemoves
 
         when debug $ putStrLn "Computing rows used by the query:"
-        createBudgetsQueries <- fmap concat $ forM tablesAndAliases $ \ (tn, tas) -> do
-          when debug $ printf "Table %s AS %s:\n" tn (show tas)
-          let usedRowsQueries = map (\ ta -> "SELECT DISTINCT " ++ ta ++ ".ID" ++ getFromAndWhere (head tableExprData2)) tas
-          let usedRowsQuery = case usedRowsQueries of [q] -> q
-                                                      qs  -> intercalate " UNION " $ map (\ q -> '(' : q ++ ")") qs
-          when debug $ putStrLn usedRowsQuery
-          let budgetTable = tn ++ budgetSuffix
-          let rowsHavingBudgetQuery = "SELECT DISTINCT id FROM " ++ budgetTable
-          let usedRowsWithoutBudgetQuery = "(" ++ usedRowsQuery ++ ") EXCEPT (" ++ rowsHavingBudgetQuery ++ ")"
-          let createBudgetsQuery = "INSERT INTO " ++ budgetTable ++ " (id,budget) SELECT *, 0 as budget FROM (" ++ usedRowsWithoutBudgetQuery ++ ") as sub"
-          let updateBudgetsQuery = "UPDATE " ++ budgetTable ++ " SET budget = budget + " ++ show epsilon ++ " WHERE id IN (" ++ usedRowsQuery ++ ")"
-          when debug $ putStrLn createBudgetsQuery
-          when debug $ putStrLn updateBudgetsQuery
-          return [createBudgetsQuery, updateBudgetsQuery]
+        let
+          createBudgetQueries :: [String] -> String -> IO [String]
+          createBudgetQueries provCols budgetTable = do
+            let usedRowsQueries = map (\ col -> "SELECT DISTINCT " ++ col ++ getFromAndWhere (head tableExprData_addsOrRemoves)) provCols
+            let usedRowsQuery = case usedRowsQueries of [q] -> q
+                                                        qs  -> intercalate " UNION " $ map (\ q -> '(' : q ++ ")") qs
+            when debug $ putStrLn usedRowsQuery
+            let rowsHavingBudgetQuery = "SELECT DISTINCT id FROM " ++ budgetTable
+            let usedRowsWithoutBudgetQuery = "(" ++ usedRowsQuery ++ ") EXCEPT (" ++ rowsHavingBudgetQuery ++ ")"
+            let createBudgetsQuery = "INSERT INTO " ++ budgetTable ++ " (id,budget) SELECT *, 0 as budget FROM (" ++ usedRowsWithoutBudgetQuery ++ ") as sub"
+            let updateBudgetsQuery = "UPDATE " ++ budgetTable ++ " SET budget = budget + " ++ show epsilon ++ " WHERE id IN (" ++ usedRowsQuery ++ ")"
+            when debug $ putStrLn createBudgetsQuery
+            when debug $ putStrLn updateBudgetsQuery
+            return [createBudgetsQuery, updateBudgetsQuery]
+        createBudgetsQueries1 <- fmap concat $ forM tablesAndAliases $ \ (tn, tas) ->
+          if tn `Set.member` provenanceTablesSet
+            then return []
+            else do
+              when debug $ printf "Table %s AS %s:\n" tn (show tas)
+              createBudgetQueries (map (++ ".ID") tas) (tn ++ budgetSuffix)
+        createBudgetsQueries2 <-
+          if provenancesUsed
+            then do
+              when debug $ printf "Provenance tables:\n"
+              createBudgetQueries provenanceCols provenanceBudgetTable
+            else return []
+        let createBudgetsQueries = createBudgetsQueries1 ++ createBudgetsQueries2
 
-        (qmap, taskAggr, queryResult) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData2 attMap tableGs colTableCounts
+        (qmap, taskAggr, queryResult) <-
+          if removesUsed
+            then do
+              (qmapA, taskAggrA, queryResultA) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_adds attMap tableGs colTableCounts
+              (qmapR, taskAggrR, queryResultR) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_removes attMap tableGs colTableCounts
+              (qmapAR, taskAggrAR, queryResultAR) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_addsOrRemoves attMap tableGs colTableCounts
+              when debug $ printf "sum of adds = %0.6f\n" queryResultA
+              when debug $ printf "sum of removes = %0.6f\n" queryResultR
+              return (qmapAR, taskAggrAR, queryResultA - queryResultR)
+            else performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_adds attMap tableGs colTableCounts
         sendQueriesToDbAndCommit args createBudgetsQueries
 
         printf "change in query result = %0.6f\n" queryResult

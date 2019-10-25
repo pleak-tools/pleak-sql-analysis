@@ -80,14 +80,19 @@ The parameter --db-create-tables reads data from .db files and stores it to Post
 
  * Derivative sensitivity analysis for time series:
 
-      dist/build/banach/banach -QDt ts0.time --db-create-tables tsschema.sql tsquery1.sql empty_attacker.att --epsilon 1.0 --beta 0.1
+      dist/build/banach/banach -QDt ts4.time1:time2:prov --db-create-tables tsschema.sql tsquery5.sql empty_attacker.att --epsilon 1.0 --beta 0.1
 
    where
-   - column time of table ts0 contains the times when each row is added to table ts0 (comma-separated list of time columns in multiple tables can also be
-     used, e.g. -QDt ts0.time,ts1.time)
+   - column time1 of table ts0 contains the times when each row is added to table ts0
+   - column time2 of table ts0 contains the times when each row is removed from table ts0
+   - column prov of table ts0 contains the provenance of each row
+   - comma-separated list of time columns in multiple tables can also be used, e.g. -QDt ts0.time1:time2:prov,ts1.time1:time2:prov
+   - time2 and prov can be empty strings if row removals and/or provenances are not used, e.g. -QDt ts0.time1::prov,ts1.time1:time2
 
    The analysis processes times 1,2,3,...
    After processing each time point, it waits for a newline from standard input.
+   The string `d` can be entered to enable debugging output for the current time point.
+   The string `D` can be entered for even more debugging output.
    When processing a time point, the analyzer processes the rows added at that time and outputs the results about
    that time point and the combined results so far.
 

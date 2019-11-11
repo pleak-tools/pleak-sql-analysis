@@ -109,17 +109,6 @@ compute_worst_epsilon :: Double -> Double -> Double -> Double
 compute_worst_epsilon ga q d =
     (2 / d) * (log ((sqrt q + sqrt (ga*(ga + q - 1))) / (1 - ga)))
 
--- we know that, if the variable is the same, then only the r part can be different
-minPlcData (PlcData b ur r1 rr d g) (PlcData _ _ r2 _ _ _) =
-    (PlcData b ur (min r1 r2) rr d g)
-
--- if the same variable repeats with different precisions, we need to take minimum in an AND
-fand :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)]
-fand ms1 ms2 = concat $ map (\(s2,m2) -> map (\(s1,m1) -> (s1*s2, M.unionWith minPlcData m1 m2)) ms1) ms2
-
-for  :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)]
-for ms1 ms2 = ms1 ++ ms2 ++ map (\(s,v) -> (-s,v)) (fand ms1 ms2)
-
 -- given a bounding box with side length a, compute the epsilon required to hide a unit box there
 compute_eps_for_a :: Bool -> Double -> Int -> M.Map String [Either Double String] -> [(Int, M.Map [String] PlcData)] -> Double -> Int -> (Double,Double,Double,Double)
 compute_eps_for_a pos ga numOfRows xmap expr sample_a nq =
@@ -378,7 +367,7 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
 
 
   -- compute p and q using the equalities and P(A || B) = P(A) + P(B) - P(AB), P(AA) = P(A), P(AB) = P(A)*P(B)
-  let pqExpr = traverseExpr fand for (\x -> if x == 1 then [(1,M.empty)] else []) (\(var,pd) -> [(1, M.singleton var pd)]) plcExprExt
+  let pqExpr = computePweights plcExprExt
 
   -- it seems that brute-forcing optimal epsilon and a works quite well
   -- we consider multidimensional space, where the radius is linf-norm

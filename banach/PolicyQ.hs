@@ -93,6 +93,22 @@ traverseExpr fand for fconst fvar (ABinary AOr x1 x2) =
     let y2 = traverseExpr fand for fconst fvar x2 in
     for y1 y2
 
+-- we know that, if the variable is the same, then only the r part can be different
+minPlcData (PlcData b ur r1 rr d g) (PlcData _ _ r2 _ _ _) =
+    (PlcData b ur (min r1 r2) rr d g)
+
+-- compute p and q using the equalities P(A \/ B) = P(A) + P(B) - P(AB), P(A /\ A) = P(A), P(A /\ B) = P(A)*P(B)
+
+-- if the same variable repeats with different precisions, we need to take minimum in an AND
+fand :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)]
+fand ms1 ms2 = concat $ map (\(s2,m2) -> map (\(s1,m1) -> (s1*s2, M.unionWith minPlcData m1 m2)) ms1) ms2
+
+for  :: [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)] -> [(Int, M.Map [String] PlcData)]
+for ms1 ms2 = ms1 ++ ms2 ++ map (\(s,v) -> (-s,v)) (fand ms1 ms2)
+
+computePweights plcExpr = traverseExpr fand for (\x -> if x == 1 then [(1,M.empty)] else []) (\(var,pd) -> [(1, M.singleton var pd)]) plcExpr
+
+
 -- collect the variables that are part of lp-norm approximation for p > 1
 -- we currently assume that such variables are
 findLpVars :: AExpr ([String],Double,b) -> [String]

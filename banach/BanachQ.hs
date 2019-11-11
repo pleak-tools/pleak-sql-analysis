@@ -1116,7 +1116,8 @@ analyzeTableExprQ fr wh sensCond srt colNames sensitiveVarSet varStates colTable
   let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens sensCond srt subQueryMap te in
   AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
-performAnalyses :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalyses :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState ->
+                   [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
 performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
   let debug = not (alternative args) && not silent
   let tableGmap = M.fromList tableGs
@@ -1194,7 +1195,8 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
   -- here we converted forM to foldM to keep track of subexpression map that collects intermediate AR-s
   -- res00 <- forM tableExprData $ \ (tableName, taskName, te, (_,fromPart,wherePart)) -> do
   let tableExprData = getData tableExprData'
-  (_,res00,taskNames,groupNames,usedTaskNames) <- foldM (\ (subQueryMap',results',taskNames',groupNames',usedTaskNames') (tableName, taskName, group, te, (sensCond,fromPart,wherePart), usedTaskNames, queryStr) -> do
+  (_,res00,queryResult,taskNames,groupNames,usedTaskNames) <- foldM (\ (subQueryMap',results',queryResult,taskNames',groupNames',usedTaskNames')
+                                                                       (tableName, taskName, group, te, (sensCond,fromPart,wherePart), usedTaskNames, queryStr) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " in task " ++ taskName ++ " ==="
@@ -1216,26 +1218,28 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
 
     case M.lookup tableName tableGmap of
       Nothing -> do
-        (newSubQueryMap,results) <- pa (getG args)
+        (newSubQueryMap,results0) <- pa (getG args)
+        let (qrs,results) = unzip $ map (\ (x1,(x2,x3,x4,x5,x6)) -> (x6,(x1,(x2,x3,x4,x5)))) results0
         -- let us remember for which task we computed these analyses
         let taskNames      = replicate (length results) taskName
         let groupNames     = replicate (length results) groupStrings
         let usedTaskNamess = replicate (length results) usedTaskNames
 
         --return (tableName, result)
-        return (newSubQueryMap, results' ++ results, taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)
+        return (newSubQueryMap, results' ++ results, head qrs, taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)
       Just Nothing ->
         -- this table is considered insensitive, so computing its sensitivity is skipped
         -- return (tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))
-        return (subQueryMap', results' ++ [(tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))], taskNames' ++ [taskName], groupNames' ++ [groupStrings], usedTaskNames' ++ [usedTaskNames])
+        return (subQueryMap', results' ++ [(tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))], queryResult, taskNames' ++ [taskName], groupNames' ++ [groupStrings], usedTaskNames' ++ [usedTaskNames])
       Just tableG -> do
-        (newSubQueryMap,results)  <- pa tableG
+        (newSubQueryMap,results0) <- pa tableG
+        let (qrs,results) = unzip $ map (\ (x1,(x2,x3,x4,x5,x6)) -> (x6,(x1,(x2,x3,x4,x5)))) results0
         -- let us remember for which task we computed these analyses
         let taskNames      = replicate (length results) taskName
         let groupNames     = replicate (length results) groupStrings
         let usedTaskNamess = replicate (length results) usedTaskNames
         --return (tableName, result)
-        return (newSubQueryMap, results' ++ results,  taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)) (M.empty,[],[],[],[]) tableExprData
+        return (newSubQueryMap, results' ++ results, head qrs, taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)) (M.empty,[],error "performAnalyses: query result not obtained",[],[],[]) tableExprData
   -- ######################
 
 
@@ -1330,7 +1334,10 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
   when debug $ putStrLn ("tasknames: " ++ (show taskNameList))
   when debug $ putStrLn ("--- ")
   when debug $ putStrLn ("usedTaskNames: " ++ (show usedTaskNames))
-  return (qmap, taskAggr)
+
+  -- queryResult may be different from the one in qmap because it uses the modified query (with sigmoid instead of private filters, etc.) instead of original query
+  -- it is used for time series analysis
+  return (qmap, taskAggr, queryResult)
 
 -- find the minimum value of beta that is allowed for all tables
 findMinimumBeta :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
@@ -1404,7 +1411,7 @@ findMaximumGsens1 args silent fromPart wherePart sensCond tableName taskName gro
 
 performAnalysis :: ProgramOptions -> Bool -> Double -> Maybe Double -> Double -> String -> String -> String -> String -> String -> String -> OneGroupData -> [String] -> [VarState] -> [String] -> TableExpr ->
                    IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] ->  M.Map String AnalysisResult -> Maybe Double ->
-                   IO (AnalysisResult, (Double,Double,String,(Double,Double,Double,Double,Double)))
+                   IO (AnalysisResult, (Double,Double,String,(Double,Double,Double,Double,Double),Double))
 performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensCond tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG = do
     let debug = not (alternative args) && not silent
     --when debug $ printf "varStates = %s\n" (show varStates)
@@ -1432,6 +1439,11 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
     when debug $ putStrLn "Query result:"
     when debug $ putStrLn (show qr ++ ";")
     --when (dbSensitivity args && debug) $ sendDoubleQueryToDb args (show qr) >>= \ qr -> printf "database returns %0.6f (relative error from sigmoids %0.3f%%)\n" qr (abs (qr / initialQr - 1) * 100)
+    qr_value <- case timeSeries args of Just _  -> do
+                                            res <- sendDoubleQueryToDb args (show qr)
+                                            when debug $ printf "database returns %0.6f\n" res
+                                            return res
+                                        Nothing -> return $ error "Query result here currently computed only for time series analysis"
     let sds = constProp $ subg (sdsf ar) beta
     when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
 
@@ -1491,7 +1503,7 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
         return (sds_value,"", (0, 0, sds_value, 0, 0))
 
     -- TODO think what to do with ar_gsens, do they actually need a separate map, or can we reuse the ar map
-    return (ar, (b,combinedSens_value,combinedRes,smoothingData))
+    return (ar, (b,combinedSens_value,combinedRes,smoothingData,qr_value))
 
     --return (b,combinedSens_value,combinedRes,smoothingData)
     --return (b,sds_value,combinedRes)

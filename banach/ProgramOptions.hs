@@ -14,6 +14,7 @@ data ProgramOptions
     inputFp5         :: FilePath,
     alternative      :: Bool,
     combinedSens     :: Bool,
+    timeSeries       :: Maybe String,
     policyAnalysis   :: Bool,
     generateQueries  :: Bool,
     dbSensitivity    :: Bool,
@@ -28,7 +29,7 @@ data ProgramOptions
     numOfQueries     :: Int,
     errorUBprob      :: Double,
     psqlDateStyle    :: String,
-    getDelta      :: Double
+    getDelta         :: Double
   }
 
 programArgs :: Parser ProgramOptions
@@ -40,6 +41,7 @@ programArgs = ProgramOptions
   <*> strOption (long "localsenspath" <> value "" <> help "path to the local sensitivity analyser (used only with -c parameter)")
   <*> switch (short 'a' <> long "alternative" <> hidden <> help "Use alternative input and output format")
   <*> switch (short 'c' <> long "combined-sens" <> hidden <> help "Call local sensitivity analyzer (must be at ./sqlsa) and combine the results of the two analyzers")
+  <*> optional (strOption (short 't' <> long "time-series" <> metavar "TABLE.COL" <> hidden <> help "Analyse time series using TABLE.COL as the time column (comma-separated list of time columns in multiple tables can be used)"))
   <*> switch (short 'p' <> long "policy-analysis" <> hidden <> help "Analyse privacy treating epsilon in [0,1] as attacker's guessing probability")
   <*> switch (short 'Q' <> long "queries" <> hidden <> help "Generate SQL queries for computing sensitivity instead of actually computing it")
   <*> switch (short 'D' <> long "db-sensitivity" <> hidden <> help "Send the generated query for computing sensitivity automatically to the database")

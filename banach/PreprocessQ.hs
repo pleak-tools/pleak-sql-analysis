@@ -298,7 +298,7 @@ allCombsOfLists (xs:xss) =
 
 -- putting everything together
 getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String
-                          -> IO (String,PlcCostType, AttMap, String, String, [String], Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int])
+                          -> IO (String,PlcCostType, AttMap, String, String, [String], Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int],[String],[String])
 getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
 
     let debug = not (alternative args)
@@ -529,7 +529,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let initQueries = subtableQueries ++ if dbCreateTables args then concat ctss else []
 
     -- return data to the banach space analyser
-    let tableExprData = (outputTableName,plcMaps,attMap,dataPath,initialQuery,initQueries,numOfOutputs, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs, colTableCounts)
+    let tableExprData = (outputTableName,plcMaps,attMap,dataPath,initialQuery,initQueries,numOfOutputs, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs,
+                         colTableCounts, allInputTableNames, allInputTableAliases)
     return tableExprData
 
 removeGroupFromSubQueryMap :: [String] -> M.Map String ([TableAlias],[TableAlias],[TableAlias],[Bool],[VarName],GroupData,Function, [AExpr VarName], [[String]], String) -> String

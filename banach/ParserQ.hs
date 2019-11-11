@@ -638,8 +638,12 @@ sensitiveSet :: Parser (AExpr ([String], VarState), Double, [(String,AExpr VarNa
 sensitiveSet = do
   keyWord "leak"
   ps <- many varStatePlcStmt
+
+  -- TODO this is a hack, we need to either fully deprecate this format, or update it a bit
+  let tableName = takeWhile (/= '.') $ (head . fst) (head ps)
+
   c <- costValue <|> do return 100.0
-  return (foldr (ABinary AAnd) (AConst 1.0) (map AVar ps), c, [])
+  return (foldr (ABinary AAnd) (AConst 1.0) (map AVar ps), c, [(tableName, AText "true")])
 
 costValue :: Parser Double
 costValue = do

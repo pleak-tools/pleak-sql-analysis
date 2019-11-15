@@ -1,2 +1,5 @@
 #!/bin/bash
-../localsensitivity-cabal/dist/build/sqlsa/sqlsa "$@" > /dev/null
+mydir="${0%/*}"
+
+
+"$mydir"/../localsensitivity-cabal/dist/build/sqlsa/sqlsa "$@" > /dev/null

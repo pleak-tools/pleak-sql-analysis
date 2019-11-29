@@ -2,6 +2,7 @@
 
 module SelectQuery (
   parseSelectQuery,
+  parseExtraWhereExpr,
   typeCheckSelectQuery,
   combinePrimaryKeys,
   extractWhereExpr,
@@ -63,6 +64,15 @@ parseSelectQuery dialect fp src =
       qs2 <- extractQueries q2
       return (qs1 ++ qs2)
     extractQueries _ = fatal "Unsupported query type. Expecting basic SELECT query."
+
+parseExtraWhereExpr :: Dialect -> T.Text -> IO ScalarExpr
+parseExtraWhereExpr dialect src =
+  case parseScalarExpr parseFlags fp Nothing src of
+    Left err -> fatal (show err)
+    Right expr -> return expr
+  where
+    parseFlags = defaultParseFlags { pfDialect = dialect }
+    fp = "(command line)"
 
 combinePrimaryKeys :: QueryExpr -> [[Bool]] -> [Bool]
 combinePrimaryKeys q pks = fst $ f q pks

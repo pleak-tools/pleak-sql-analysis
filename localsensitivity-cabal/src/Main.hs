@@ -5,6 +5,7 @@ import Data.List
 import Data.Char
 import Database.HsSqlPpp.Catalog
 import Database.HsSqlPpp.Dialect
+import Database.HsSqlPpp.Parse
 import Database.HsSqlPpp.Pretty
 import Database.HsSqlPpp.Syntax
 import Text.Groom
@@ -108,8 +109,11 @@ main = do
           then putStrLn (groom query)
           else T.putStrLn (prettyQueryExpr defaultPrettyFlags query)
       return query
+  extraWhere <- case getExtraWhere args of Nothing -> return Nothing
+                                           Just w  -> fmap Just $ parseExtraWhereExpr dialect (T.pack w)
   forM_ queries $ \ query ->
     performLocalSensitivityAnalysis
                     args
                     (dbFromCatalogUpdates catUpdates)
                     query
+                    extraWhere

@@ -1117,8 +1117,8 @@ analyzeTableExprQ fr wh sensCond srt colNames sensitiveVarSet varStates colTable
   AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
 performAnalyses :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState ->
-                   [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
-performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
+                   [(String, Maybe Double)] -> [Int] -> Maybe String -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts extraWheres = do
   let debug = not (alternative args) && not silent
   let tableGmap = M.fromList tableGs
   let tableGstr = intercalate "," $
@@ -1213,7 +1213,7 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
     qrs <- if (dbSensitivity args) then sendStringListsDoublesQueryToDb args initQueryGroup else (do return [([],1/0)])
     let (groupStrings,qr) = if equal (length qrs) (round 0) then ([], 1/0) else head qrs
 
-    let f v x y w u = performAnalysis args silent epsilon (Just beta) qr x y sensCond tableName w taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts u v
+    let f v x y w u = performAnalysis args silent epsilon (Just beta) qr x y sensCond tableName w taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts u v extraWheres
     let pa v = performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subQueryMap' (f v)
 
     case M.lookup tableName tableGmap of
@@ -1410,9 +1410,9 @@ findMaximumGsens1 args silent fromPart wherePart sensCond tableName taskName gro
 
 
 performAnalysis :: ProgramOptions -> Bool -> Double -> Maybe Double -> Double -> String -> String -> String -> String -> String -> String -> OneGroupData -> [String] -> [VarState] -> [String] -> TableExpr ->
-                   IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] ->  M.Map String AnalysisResult -> Maybe Double ->
+                   IORef (M.Map [String] (M.Map String Double, M.Map String Double)) -> String -> [Int] ->  M.Map String AnalysisResult -> Maybe Double -> Maybe String ->
                    IO (AnalysisResult, (Double,Double,String,(Double,Double,Double,Double,Double),Double))
-performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensCond tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG = do
+performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensCond tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG extraWheres = do
     let debug = not (alternative args) && not silent
     --when debug $ printf "varStates = %s\n" (show varStates)
     let sensitiveVarSet = S.fromList sensitiveVarList
@@ -1469,7 +1469,8 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
         let Just defaultG = getG args
         let sqlsaArgs = ("--combined-sens" :
                          (if null sensitiveVarList then id else ("-f" :) . (intercalate "," sensitiveVarList :))
-                         ((if null tableGstr then id else ("--table-Gs" :) . (tableGstr :))
+                         ((if null tableGstr then id else ("--table-Gs" :) . (tableGstr :)) $
+                          (case extraWheres of Nothing -> id; Just w -> ("-W" :) . (w :))
                          ["-G", show defaultG, "-B", show beta, "-S", show (gub ar), inputFp1 args, inputFp2 args]))
         --print sqlsaExecutablePath
         --print sqlsaArgs

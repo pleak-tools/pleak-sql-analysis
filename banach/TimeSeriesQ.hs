@@ -116,14 +116,24 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
       releaseInterval :: Int -> Int -> IO (Double,Double)
       releaseInterval time1 time2 = do
         printf "Releasing time interval %d-%d\n" time1 time2
-        let addCond1 = addTimeStr ++ " BETWEEN " ++ show time1 ++ " AND " ++ show time2
-        let addCond2 = removeTimeStr ++ " > " ++ show time2
+        let addCond1n = addTimeStr ++ " BETWEEN " ++ show time1 ++ " AND " ++ show time2
+        let addCond1c = intercalate " AND " (("(" ++ intercalate " OR " (map (\ atc -> atc ++ ">=" ++ show time1) addTimeCols) ++ ")") : map (\ atc -> atc ++ "<=" ++ show time2) addTimeCols)
+        let addCond1 = if combinedSens args then addCond1c else addCond1n
+        let addCond2n = removeTimeStr ++ " > " ++ show time2
+        let addCond2c = intercalate " AND " (map (\ rtc -> rtc ++ ">" ++ show time2) removeTimeCols)
+        let addCond2 = if combinedSens args then addCond2c else addCond2n
         let addCond12 = "(" ++ addCond1 ++ ") AND (" ++ addCond2 ++ ")"
-        let tableExprData_adds = map (addWhereCond (if removesUsed then addCond12 else addCond1)) tableExprData
-        let removeCond1 = removeTimeStr ++ " BETWEEN " ++ show time1 ++ " AND " ++ show time2
-        let removeCond2 = addTimeStr ++ " < " ++ show time1
+        let addCond = if removesUsed then addCond12 else addCond1
+        let tableExprData_adds = map (addWhereCond addCond) tableExprData
+        let removeCond1n = removeTimeStr ++ " BETWEEN " ++ show time1 ++ " AND " ++ show time2
+        let removeCond1c = intercalate " AND " (("(" ++ intercalate " OR " (map (\ rtc -> rtc ++ "<=" ++ show time2) removeTimeCols) ++ ")") : map (\ rtc -> rtc ++ ">=" ++ show time1) removeTimeCols)
+        let removeCond1 = if combinedSens args then removeCond1c else removeCond1n
+        let removeCond2n = addTimeStr ++ " < " ++ show time1
+        let removeCond2c = intercalate " AND " (map (\ atc -> atc ++ "<" ++ show time1) addTimeCols)
+        let removeCond2 = if combinedSens args then removeCond2c else removeCond2n
         let removeCond12 = "(" ++ removeCond1 ++ ") AND (" ++ removeCond2 ++ ")"
-        let tableExprData_removes = map (addWhereCond (if removesUsed then removeCond12 else "false")) tableExprData
+        let removeCond = if removesUsed then removeCond12 else "false"
+        let tableExprData_removes = map (addWhereCond removeCond) tableExprData
         let addOrRemoveCond = "(" ++ addCond12 ++ ") OR (" ++ removeCond12 ++ ")"
         let tableExprData_addsOrRemoves = map (addWhereCond (if removesUsed then addOrRemoveCond else addCond1)) tableExprData
         when debug $ putStrLn "tableExprData_adds:"
@@ -165,13 +175,16 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
         (qmap, taskAggr, queryResult) <-
           if removesUsed
             then do
-              (qmapA, taskAggrA, queryResultA) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_adds attMap tableGs colTableCounts
-              (qmapR, taskAggrR, queryResultR) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_removes attMap tableGs colTableCounts
-              (qmapAR, taskAggrAR, queryResultAR) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_addsOrRemoves attMap tableGs colTableCounts
+              (qmapA, taskAggrA, queryResultA) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList
+                                                                  tableExprData_adds attMap tableGs colTableCounts (Just addCond)
+              (qmapR, taskAggrR, queryResultR) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList
+                                                                  tableExprData_removes attMap tableGs colTableCounts (Just removeCond)
+              (qmapAR, taskAggrAR, queryResultAR) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList
+                                                                  tableExprData_addsOrRemoves attMap tableGs colTableCounts (Just addOrRemoveCond)
               when debug $ printf "sum of adds = %0.6f\n" queryResultA
               when debug $ printf "sum of removes = %0.6f\n" queryResultR
               return (qmapAR, taskAggrAR, queryResultA - queryResultR)
-            else performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_adds attMap tableGs colTableCounts
+            else performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_adds attMap tableGs colTableCounts (Just addCond)
         sendQueriesToDbAndCommit args createBudgetsQueries
 
         printf "change in query result = %0.6f\n" queryResult
@@ -210,7 +223,17 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
     when debug $ printf "releases' = %s\n" (show releases')
     --let totalUsedEpsilon = epsilon * fromIntegral (length state'' - 1)
     totalUsedEpsilon <- sendDoubleQueryToDb args getMaxBudgetQuery
-    printf "total epsilon used so far = %0.6f\n" totalUsedEpsilon
+    if combinedSens args
+      then do
+        -- compute the number of intervals with each power-of-two length released so far
+        let f 0 = []
+            f n = let m = n `div` 2 in (n - m) : f m
+        let totalAllowedEpsilon = epsilon * fromIntegral (sum $ map (min (maxProvTimepoints args)) $ f time)
+        when debug $ printf "total epsilon used so far = %0.6f (private)\n" totalUsedEpsilon
+        printf "total epsilon allowed so far = %0.6f (public)\n" totalAllowedEpsilon
+        when debug $ when (totalUsedEpsilon > totalAllowedEpsilon + epsilon*0.5) $ putStrLn "PRIVACY LEAK: budget exceeded, DP not guaranteed anymore (and this message leaks further)"
+      else
+        printf "total epsilon used so far = %0.6f\n" totalUsedEpsilon
 
     printf "Query result at time point #%d = r[%d]\n" time time
     printf "r[%d] = %s\n" time (intercalate " + " $ map (\ (t1,t2,val,nl) -> printf "x[%d-%d]" t1 t2) releases')

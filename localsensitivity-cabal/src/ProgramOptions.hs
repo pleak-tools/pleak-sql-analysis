@@ -24,6 +24,7 @@ data ProgramOptions
     getG              :: Double,
     getBeta           :: Maybe Double,
     getSumExprBound   :: Double,
+    getExtraWhere     :: Maybe String,
     printQuantiles    :: Bool,
     debugPrintZ3      :: Bool,
     debugPrintSchema  :: Bool,
@@ -54,6 +55,7 @@ programArgs = ProgramOptions
   <*> option auto (short 'G' <> long "distance-G" <> value 1 <> help "Specify default G (the distance between two databases that differ by exactly one row)")
   <*> optional (option auto (short 'B' <> long "beta" <> hidden <> help "Specify beta (default is to choose automatically)"))
   <*> option auto (short 'S' <> long "sum-expr-bound" <> value 1000 <> hidden <> help "Specify the global upper bound on the absolute value of the function applied to each row")
+  <*> maybeStrOption (short 'W' <> long "extra-where" <> hidden <> help "Extra WHERE expression to be added to the query read from the file.")
   <*> switch (long "print-quantiles" <> hidden <> help "Print quantiles of noise distributions")
   <*> switch (long "debug-print-z3" <> hidden <> help "Print generated Z3 input")
   <*> switch (long "debug-print-schema" <> hidden <> help "Print debug information about the database schema")

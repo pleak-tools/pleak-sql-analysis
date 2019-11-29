@@ -312,8 +312,8 @@ showNoiseLevelList2 [] = "[]"
 showNoiseLevelList2 nls = take (length s - 3) s
   where s = concatMap (printf "%9.3f | " :: Double -> String) nls
 
-performLocalSensitivityAnalysis :: ProgramOptions -> Map CatName [(CatName, CatName)] -> QueryExpr -> IO ()
-performLocalSensitivityAnalysis args schema query = do
+performLocalSensitivityAnalysis :: ProgramOptions -> Map CatName [(CatName, CatName)] -> QueryExpr -> Maybe ScalarExpr -> IO ()
+performLocalSensitivityAnalysis args schema query extraWhere = do
   putStrLn "performLocalSensitivityAnalysis"
   putStrLn "Processing the schema"
   (tblNames, colss, typess) <- fmap unzip3 $ forM (Map.toList schema) $ \ (n1,ns) -> do
@@ -337,7 +337,7 @@ performLocalSensitivityAnalysis args schema query = do
   --forM_ [0.1,0.2..0.9] $ \ b2 -> do
   --  _ <- performLocalSensitivityAnalysis' debug np{noise_b2 = b2} origTableCols query
   --  return ()
-  _ <- performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes query
+  _ <- performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes query extraWhere
   case maybeTmpHandle of
     Just h -> hClose h
     Nothing -> return ()
@@ -357,8 +357,9 @@ parseColonPair s = f [] s where
   f a (':':s) = (reverse a, s)
   f a (c:s) = f (c:a) s
 
-performLocalSensitivityAnalysis' :: ProgramOptions -> (String -> IO ()) -> NoiseParameters -> Map String [String] -> Map String [String] -> QueryExpr -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [DerT])])])
-performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes query = do
+performLocalSensitivityAnalysis' :: ProgramOptions -> (String -> IO ()) -> NoiseParameters -> Map String [String] -> Map String [String] -> QueryExpr -> Maybe ScalarExpr
+                                                   -> IO ([String], Table, [([(String, Int)], [([Int], [Int], [DerT])])])
+performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes query extraWhere = do
   let debug = debugVerbose args
   putStrLn "performLocalSensitivityAnalysis'"
   putStrLn (showQuery query)
@@ -393,7 +394,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
           let newTblName = ncStr newTblName0
           putStrLn "Processing subquery"
           putStrLn "==================="
-          (subColNames, res, ders) <- performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes subquery
+          (subColNames, res, ders) <- performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origTableTypes subquery Nothing
           putStrLn "============================"
           putStrLn "Finished processing subquery"
           printf "-> %s\n" newTblName
@@ -591,7 +592,8 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
                 print tables
                 return $ if containsForbiddenAddrs as then [] else [(w,tables)]
         let wheres = extractWhereExpr query
-        wheresAndTables <- fmap concat $ forM wheres processWhere
+        let extraWheres = case extraWhere of Just w -> [w]; Nothing -> []
+        wheresAndTables <- fmap concat $ forM (extraWheres ++ wheres) processWhere
         return wheresAndTables
 
       forM_ [0..totalNumCols-1] $ \ i -> do

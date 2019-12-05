@@ -512,7 +512,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
     findQueryForMinMax aggrOp e1 =
         "SELECT " ++ intercalate ", " ((showScalarExpr e1 ++ " AS _value") : map (++ ".ID") tableNames) ++
         " FROM " ++ intercalate ", " (zipWith (\ ot t -> ot ++ " AS " ++ t) origTableNames tableNames) ++
-        (if null dwheresList then "" else " WHERE ") ++ intercalate " AND " dwheresList ++
+        (if null dwheresList then "" else " WHERE ") ++ intercalate " AND " (map (\ s -> "(" ++ s ++ ")") dwheresList) ++
         " ORDER BY _value" ++ if aggrOp == AggrMin then "" else " DESC"
       where
         dwheresList = map showScalarExpr $ extractWhereExpr query
@@ -584,8 +584,10 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
                 r1 <- processWhere w1
                 r2 <- processWhere w2
                 return (r1 ++ r2)
+              Parens _ w1 -> processWhere w1
               _ -> do
                 putStrLn $ TL.unpack $ prettyScalarExpr prettyFlags w
+                --putStrLn $ show w
                 let as = scalarExprAddrs (nmcsToAddr . nmcs) w
                 let tables = nub $ map (addrToTbl !) as
                 print as
@@ -737,7 +739,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
             (if null dfromsList then "" else " FROM ") ++
             intercalate ", " dfromsList ++
             (if null dwheresList then "" else " WHERE ") ++
-            intercalate " AND " dwheresList ++
+            intercalate " AND " (map (\ s -> "(" ++ s ++ ")") dwheresList) ++
             " GROUP BY " ++ groupByList
 
         findBigQueryForDerivatives dtable = do

@@ -71,6 +71,16 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
                                  else map (\ ta -> ta ++ "." ++ removeCol) tas
                            _ -> [])
           timeCols
+    maybeRemoveTimeCols =
+      concatMap (\ tc -> let [table,col] = splitOn "." tc in
+                         case splitOn ":" col of
+                           addCol : removeCol : _ | not (null addCol) ->
+                               let tas = tableToAliasesMap Map.! table in
+                               if null removeCol
+                                 then map (const Nothing) tas
+                                 else map (\ ta -> Just (ta ++ "." ++ removeCol)) tas
+                           _ -> [])
+          timeCols
     provenanceTablesAndCols =
       concatMap (\ tc -> let [table,col] = splitOn "." tc in
                          case splitOn ":" col of
@@ -134,7 +144,12 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
         let removeCond12 = "(" ++ removeCond1 ++ ") AND (" ++ removeCond2 ++ ")"
         let removeCond = if removesUsed then removeCond12 else "false"
         let tableExprData_removes = map (addWhereCond removeCond) tableExprData
-        let addOrRemoveCond = "(" ++ addCond12 ++ ") OR (" ++ removeCond12 ++ ")"
+        let addOrRemoveCond1 = intercalate " AND " $ zipWith (\ atc mrtc -> case mrtc of Just rtc -> atc ++ "<=" ++ show time2 ++ " AND " ++ rtc ++ ">=" ++ show time1 ++
+                                                                                                            " AND (" ++ atc ++ "<" ++ show time1 ++ " OR " ++ rtc ++ ">" ++ show time2 ++ ")"
+                                                                                         Nothing  -> atc ++ "<=" ++ show time2)
+                                                             addTimeCols maybeRemoveTimeCols
+        let addOrRemoveCond = if combinedSens args then "(" ++ addOrRemoveCond1 ++ ") AND ((" ++ addCond12 ++ ") OR (" ++ removeCond12 ++ "))"
+                                                   else "(" ++ addCond12 ++ ") OR (" ++ removeCond12 ++ ")"
         let tableExprData_addsOrRemoves = map (addWhereCond (if removesUsed then addOrRemoveCond else addCond1)) tableExprData
         when debug $ putStrLn "tableExprData_adds:"
         when debug $ print tableExprData_adds

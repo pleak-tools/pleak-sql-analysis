@@ -1,4 +1,0 @@
-all
-berthlength;
-z = 1.0 * berthlength;
-return linf z;

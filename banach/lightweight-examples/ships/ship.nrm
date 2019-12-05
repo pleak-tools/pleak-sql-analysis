@@ -1,0 +1,11 @@
+rows: all;
+cols: latitude longitude length;
+G: 1.0;
+
+// a longer description of the norm
+u1 = lp 2.0 latitude longitude;
+u2 = scaleNorm 0.2 u1;
+w1 = lp 1.0 length;
+w2 = scaleNorm 1.0 w1;
+z = lp 1.0 u2 w2;
+return linf z;

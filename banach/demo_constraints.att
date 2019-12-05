@@ -1,0 +1,2 @@
+ship.latitude range -300 300;
+ship.longitude range -300 300;

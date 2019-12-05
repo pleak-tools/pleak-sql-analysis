@@ -1,5 +1,0 @@
-leak
-cat.cat_id exact;
-cat.gender exact;
-cat.color exact;
-cost 100

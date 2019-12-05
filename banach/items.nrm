@@ -1,7 +1,0 @@
-rows: 1 2 3 4;
-cols: itemname color quantity;
-
-u = l0 color;
-v = l0 itemname;
-z = lp 1.0 u v quantity;
-return lp 1.0 z;

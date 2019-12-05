@@ -1,0 +1,8 @@
+rows: all;
+cols: gender color;
+G: 1.0;
+
+u = l0 gender;
+v = l0 color;
+z = lp 1.0 u v;
+return lp 1.0 z;

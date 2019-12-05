@@ -1,0 +1,2 @@
+wishes.item_id set 1 2 3 4 5 6;
+wishes.quantity range 0 200;

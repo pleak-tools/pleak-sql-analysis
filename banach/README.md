@@ -60,21 +60,19 @@ Finally, create the database named 'banach'
     USERNAME=# \q
 
 All required components should now have been installed and configured.
-The executable is created in the subdirectory dist/build/banach, thus to execute it:
-    dist/build/banach/banach
-
 
 Examples:
 
  * Derivative sensitivity analysis:
 
-      dist/build/banach/banach -QD --db-create-tables demo_schema.sql demo_query.sql demo_attacker.att --epsilon 1.0 --beta 0.1
+      dist/build/banach/banach -QD --db-create-tables demo_schema.sql demo_query.sql demo_constraints.att --epsilon 1.0 --beta 0.1
 
    where
     - demo_schema.sql contains the database schema
     - demo_query.sql contains the query
-    - default_attacker.att (allowed to be an empty file) is the description of constraints on attributes
-    The parameters epsilon and beta are optional.
+    - demo_constraints.att (allowed to be an empty file) is the description of constraints on attributes
+    - epsilon is the level of differential privacy that we want to achieve
+    The parameter beta is only related to optimization and is optional.
 
 The parameter --db-create-tables reads data from .db files and stores it to PostgreSQL database. Hence, if the data has already been uploaded once and it has not been updated, there is no need to create the tables again, and --db-create-tables can be removed.
 
@@ -98,10 +96,11 @@ The parameter --db-create-tables reads data from .db files and stores it to Post
 
  * Guessing advantage analysis:
 
-     dist/build/banach/banach -QDp --db-create-tables demo_schema.sql demo_query.sql demo_attacker.att --policy=demo_policy.plc --epsilon 0.3 --beta 0.0
+     dist/build/banach/banach -QDp --db-create-tables demo_schema.sql demo_query.sql demo_constraints.att --policy=demo_attacker_goal.sql --epsilon 0.3
 
    where
-   - demo_policy.plc contains the attributes that the attacker tries to guess, and the corresponding precision
+   - demo_attacker_goal.sql is the query representing the attacker's goal, i.e. what he is trying to guess
+   - epsilon is the desired upper bound on guesing advantage
 
  * Combined sensitivity analysis (assumes that pleak-sql-analysis/localsensitivity-cabal has been built):
    Make sure that access is granted to a file that connects two analysers together:
@@ -110,5 +109,5 @@ The parameter --db-create-tables reads data from .db files and stores it to Post
 
    The example itself:
 
-     dist/build/banach/banach -QDc --db-create-tables demo_schema.sql demo_query.sql demo_attacker.att --epsilon 1.0 --beta 0.1 --distance-G=1.0
+     dist/build/banach/banach -QDc --db-create-tables demo_schema.sql demo_query.sql demo_constraints.att --epsilon 1.0 --beta 0.1 --distance-G=1.0
 

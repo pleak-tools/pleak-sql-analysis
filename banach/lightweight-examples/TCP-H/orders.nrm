@@ -1,0 +1,7 @@
+rows: all;
+cols: o_totalprice o_orderdateF;
+
+e = scaleNorm 0.01 o_totalprice;
+s = scaleNorm 1.0 o_orderdateF;
+z = lp 1.0 e s;
+return lp 1.0 z;

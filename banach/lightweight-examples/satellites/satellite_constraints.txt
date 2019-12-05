@@ -1,0 +1,3 @@
+satellites.xx range 0 2000;
+satellites.yy range 0 2000;
+satellites.zz range 0 2000;

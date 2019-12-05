@@ -1,0 +1,3 @@
+person2diseasestate.person_id exact;
+person2diseasestate.diseasestate total 4;
+person2diseaseriskfactor.riskfactor_id range 1 7;

@@ -1,0 +1,4 @@
+person2diseasestate.transitiondate range 36524 43829; -- from 01-01-2000 to 01-01-2020
+person2diseasestate.person_id exact;
+person2diseasestate.diseasestate setUnif 'S' 'I' 'R' 'D';
+person2diseaseriskfactor.riskfactor_id rangeUnif 1 7;

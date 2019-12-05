@@ -1,0 +1,1 @@
+SELECT person2diseasestate.person_id exact AND person2diseasestate.diseasestate exact FROM person2diseasestate;

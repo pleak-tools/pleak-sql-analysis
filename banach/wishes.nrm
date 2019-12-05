@@ -1,7 +1,0 @@
-rows: all;
-cols: personname item_id ;
-
-x = l0 personname;
-y = lp 1.0 item_id;
-z = lp 1.0 x y;
-return lp 1.0 z;

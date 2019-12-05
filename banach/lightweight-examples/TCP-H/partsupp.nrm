@@ -1,0 +1,7 @@
+rows: all;
+cols: ps_availqty ps_supplycost;
+
+e = scaleNorm 0.01 ps_supplycost;
+s = scaleNorm 1.0 ps_availqty;
+z = lp 1.0 e s;
+return lp 1.0 z;

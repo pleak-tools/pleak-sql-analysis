@@ -1,3 +1,0 @@
-distances  = SELECT position.ID AS ID, sqrt(|position.x| ^ 2.0 + |position.y| ^ 2.0) AS d FROM position
-velocities = SELECT attributes.ID AS ID, attributes.velocity AS v FROM attributes WHERE attributes.length <= 100.0
-SELECT MIN distances.d / velocities.v FROM distances, velocities WHERE distances.ID - velocities.ID == 0.0

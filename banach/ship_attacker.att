@@ -1,3 +1,0 @@
-ship.ship_id exact;
-ship.latitude range 0 300;
-ship.longitude range 0 300;

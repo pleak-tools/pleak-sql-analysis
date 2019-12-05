@@ -1,0 +1,3 @@
+person2diseasestate.person_id exact;
+person2diseasestate.diseasestate setUnif 'S' 'I' 'R' 'D';
+person2diseaseriskfactor.riskfactor_id rangeUnif 1 7;

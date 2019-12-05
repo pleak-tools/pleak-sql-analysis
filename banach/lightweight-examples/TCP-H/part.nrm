@@ -1,0 +1,7 @@
+rows: all;
+cols: p_retailprice p_size;
+
+e = scaleNorm 0.01 p_retailprice;
+s = scaleNorm 1.0 p_size;
+z = lp 1.0 e s;
+return lp 1.0 z;

@@ -1,0 +1,5 @@
+rows: all;
+cols: riskfactor_id;
+
+z = l0 riskfactor_id;
+return lp 1.0 z;

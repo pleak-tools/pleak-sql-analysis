@@ -1,0 +1,10 @@
+rows: all;
+cols: l_quantity l_extendedprice l_discount l_shipdateF l_commitdateF l_receiptdateF;
+
+q = scaleNorm 1.0 l_quantity;
+e = scaleNorm 0.0001 l_extendedprice;
+d = scaleNorm 50.0 l_discount;
+s = linf l_shipdateF l_commitdateF l_receiptdateF;
+t = scaleNorm 1.0 s;
+u = lp 1.0 q e d t;
+return lp 1.0 u;

@@ -1,0 +1,5 @@
+rows: all;
+cols: s_acctbal;
+
+z = scaleNorm 0.01 s_acctbal;
+return lp 1.0 z;

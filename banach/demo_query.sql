@@ -1,9 +1,5 @@
-SELECT COUNT(*)
-FROM person,
-     community,
-     person2diseasestate
-WHERE community.community_id = person.residence
-AND person2diseasestate.person_id = person.person_id
-AND person2diseasestate.diseasestate = 'I'
-AND community.community_name = 'Cebu_City'
+SELECT
+    MIN ((ship.latitude ^ 2 + ship.longitude ^ 2) ^ 0.5 / ship.max_speed) AS cnt
+FROM
+    ship
 ;

@@ -1,5 +1,10 @@
 module PreprocessQ where
 
+---------------------------------------------------------
+---- This module preprocesses a Query
+----  and prepares it for Banach Analyser input
+---------------------------------------------------------
+
 import Debug.Trace
 
 import Control.Monad (when, zipWithM, forM)
@@ -29,10 +34,6 @@ import QueryQ
 import ReaderQ
 import SchemaQ
 import SelectQueryQ
-
----------------------------------------------------------
----- Preprocessing a Query for Banach Analyser input ----
----------------------------------------------------------
 
 -- this outputs a trace message only if the flag debug=True is set
 traceIfDebug :: Bool -> String -> (a -> a)
@@ -301,7 +302,7 @@ getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String
                           -> IO (String,PlcCostType, AttMap, String, String, [String], Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int],[String],[String])
 getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = do
 
-    let debug = not (alternative args)
+    let debug = not (alternative args) && not (succinct args)
     let policy = policyAnalysis args
 
     -- used for generating benchmarks
@@ -311,6 +312,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     queryFileContents <- readInput inputQuery
     (outputTableName,queryMap) <- parseQueryMap defaultOutputTableName queryFileContents
+    traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Query map: " ++ show queryMap
 
     schemaFileContents <- readInput inputSchema
@@ -320,7 +322,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let typeList  = map (\(x,ys) -> (x, map (\(y1,y2) -> (y1, takeWhile (\z -> ord(z) >= 65) (map toLower y2) )) ys)) typeList'
     let typeMap  = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) typeList
 
-    traceIOIfDebug debug $ "Type map:  " ++ show typeMap
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Type map: " ++ show typeMap
 
     let plainTypeMaps = map (\(tname,tmap) -> map (\(x,y) -> (preficedVarName tname x,y)) tmap) typeList
     let plainTypeMap  = M.fromList $ concat plainTypeMaps
@@ -331,14 +334,14 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- verify that the types of attMap and the schema match
     let attMap = update_varStates attMap' plainTypeMap
 
-    traceIOIfDebug debug $ "Att map:   " ++ show attMap
-    traceIOIfDebug debug $ "Plc map:   " ++ show plcMaps
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Att map: " ++ show attMap
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Plc map: " ++ show plcMaps
 
     -- verify that all columns in the attMap do exist (to prevent attacker knowledge loss due to typos)
     let badAttMapVars = foldr (\x ys -> if  M.member x plainTypeMap then ys else (x : ys)) [] $ M.keys attMap
     when (length badAttMapVars > 0) $ traceIO (warning_badAttackerVars badAttMapVars)
-
-
 
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
@@ -348,20 +351,36 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- by construction, the used table aliases may repeat, so we discard repetitions first
     let (inputTableAliases, inputTableNames, usedTaskNames) = unzip3 $ zipWith3 (\xs ys zs -> unzip3 $ S.toList $ S.fromList $ zip3 xs ys zs) inputTableAliases' inputTableNames' usedTaskNames'
     let (allInputTableNames,allInputTableAliases) = unzip $ nub $ zip (concat inputTableNames) (concat inputTableAliases)
+    let tableAliasMap = M.union (M.fromList $ map (\(x,y) -> (y,[x])) subTableAliasMap) $ M.fromListWith (++) $ zip allInputTableNames (map (\x -> [x]) allInputTableAliases)
+
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Queries:    " ++ show outputQueryFuns
+    traceIOIfDebug debug $ "Queries: " ++ show outputQueryFuns
+    traceIOIfDebug debug $ "*"
     traceIOIfDebug debug $ "Task names: " ++ show taskNames
-    traceIOIfDebug debug $ "Groups:     " ++ show outputGroups
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Groups: " ++ show outputGroups
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Used task names:    " ++ show usedTaskNames
-    traceIOIfDebug debug $ "Input table names:  " ++ show inputTableNames'
-    traceIOIfDebug debug $ "Input table aliases:" ++ show inputTableAliases'
+    traceIOIfDebug debug $ "Used task names: " ++ show usedTaskNames
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Input table names: " ++ show inputTableNames'
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Input table aliases: " ++ show inputTableAliases'
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Input table names:   " ++ show allInputTableNames
-    traceIOIfDebug debug $ "Input table aliases: " ++ show allInputTableAliases
-    traceIOIfDebug debug $ "Subtable aliases:    " ++ show subTableAliasMap
-    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Input table name set: " ++ show allInputTableNames
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Input table alias set: " ++ show allInputTableAliases
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Subtable aliases: " ++ show subTableAliasMap
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Table alias map: " ++ show tableAliasMap
+
+    -- create a map that is analogous to attMap, but is defined on tableAliases instead of tableNames
+    let fullAttMap  = M.fromList $ concat $ map (\(varName,varState) ->
+                                                    let [tableName,x] = varNameToTableAndSubVarName varName in
+                                                    let xs = if M.member tableName tableAliasMap then (tableAliasMap ! tableName) else [] in
+                                                    map (\ta -> (preficedVarName ta x, varState)) xs
+                                                ) (M.toList attMap)
 
     -- inputTableMap maps input table aliases to the actual table data that it reads from file (table contents, column names, norm, sensitivities)
     inputTableMap <- readTableData policy dataPath attMap plcMaps typeMap allInputTableNames allInputTableAliases
@@ -394,9 +413,13 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     --let goodQueries    = map (\xs -> length xs == S.size (S.fromList xs)) subExprTables
     --when (foldr (&&) True goodQueries == False) $ error $ error_subQueries
     let goodQueries    = length subExprTables == S.size (S.fromList subExprTables)
+    traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "subExprsQ: " ++ show subExprsQ
+    traceIOIfDebug debug $ "*"
     traceIOIfDebug debug $ "subExprsF: " ++ show subExprsF
+    traceIOIfDebug debug $ "*"
     traceIOIfDebug debug $ "subExprs: " ++ show subExprs
+    traceIOIfDebug debug $ "*"
     traceIOIfDebug debug $ "subExprTables: " ++ show subExprTables
     when (goodQueries == False) $ error $ error_subQueries
 
@@ -412,10 +435,16 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Intermediate Vars: " ++ show allIntermediateColNameList
+    traceIOIfDebug debug $ "*"
     traceIOIfDebug debug $ "Group Vars: " ++ show allIntermediateGroupColNameList
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Types plain: " ++ show typeMap
+    traceIOIfDebug debug $ "*"
     traceIOIfDebug debug $ "Types preficed: " ++ show fullTypeMap
+    traceIOIfDebug debug $ "----------------"
+    traceIOIfDebug debug $ "Att plain: " ++ show attMap
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Att preficed: " ++ show fullAttMap
 
     -- assign a unique integer to each column name, which is the order of this column in the cross product table
     let inputMap        = M.fromList $ zip colNames [0..length colNames - 1]
@@ -426,11 +455,9 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
                                            ) sensitiveVarList
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "All input variables:    " ++ show inputMap
-    traceIOIfDebug debug $ "All sensitive vars:     " ++ show sensitiveVarList
-    traceIOIfDebug debug $ "All sensitive cols:     " ++ show sensitiveColSet
-
-
+    traceIOIfDebug debug $ "All input variables: " ++ show inputMap
+    traceIOIfDebug debug $ "All sensitive vars:  " ++ show sensitiveVarList
+    traceIOIfDebug debug $ "All sensitive cols:  " ++ show sensitiveColSet
 
     let filterAexprs = map (map (snd . applyAexprTypes fullTypeMap)) filterAexprs'
 
@@ -469,7 +496,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "number of outputs: " ++ show numOfOutputs
     traceIOIfDebug debug $ "----------------"
 
-    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) attMap inputMap inputTableMap plcFilterMap (M.fromList subTableAliasMap) fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
+    let dataWrtEachTable = concat $ map (getQueryData debug policy (getSigmoidBeta args) (getSigmoidPrecision args) fullAttMap inputMap inputTableMap plcFilterMap (M.fromList subTableAliasMap) fullTypeMap subQueryDataMap sensitiveVarList allQueryStrs) (reverse commonOrderedQueryNames)
 
     let (tableNameList,_,_) = unzip3 $ map BQ.getExtra dataWrtEachTable
     let taskMap = BQ.TM $ nub $ map (\t -> if t == outputTableName then (t,True) else (t,False)) tableNameList
@@ -631,8 +658,6 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap i
 
     -- put the direct table aliases in place of corresponding table names in plcFilterMap
     let fullTablePaths = S.fromList directTableAliases in
-    --traceIfDebug debug ("####################> " ++ show fullTablePaths) $
-    --traceIfDebug debug ("####################> " ++ show plcFilterMap) $
     let filtStr = intercalate " AND " $ map (\ta -> let tn = getTableName (inputTableMap ! ta) in
                                                     let prefix = ta ++ [tsep] in
                                                     if M.member tn plcFilterMap then aexprToString $ updatePreficesAexpr fullTablePaths prefix (plcFilterMap ! tn) else "true"

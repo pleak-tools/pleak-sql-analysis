@@ -13,6 +13,7 @@ data ProgramOptions
     inputFp4         :: FilePath,
     inputFp5         :: FilePath,
     alternative      :: Bool,
+    succinct         :: Bool,
     combinedSens     :: Bool,
     timeSeries       :: Maybe String,
     maxProvTimepoints:: Int,
@@ -41,6 +42,7 @@ programArgs = ProgramOptions
   <*> strOption (long "policy" <> value "" <> help "policy description input file (used only by policy analyser)")
   <*> strOption (long "localsenspath" <> value "" <> help "path to the local sensitivity analyser (used only with -c parameter)")
   <*> switch (short 'a' <> long "alternative" <> hidden <> help "Use alternative input and output format")
+  <*> switch (short 's' <> long "succinct" <> hidden <> help "Output less debugging information")
   <*> switch (short 'c' <> long "combined-sens" <> hidden <> help "Call local sensitivity analyzer (must be at ./sqlsa) and combine the results of the two analyzers")
   <*> optional (strOption (short 't' <> long "time-series" <> metavar "TABLE.COL" <> hidden <> help "Analyse time series using TABLE.COL as the time column (comma-separated list of time columns in multiple tables can be used)"))
   <*> option auto (short 'm' <> long "max-prov-timepoints" <> value 1 <> help "Specify the maximum number of time points where a provenance (or row) can affect the query change, including the time points when it is joined with other rows (default is 1)")

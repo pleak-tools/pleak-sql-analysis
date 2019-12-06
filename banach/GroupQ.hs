@@ -44,7 +44,7 @@ tsep = '.'
 grsep = '#'
 
 -- we use an improper symbol csep as query name separator, and replace it with sqlsep when communicating with the database
-csep = '%'
+csep = '$'
 sqlsep = '_'
 
 -- TODO (not important) we get different separators from different sources,

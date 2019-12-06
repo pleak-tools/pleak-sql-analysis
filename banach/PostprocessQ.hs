@@ -204,27 +204,36 @@ optimal_a_epsilon pos ga numOfRows xmap scaled_r scaled_rr expr a epsilon q p k 
     optimal_a_epsilon pos ga numOfRows xmap scaled_r scaled_rr expr a'' epsilon'' q'' p'' (k-1) n nq
 
 
-performDPAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO ()
-performDPAnalysis args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
+performDPAnalysis :: [String] -> [String] -> ProgramOptions -> String -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO ()
+performDPAnalysis tableNames tableAliases args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   let debug    = not (alternative args)
+  let vb       = not (succinct args)
   let epsilon' = getEpsilon args
   let beta     = getBeta args
   let delta    = getDelta args
 
+  -- extend attMap to table aliases
+  let tableAliasMap = M.fromListWith (++) $ zip tableNames (map (\x -> [x]) tableAliases)
+  let fullAttMap    = M.fromList $ concat $ map (\(varName,varState) ->
+                                                    let [tableName,x] = varNameToTableAndSubVarName varName in
+                                                    let xs = if M.member tableName tableAliasMap then (tableAliasMap ! tableName) else [] in
+                                                    map (\ta -> (preficedVarName ta x, varState)) xs
+                                                ) (M.toList attMap)
+
   -- do not look for optimal beta if it has been specified by the user
   (qmap,taskAggrMap) <- case beta of
-          Just _  -> performAnalysis args False epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+          Just _  -> performAnalysis args False epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap tableGs colTableCounts
           Nothing -> do
-                         (_,q,tm,_) <- findOptimalBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+                         (_,q,tm,_) <- findOptimalBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap tableGs colTableCounts
                          return (q,tm)
 
   -- if we have a GroupBy query, we need to scale epsilon accordingly
   let epsilon = epsilon' / (fromIntegral numOfOutputs)
 
-  traceIOIfDebug debug ("===============================")
-  traceIOIfDebug debug ("final qmap: " ++ (show qmap))
-  traceIOIfDebug debug ("final taskAggr: " ++ (show taskAggrMap))
+  traceIOIfDebug (debug && vb) ("===============================")
+  traceIOIfDebug (debug && vb) ("final qmap: " ++ (show qmap))
+  traceIOIfDebug (debug && vb) ("final taskAggr: " ++ (show taskAggrMap))
 
   -- if a group is empty, we set its output to 0
   -- TODO think how to define for MIN/MAX queries in a better way
@@ -298,17 +307,27 @@ performDPAnalysis args outputTableName dataPath separator initialQuery initQueri
   putStr ""
 
 
-performPolicyAnalysis :: ProgramOptions -> String -> String -> String -> String -> [String] ->Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> PlcCostType -> AttMap -> [Int] -> IO ()
-performPolicyAnalysis args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData plcCostType attMap colTableCounts = do
+performPolicyAnalysis :: [String] -> [String] -> ProgramOptions -> String -> String -> String -> String -> [String] ->Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> PlcCostType -> AttMap -> [Int] -> IO ()
+performPolicyAnalysis tableNames tableAliases args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData plcCostType attMap colTableCounts = do
 
   -- the input epsilon now works as GA, the upper bound on attacker's advantage
   let debug = not (alternative args)
+  let vb    = not (succinct args)
+
   let ga = getEpsilon args
   let fixedBeta = getBeta args
 
   -- this basically scales epsilon nq times, assuming that up to nq queries may be run on the same data
   -- we actually have numOfOutputs as well, but that will be taken into account by Banach analyser
   let nq = numOfQueries args
+
+  -- extend attMap to table aliases
+  let tableAliasMap = M.fromListWith (++) $ zip tableNames (map (\x -> [x]) tableAliases)
+  let fullAttMap    = M.fromList $ concat $ map (\(varName,varState) ->
+                                                    let [tableName,x] = varNameToTableAndSubVarName varName in
+                                                    let xs = if M.member tableName tableAliasMap then (tableAliasMap ! tableName) else [] in
+                                                    map (\ta -> (preficedVarName ta x, varState)) xs
+                                                ) (M.toList attMap)
 
   -- extract the sensitive expression and the variables used within it
   let plcExpr = getStatement plcCostType
@@ -338,9 +357,9 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
                                               else
                                                   (var, map (Left . sqlToDouble) rs) ) sensVarList (transpose results)
 
-  traceIOIfDebug debug ("type map: " ++ show plainTypeMap)
-  traceIOIfDebug debug ("data query: " ++ show dataQuery)
-  --traceIOIfDebug debug ("xmap: " ++ show xmap)
+  traceIOIfDebug (debug && vb) ("type map: " ++ show plainTypeMap)
+  traceIOIfDebug (debug && vb) ("data query: " ++ show dataQuery)
+  --traceIOIfDebug (debug && vb) ("xmap: " ++ show xmap)
 
   -- compute parameters of the sensitivie attributes
   let unit_r_map =  traverseExpr (M.unionWith min) (M.unionWith min) (const M.empty) (\(var,plcState) ->
@@ -382,25 +401,25 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
 
   let (a,epsilon',q,p) = if epsilon0 < epsilon1 then (a0,epsilon0,1-q0,1-p0) else (a1,epsilon1,q1,p1)
 
-  traceIOIfDebug debug ("plcExpr: " ++ show plcExpr)
-  traceIOIfDebug debug ("plcExprExt: " ++ show plcExprExt)
-  traceIOIfDebug debug ("pqExpr: " ++ show pqExpr)
-  traceIOIfDebug debug ("allSensVars: " ++ show allSensVars)
-  traceIOIfDebug debug ("--------")
-  traceIOIfDebug debug ("GA: " ++ (show ga))
-  traceIOIfDebug debug ("--------")
-  traceIOIfDebug debug ("scaled rr: " ++ (show scaled_rr))
-  traceIOIfDebug debug ("scaled r: " ++ (show scaled_r))
-  traceIOIfDebug debug ("--------")
-  traceIOIfDebug debug ("a0: " ++ (show a0))
-  traceIOIfDebug debug ("eps0: " ++ (show epsilon0))
-  traceIOIfDebug debug ("q0: " ++ (show q0))
-  traceIOIfDebug debug ("p0: " ++ (show p0))
-  traceIOIfDebug debug ("--------")
-  traceIOIfDebug debug ("a1: " ++ (show a1))
-  traceIOIfDebug debug ("eps1: " ++ (show epsilon1))
-  traceIOIfDebug debug ("q1: " ++ (show q1))
-  traceIOIfDebug debug ("p1: " ++ (show p1))
+  traceIOIfDebug (debug && vb) ("plcExpr: " ++ show plcExpr)
+  traceIOIfDebug (debug && vb) ("plcExprExt: " ++ show plcExprExt)
+  traceIOIfDebug (debug && vb) ("pqExpr: " ++ show pqExpr)
+  traceIOIfDebug (debug && vb) ("allSensVars: " ++ show allSensVars)
+  traceIOIfDebug (debug && vb) ("--------")
+  traceIOIfDebug (debug && vb) ("GA: " ++ (show ga))
+  traceIOIfDebug (debug && vb) ("--------")
+  traceIOIfDebug (debug && vb) ("scaled rr: " ++ (show scaled_rr))
+  traceIOIfDebug (debug && vb) ("scaled r: " ++ (show scaled_r))
+  traceIOIfDebug (debug && vb) ("--------")
+  traceIOIfDebug (debug && vb) ("a0: " ++ (show a0))
+  traceIOIfDebug (debug && vb) ("eps0: " ++ (show epsilon0))
+  traceIOIfDebug (debug && vb) ("q0: " ++ (show q0))
+  traceIOIfDebug (debug && vb) ("p0: " ++ (show p0))
+  traceIOIfDebug (debug && vb) ("--------")
+  traceIOIfDebug (debug && vb) ("a1: " ++ (show a1))
+  traceIOIfDebug (debug && vb) ("eps1: " ++ (show epsilon1))
+  traceIOIfDebug (debug && vb) ("q1: " ++ (show q1))
+  traceIOIfDebug (debug && vb) ("p1: " ++ (show p1))
 
   --error "STOP"
   let pr_pre  = p1 * 100
@@ -410,11 +429,11 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   -- if ga < prior, then the lower bound may be negative, and we take the bound 0 in this case
   --let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
 
-  (finalBeta,qmap,taskAggrMap,cauchyError) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap [] colTableCounts
+  (finalBeta,qmap,taskAggrMap,cauchyError) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap [] colTableCounts
 
-  traceIOIfDebug debug ("===============================")
-  traceIOIfDebug debug ("final qmap: " ++ (show qmap))
-  traceIOIfDebug debug ("final taskAggr: " ++ (show taskAggrMap))
+  traceIOIfDebug (debug && vb) ("===============================")
+  traceIOIfDebug (debug && vb) ("final qmap: " ++ (show qmap))
+  traceIOIfDebug (debug && vb) ("final taskAggr: " ++ (show taskAggrMap))
 
   -- if we have a GroupBy query, we need to scale epsilon accordingly
   -- we already took into account numOfQueries, now we also need to include numOfOutputs
@@ -445,14 +464,14 @@ performPolicyAnalysis args outputTableName dataPath separator initialQuery initQ
   let laplaceDelta   = foldr min (1/0) laplaceDeltas
   let laplaceEpsilon = foldr min (1/0) laplaceEpsilons
 
-  traceIOIfDebug debug ("betas: " ++ show allBetas)
-  traceIOIfDebug debug ("Cauchy bs: " ++ show cauchyBs)
-  traceIOIfDebug debug ("laplace bs: " ++ show laplaceBs)
-  traceIOIfDebug debug ("laplace deltas: " ++ show laplaceDeltas)
-  traceIOIfDebug debug ("laplace epsilons: " ++ show laplaceEpsilons)
-  traceIOIfDebug debug ("laplace alphas: " ++ show (map (\eps -> epsilon - eps) laplaceEpsilons))
-  traceIOIfDebug debug ("Cauchy epsilon: " ++ show epsilon)
-  traceIOIfDebug debug ("(1 - delta/chi): " ++ show (zipWith3 (\delta sds b -> 1.0 - 2 * sds * delta / b) laplaceDeltas finalSdss laplaceBs))
+  traceIOIfDebug (debug && vb) ("betas: " ++ show allBetas)
+  traceIOIfDebug (debug && vb) ("Cauchy bs: " ++ show cauchyBs)
+  traceIOIfDebug (debug && vb) ("laplace bs: " ++ show laplaceBs)
+  traceIOIfDebug (debug && vb) ("laplace deltas: " ++ show laplaceDeltas)
+  traceIOIfDebug (debug && vb) ("laplace epsilons: " ++ show laplaceEpsilons)
+  traceIOIfDebug (debug && vb) ("laplace alphas: " ++ show (map (\eps -> epsilon - eps) laplaceEpsilons))
+  traceIOIfDebug (debug && vb) ("Cauchy epsilon: " ++ show epsilon)
+  traceIOIfDebug (debug && vb) ("(1 - delta/chi): " ++ show (zipWith3 (\delta sds b -> 1.0 - 2 * sds * delta / b) laplaceDeltas finalSdss laplaceBs))
 
   let errorUB = errorUBprob args
   let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1

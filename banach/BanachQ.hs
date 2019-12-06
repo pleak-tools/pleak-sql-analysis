@@ -1120,6 +1120,7 @@ performAnalyses :: ProgramOptions -> Bool -> Double -> Maybe Double -> String ->
                    [(String, Maybe Double)] -> [Int] -> Maybe String -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
 performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts extraWheres = do
   let debug = not (alternative args) && not silent
+  let vb    = not (succinct args)
   let tableGmap = M.fromList tableGs
   let tableGstr = intercalate "," $
                     map (\ tg -> case tg of (tbl,Nothing)               -> tbl
@@ -1129,13 +1130,13 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
 
 
   when debug $ putStrLn "================================="
-  when debug $ putStrLn "Computing queries that create empty intermediate query tables and the input tables:\n"
+  when debug $ putStrLn "Computing queries that create empty intermediate query tables and the input tables\n"
 
   sendQueriesToDbAndCommit args initQueries
 
   --when debug $ printf "tableGstr = %s\n" tableGstr
   when debug $ putStrLn "================================="
-  when debug $ putStrLn "Computing the initial query:"
+  when debug $ putStrLn "Computing the initial query"
   when debug $ putStrLn initialQuery
 
   -- used for generating CSF benchmarks
@@ -1144,18 +1145,16 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
   --qr <- if (dbSensitivity args) then sendDoubleQueryToDb args initialQuery else (do return 0)
 
   -- a group-by query may return several outputs; we store it as a map group -> value
-  when debug $ putStrLn "================================="
   qmapList <- if (dbSensitivity args) then sendStringListsDoublesQueryToDb args initialQuery else (do return [([],0)])
-  when debug $ putStrLn "================================="
 
   let qmap = M.fromList qmapList
 
   -- scale epsilon according to the number of outputs
   let epsilon = divide epsilon' (fromIntegral numOfOutputs)
 
-  when (dbSensitivity args && debug) $ putStrLn (show qmapList)
+  when (dbSensitivity args && debug && vb) $ putStrLn (show qmapList)
   when debug $ putStrLn "================================="
-  when debug $ putStrLn "Generating SQL queries for computing the analysis results:"
+  when debug $ putStrLn "Generating SQL queries for computing the analysis results"
   --let fromPart = intercalate ", " tableNames
   --let wherePart = ""
   --forM_ tableExprData $ \ (tableName, te, sqlQuery) -> do
@@ -1172,23 +1171,23 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
   when debug $ printf "epsilon = %0.6f\n" epsilon
   when debug $ printf "gamma = %0.6f\n" gamma
   let defaultBeta = epsilon / (2 * (gamma + 1))
-  when debug $ printf "defaultBeta = %0.6f\n" defaultBeta
+  when (debug && vb) $ printf "defaultBeta = %0.6f\n" defaultBeta
   let minBeta' = if isInfinite maxGsens then max defaultBeta minBeta else minBeta
   let beta = chooseSUBBeta defaultBeta fixedBeta (SUB {subBeta = minBeta'})
-  when debug $ case fixedBeta of Just beta1 -> printf "fixedBeta = %0.6f\n" beta1
-                                 Nothing    -> do printf "minBeta = %0.6f\n" minBeta
-                                                  printf "minBeta' = %0.6f\n" minBeta'
+  when (debug && vb) $ case fixedBeta of Just beta1 -> printf "fixedBeta = %0.6f\n" beta1
+                                         Nothing    -> do printf "minBeta = %0.6f\n" minBeta
+                                                          printf "minBeta' = %0.6f\n" minBeta'
   when debug $ printf "beta = %0.6f\n" beta
   let b = epsilon / (gamma + 1) - beta
   when debug $ printf "b = %0.6f\n" b
 
   -- extract the known bounds for columns (if any) from the attMap, convert everything to ranges whenever possible
-  let varStatesRaw = map (M.findWithDefault Exact `flip` attMap) colNames
-  let varStates    = map anyVarStateToRange varStatesRaw
+  let varStates = map (anyVarStateToRange . (M.findWithDefault Exact `flip` attMap)) colNames
 
-  when debug $ printf "colNames = %s\n" (show colNames)
-  when debug $ printf "varStates = %s\n" (show varStates)
-  when debug $ printf "colTableCounts = %s\n" (show colTableCounts)
+  when (debug && vb) $ printf "attMap = %s\n" (show attMap)
+  when (debug && vb) $ printf "colNames = %s\n" (show colNames)
+  when (debug && vb) $ printf "varStates = %s\n" (show varStates)
+  when (debug && vb) $ printf "colTableCounts = %s\n" (show colTableCounts)
   sqlsaCache <- newIORef M.empty :: IO (IORef (M.Map [String] (M.Map String Double, M.Map String Double)))
 
   -- ######################
@@ -1200,7 +1199,7 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
     when debug $ putStrLn $ "\\echo === Analyzing table " ++ tableName ++ " in task " ++ taskName ++ " ==="
-    when debug $ print te
+    when (debug && vb) $ print te
 
     let groupvars = getOneGroupColName group
     let groupkeys = getOneGroupValue group
@@ -1263,15 +1262,15 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
 
   --taskAggr0 <- forM taskMap $ \ (taskName, is, b) -> do
   taskAggr0 <- forM taskMap $ \ (taskName, is, gr, b) -> do
-    when debug $ printf "taskName=%s is=%s b=%s\n" (show taskName) (show is) (show b)
+    when (debug && vb) $ printf "taskName=%s is=%s b=%s\n" (show taskName) (show is) (show b)
     let res1 = map ((\ (tableName, (b, _, _, (cc1, eembg, c0, c3, cc4))) -> (tableName, (b, cc1, eembg, c0, c3, c3, cc4))) . (res00 !!)) is
-    when debug $ do
+    when (debug && vb) $ do
       putStrLn "res1:"
       forM_ res1 print
     let res2 = B.sumGroupsWith (foldr (\ (b, cc1, eembg, c0, c3, minc3, cc4) (b', cc1', eembg', c0', c3', minc3', cc4') ->
                                          (min b b', max cc1 cc1', max eembg eembg', c0 + c0', c3 + c3', min minc3 minc3', max cc4 cc4'))
                                          (infinity,0,0,0,0,infinity,0)) res1
-    when debug $ do
+    when (debug && vb) $ do
       putStrLn "res2:"
       forM_ res2 print
     let
@@ -1284,7 +1283,7 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
             smoothed2Sds = if combinedSens args then maximum (smoothed1Sds : [eembgj * (cc0i + cc3i * cc4j) | (_,(_,_,eembgj, _, _, _, cc4j)) <- skipith i res2])
                                                 else cc0i
         in (tableName,(b,smoothed1Sds,smoothed2Sds))
-    when debug $ do
+    when (debug && vb) $ do
       putStrLn "res2smoothed:"
       forM_ res2smoothed print
     return (taskName, res2smoothed, gr, b)
@@ -1324,16 +1323,16 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
 
   let taskAggr = M.fromListWith (++) $ taskAggr'
 
-  when debug $ putStrLn ("--- ")
-  when debug $ putStrLn ("qmapKeys: " ++ (show qmap))
-  when debug $ putStrLn ("--- ")
-  when debug $ putStrLn ("taskkeys: " ++ (show taskAggr))
-  when debug $ putStrLn ("--- ")
-  when debug $ putStrLn ("taskmap: " ++ (show taskMap))
-  when debug $ putStrLn ("--- ")
-  when debug $ putStrLn ("tasknames: " ++ (show taskNameList))
-  when debug $ putStrLn ("--- ")
-  when debug $ putStrLn ("usedTaskNames: " ++ (show usedTaskNames))
+  when (debug && vb) $ putStrLn ("--- ")
+  when (debug && vb) $ putStrLn ("qmapKeys: " ++ (show qmap))
+  when (debug && vb) $ putStrLn ("--- ")
+  when (debug && vb) $ putStrLn ("taskkeys: " ++ (show taskAggr))
+  when (debug && vb) $ putStrLn ("--- ")
+  when (debug && vb) $ putStrLn ("taskmap: " ++ (show taskMap))
+  when (debug && vb) $ putStrLn ("--- ")
+  when (debug && vb) $ putStrLn ("tasknames: " ++ (show taskNameList))
+  when (debug && vb) $ putStrLn ("--- ")
+  when (debug && vb) $ putStrLn ("usedTaskNames: " ++ (show usedTaskNames))
 
   -- queryResult may be different from the one in qmap because it uses the modified query (with sigmoid instead of private filters, etc.) instead of original query
   -- it is used for time series analysis
@@ -1342,7 +1341,7 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
 -- find the minimum value of beta that is allowed for all tables
 findMinimumBeta :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
 findMinimumBeta args silent epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
-    let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
+    let varStates = map (anyVarStateToRange . (M.findWithDefault Exact `flip` attMap)) colNames
     -- ######################
     -- subqueries are taken into account for computation of beta
     --minBetas <- forM tableExprData $ \ (tableName, _, te, (_,fromPart,wherePart),_) ->
@@ -1359,6 +1358,7 @@ findMinimumBeta1 :: ProgramOptions -> Bool -> String -> String -> String -> Stri
 findMinimumBeta1 args silent fromPart wherePart sensCond tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
 
     let debug = not (alternative args) && not silent
+    let vb    = not (succinct args)
 
     let sensitiveVarSet = S.fromList sensitiveVarList
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
@@ -1369,14 +1369,14 @@ findMinimumBeta1 args silent fromPart wherePart sensCond tableName taskName grou
 
     let (_,ars) = unzip results
     let minBeta = foldr max 0 $ map (\ar -> subBeta (sdsf ar)) ars
-    when debug $ printf "tableName=%s minBeta=%0.6f\n" tableName minBeta
+    when (debug && vb) $ printf "tableName=%s minBeta=%0.6f\n" tableName minBeta
     return (outputMap, minBeta)
 
 
 -- find the maximum value of gsens over all tables
 findMaximumGsens :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
 findMaximumGsens args silent epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
-    let varStates = map (M.findWithDefault Exact `flip` attMap) colNames
+    let varStates = map (anyVarStateToRange . (M.findWithDefault Exact `flip` attMap)) colNames
     -- ######################
     -- subqueries are taken into account for computation of beta
     let tableExprData = getData tableExprData'
@@ -1414,6 +1414,8 @@ performAnalysis :: ProgramOptions -> Bool -> Double -> Maybe Double -> Double ->
                    IO (AnalysisResult, (Double,Double,String,(Double,Double,Double,Double,Double),Double))
 performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensCond tableName analyzedTable taskName group colNames varStates sensitiveVarList te sqlsaCache tableGstr colTableCounts subExprMap tableG extraWheres = do
     let debug = not (alternative args) && not silent
+    let vb    = not (succinct args)
+
     --when debug $ printf "varStates = %s\n" (show varStates)
     let sensitiveVarSet = S.fromList sensitiveVarList
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
@@ -1423,20 +1425,21 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
     let ar_for_gsens = analyzeTableExprQ fromPart wherePart sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True subExprMap te
     let ar = (analyzeTableExprQ fromPart wherePart sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False subExprMap te) {gsens = gsens ar_for_gsens}
 
-    when debug $putStrLn "Analysis result:"
-    when debug $print ar
-    when debug $ printf "epsilon = %0.6f\n" epsilon
-    when debug $ printf "gamma = %0.6f\n" gamma
+    when (debug && vb) $putStrLn "Analysis result:"
+    when (debug && vb) $print ar
+    when (debug && vb) $ printf "epsilon = %0.6f\n" epsilon
+    when (debug && vb) $ printf "gamma = %0.6f\n" gamma
     let defaultBeta = epsilon / (2 * (gamma + 1))
     let beta = chooseSUBBeta defaultBeta fixedBeta (sdsf ar)
-    when debug $ printf "beta = %0.6f\n" beta
+    when (debug && vb) $ printf "beta = %0.6f\n" beta
     let b = epsilon / (gamma + 1) - beta
-    when debug $ printf "b = %0.6f\n" b
+    when (debug && vb) $ printf "b = %0.6f\n" b
 
     processIntermediateResults args silent beta taskName analyzedTable group ar subExprMap
 
     let qr = constProp $ fx ar
-    when debug $ putStrLn "Query result:"
+    when debug $ putStrLn "===================="
+    when debug $ putStrLn "-- modified query:  "
     when debug $ putStrLn (show qr ++ ";")
     --when (dbSensitivity args && debug) $ sendDoubleQueryToDb args (show qr) >>= \ qr -> printf "database returns %0.6f (relative error from sigmoids %0.3f%%)\n" qr (abs (qr / initialQr - 1) * 100)
     qr_value <- case timeSeries args of Just _  -> do
@@ -1445,7 +1448,7 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
                                             return res
                                         Nothing -> return $ error "Query result here currently computed only for time series analysis"
     let sds = constProp $ subg (sdsf ar) beta
-    when debug $ putStrLn "-- beta-smooth derivative sensitivity:"
+    when debug $ putStrLn "-- beta-smooth derivative sensitivity query:"
 
     when debug $ putStrLn (show sds ++ ";")
     sds_value <- if (dbSensitivity args) then sendDoubleQueryToDb args (show sds) else (do return 0)
@@ -1555,6 +1558,7 @@ performSubExprAnalysis :: ProgramOptions -> Bool -> String -> String -> String -
 performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f = do
 
     let debug = not (alternative args) && not silent
+    let vb    = not (succinct args)
 
     -- extract the variable names from the taskName and the tableName
     let varName = queryNameToPreficedVarName taskName
@@ -1579,9 +1583,9 @@ performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskNam
     let analyzedTables = concat analyzedTables0
     let subExprAnalysisResults = foldr M.union M.empty subExprAnalysisResults0
 
-    when debug $ putStrLn ("initial table: " ++ show tableName)
-    when debug $ putStrLn ("suitable tables: " ++ show goodVarNames)
-    when debug $ putStrLn ("analyzed tables: " ++ show analyzedTables)
+    when (debug && vb) $ putStrLn ("initial table: " ++ show tableName)
+    when (debug && vb) $ putStrLn ("suitable tables: " ++ show goodVarNames)
+    when (debug && vb) $ putStrLn ("analyzed tables: " ++ show analyzedTables)
 
     let results00 = map (\analyzedTable ->
             let extFromPart  = if equal analyzedTable tableName then fromPart else fromPart  ++ ", _sens_" ++ tableName in
@@ -1594,7 +1598,7 @@ performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskNam
 
     let mapKey = removeGroupFromQName varName
     let outputMap = M.insertWith chooseSaferARs mapKey (group, M.fromList $ zip analyzedTables ars) subExprMap
-    when debug $ putStrLn ("outputMap: " ++ show outputMap)
+    when (debug && vb) $ putStrLn ("outputMap: " ++ show outputMap)
     --return (outputMap, zip analyzedTables results)
     return (outputMap, if (isIntermediateQueryName taskName) then [] else zip analyzedTables results)
 

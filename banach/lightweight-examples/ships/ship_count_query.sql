@@ -34,7 +34,5 @@ WHERE
     AND berth.berthlength >= ship.length
     AND slot.slotstart <= ship_parameters.deadline
     AND slot.slotstart + port.offloadtime <= slot.slotend
-    -- TODO this works if we put here "(((ship.latitude - port.latitude) ^ 2 + (ship.longitude - port.longitude) ^ 2) ^ 0.5 / ship.max_speed)" directly
-    -- this is related to table renaming problem
-    --AND reachable.arrival <= 20
+    AND reachable.arrival <= 20
 ;

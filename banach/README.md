@@ -74,6 +74,10 @@ Examples:
     - epsilon is the level of differential privacy that we want to achieve
     The parameter beta is only related to optimization and is optional.
 
+    If you want the analyzer to be less verbose and only display relevant output, use the parameter 's':
+
+      dist/build/banach/banach -QDs --db-create-tables demo_schema.sql demo_query.sql demo_constraints.att --epsilon 1.0 --beta 0.1
+
 The parameter --db-create-tables reads data from .db files and stores it to PostgreSQL database. Hence, if the data has already been uploaded once and it has not been updated, there is no need to create the tables again, and --db-create-tables can be removed.
 
  * Derivative sensitivity analysis for time series:

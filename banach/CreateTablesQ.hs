@@ -11,6 +11,7 @@ import ProgramOptions
 import Debug.Trace
 import Data.Char
 import Data.List
+import Data.List.Split
 import qualified Data.Map as M
 import qualified Data.Set as S
 
@@ -112,14 +113,25 @@ createTableSqlTyped args dataPath separator tableName sRows types = do
     let sensRowsSet = S.fromList (take numRows sR)
     let colTypes = map (\col -> let tm = typeMap ! tableName in
                                 if M.member col tm then tm ! col else error $ error_schema_bad_var tableName col (M.keys tm)) colNames
-    return [
-      "SET datestyle TO " ++ datestyle,
-      "DROP TABLE IF EXISTS " ++ tableName,
-      "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (col,t) -> col ++ " " ++ t ++", ") (zip colNames colTypes) ++ "ID int8)",
-      "INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (zipWith (\ r i -> '(' : intercalate ", " (zipWith stringForm r colTypes ++ [show i]) ++ ")") tbl [0..]),
-      "DROP TABLE IF EXISTS " ++ sensTableName,
-      "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)",
-      "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ ")") [0..numRows-1])]
+    let tblChunks      = chunksOf 100 tbl
+    let rowIndexChunks = chunksOf 100 [0..numRows-1]
+
+    let insertIntoMain  = if (numRows > 0) then
+                              zipWith (\xs ys -> "INSERT INTO " ++ tableName ++ " VALUES\n" ++ intercalate ",\n" (zipWith (\ r i -> '(' : intercalate ", " (zipWith stringForm r colTypes ++ [show i]) ++ [')']) xs ys)) tblChunks rowIndexChunks
+                          else [""]
+
+    let insertIntoSRows = if (numRows > 0) then
+                              map (\xs -> "INSERT INTO " ++ sensTableName ++ " VALUES\n" ++ intercalate ",\n" (map (\ i -> '(' : show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false") ++ [')']) xs)) rowIndexChunks
+                          else [""]
+
+    return ([
+          "SET datestyle TO " ++ datestyle,
+          "DROP TABLE IF EXISTS " ++ tableName,
+          "CREATE TABLE " ++ tableName ++ " (" ++ concatMap (\ (col,t) -> col ++ " " ++ t ++", ") (zip colNames colTypes) ++ "ID int8)"
+      ] ++ insertIntoMain ++ [
+          "DROP TABLE IF EXISTS " ++ sensTableName,
+          "CREATE TABLE " ++ sensTableName ++ " (ID int8, sensitive boolean)"
+      ] ++ insertIntoSRows)
     where
         stringForm s t =
                        if length s == 0 then "NULL"

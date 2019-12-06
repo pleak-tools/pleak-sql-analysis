@@ -483,15 +483,21 @@ linfnorm = maximum . map abs
 doubleRangesToAexprRanges :: M.Map String VarState -> M.Map String (VState (AExpr a))
 doubleRangesToAexprRanges attMap =
     let rangeAttMap = M.filter (\x -> case x of
-                                          Range _ _ -> True
+                                          Range   _ _ -> True
                                           RangeUn _ _ -> True
                                           RangePr _ _ -> True
-                                          _ -> False) attMap in
+                                          Normal  _ _ -> True
+                                          _           -> False
+                               ) attMap in
 
     M.map (\x -> case x of
                      Range lb ub -> Range (AConst lb) (AConst ub)
                      RangeUn lb ub -> Range (AConst lb) (AConst ub)
-                     RangePr lb mp -> let ub = getUb lb mp in Range (AConst lb) (AConst ub)) rangeAttMap
+                     RangePr lb mp -> let ub = getUb lb mp in Range (AConst lb) (AConst ub)
+                     -- although normal distribution is infinite, we take values in range 'mu += 3 * (sqrt 2) * sigma',
+                     -- which covers erf(3) ~ 0.9999779 of the space
+                     Normal mu sigma -> Range (AConst $ mu - 3 * (sqrt 2) * sigma) (AConst $ mu + 3 * (sqrt 2) * sigma)
+          ) rangeAttMap
 
 -- update varstates of the attacker file if their type is not compatible with the schema
 update_varStates :: M.Map String VarState -> M.Map String String -> M.Map String VarState

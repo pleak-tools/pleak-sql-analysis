@@ -222,22 +222,23 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
                                                 ) (M.toList attMap)
 
   -- do not look for optimal beta if it has been specified by the user
-  (qmap,taskAggrMap) <- case beta of
+  (initQmap,modQmap,taskAggrMap) <- case beta of
           Just _  -> performAnalysis args False epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap tableGs colTableCounts
           Nothing -> do
-                         (_,q,tm,_) <- findOptimalBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap tableGs colTableCounts
-                         return (q,tm)
+                         (_,initQM,modQM,tm,_) <- findOptimalBeta args outputTableName epsilon' beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap tableGs colTableCounts
+                         return (initQM,modQM,tm)
 
   -- if we have a GroupBy query, we need to scale epsilon accordingly
   let epsilon = epsilon' / (fromIntegral numOfOutputs)
 
   traceIOIfDebug (debug && vb) ("===============================")
-  traceIOIfDebug (debug && vb) ("final qmap: " ++ (show qmap))
+  traceIOIfDebug (debug && vb) ("initial qmap: " ++ (show initQmap))
+  traceIOIfDebug (debug && vb) ("modified qmap: " ++ (show modQmap))
   traceIOIfDebug (debug && vb) ("final taskAggr: " ++ (show taskAggrMap))
 
   -- if a group is empty, we set its output to 0
   -- TODO think how to define for MIN/MAX queries in a better way
-  let outMap = M.fromListWith (++) $ concat $ map (\key -> extractFinalResults (if M.member key qmap then qmap ! key else 0) (taskAggrMap ! key) key) (M.keys taskAggrMap)
+  let outMap = M.fromListWith (++) $ concat $ map (\key -> extractFinalResults (if M.member key initQmap then initQmap ! key else 0) (if M.member key modQmap then modQmap ! key else 0) (taskAggrMap ! key) key) (M.keys taskAggrMap)
   let outList = map (\((taskName,tableName), zs) -> (taskName,[(tableName,zs)])) $ M.toList outMap
   let taskList = M.toList $ M.fromListWith (++) outList
 
@@ -249,9 +250,6 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
   let inputTableNames = BQ.getTableNames tableExprData
   let normMap = M.fromList $ zip inputTableNames $ zip normsExprs normsAggrs
 
-  traceIOIfDebug debug ("===============================")
-  traceIOIfDebug debug ("Cauchy noise distribution:  add noise 'Cauchy  noise'*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)")
-  traceIOIfDebug debug ("Laplace noise distribution: add noise 'Laplace noise'*z, where z ~ 1 / 2 * exp(-x)")
 
   let errorUB = errorUBprob args
   let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
@@ -260,14 +258,18 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
   traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
   traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
 
+  traceIOIfDebug debug ("===============================")
+  traceIOIfDebug debug ("Cauchy noise distribution:  add noise 'Cauchy  noise'*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)")
+  traceIOIfDebug debug ("Laplace noise distribution: add noise 'Laplace noise'*z, where z ~ 1 / 2 * exp(-x)")
+
   let taskStr =
           map (\(taskName,res) ->
 
                   (taskName, (map (\ (tableName, zs) ->
-                      let (_,qrs,bs,sdss) = unzip4 zs in
-                      let qr  = if length qrs == 1 then printFloatS (head qrs) else "[" ++ intercalate ", " (map printFloatS qrs) ++ "]" in
-                      let cauchyError = printFloatL $ (combinedErrs qrs bs sdss) * noiseScaleCauchy * 100 in
-                      let cauchyNoise = (let xs = map (* noiseScaleCauchy) (combinedEtas bs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+                      let (_,initQrs,modQrs,bs,sdss) = unzip5 zs in
+                      let qr  = if length initQrs == 1 then printFloatS (head initQrs) else "[" ++ intercalate ", " (map printFloatS initQrs) ++ "]" in
+                      let cauchyError = printFloatL $ (combinedErrs initQrs modQrs bs sdss) * noiseScaleCauchy * 100 in
+                      let cauchyNoise = (let xs = map (* noiseScaleCauchy) (combinedEtas bs sdss) in if length initQrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
                       let sds = printFloatL $ combinedSdss sdss in
                       let norm = if tableName == B.resultForAllTables then
                                       "an l_1-norm of all input table norms"
@@ -293,8 +295,8 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
 
                       --trace ("laplace bs1: " ++ show laplaceBs) $
 
-                      let laplaceError = printFloatL $ (combinedErrs qrs laplaceBs sdss) * noiseScaleLaplace * 100 in
-                      let laplaceNoise = (let xs =  map (* noiseScaleLaplace) (combinedEtas laplaceBs sdss) in if length qrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+                      let laplaceError = printFloatL $ (combinedErrs initQrs modQrs laplaceBs sdss) * noiseScaleLaplace * 100 in
+                      let laplaceNoise = (let xs =  map (* noiseScaleLaplace) (combinedEtas laplaceBs sdss) in if length initQrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
                       [tableName,sds,qr,cauchyNoise,cauchyError,finalBeta,laplaceDelta,laplaceNoise,laplaceError,norm]) res)
 
           )) taskList
@@ -429,10 +431,11 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   -- if ga < prior, then the lower bound may be negative, and we take the bound 0 in this case
   --let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
 
-  (finalBeta,qmap,taskAggrMap,cauchyError) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap [] colTableCounts
+  (finalBeta,initQmap,modQmap,taskAggrMap,cauchyError) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap [] colTableCounts
 
   traceIOIfDebug (debug && vb) ("===============================")
-  traceIOIfDebug (debug && vb) ("final qmap: " ++ (show qmap))
+  traceIOIfDebug (debug && vb) ("initial qmap: " ++ (show initQmap))
+  traceIOIfDebug (debug && vb) ("modified qmap: " ++ (show modQmap))
   traceIOIfDebug (debug && vb) ("final taskAggr: " ++ (show taskAggrMap))
 
   -- if we have a GroupBy query, we need to scale epsilon accordingly
@@ -445,7 +448,7 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   traceIOIfDebug debug ("Cauchy params: beta=" ++ (show finalBeta) ++ ", eps=" ++ (show epsilon))
 
   -- additional outputs
-  let (finalQrs, cauchyBs, finalSdss) = unzip3 $ map (\key -> extractFinalResult (if M.member key qmap then qmap ! key else 0) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys taskAggrMap)
+  let (initQrs, modQrs, cauchyBs, finalSdss) = unzip4 $ map (\key -> extractFinalResult (if M.member key initQmap then initQmap ! key else 0) (if M.member key modQmap then modQmap ! key else 0) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys taskAggrMap)
   let cauchyNoise = combinedEtas cauchyBs finalSdss
 
 
@@ -457,7 +460,7 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   let (laplaceEpsilons,laplaceBs) = unzip $ zipWith3 (\sds beta b -> if epsilon < 1/0 then findOptimalB sds beta epsilon 0 0 0 else (1/0,1/0)) finalSdss allBetas cauchyBs
 
   let laplaceDeltas = zipWith4 (\sds beta b eps -> if beta == 0 then 0 else 2*exp(eps-1-(eps-b)/beta)) finalSdss allBetas laplaceBs laplaceEpsilons
-  let laplaceError = combinedErrs finalQrs laplaceBs finalSdss
+  let laplaceError = combinedErrs initQrs modQrs laplaceBs finalSdss
   let laplaceNoise = combinedEtas laplaceBs finalSdss
 
   -- if there are different (eps,delta) for several outputs, we show the minimal of them to the user for short representation
@@ -483,7 +486,7 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
 
   -- analyser output
   traceIOIfDebug debug ("===============================")
-  let outputList = [("actual outputs y: ",           show (map niceRound finalQrs)),
+  let outputList = [("actual outputs y: ",           show (map niceRound initQrs)),
                     (show (round $ errorUB * 100) ++ "%-noise magnitude a: ",   show (map (niceRound . (* noiseScaleCauchy)) cauchyNoise)),
                     (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y|: ", show (niceRound (cauchyError * noiseScaleCauchy * 100.0)) ++ "%"),
                     ("Cauchy (default) distribution: ",  "add noise a*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
@@ -506,14 +509,14 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   putStrLn $ intercalate sep out
 
 
-findOptimalBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+findOptimalBeta :: ProgramOptions -> String -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO (Double, M.Map [String] Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
 findOptimalBeta args outputTableName epsilon fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
     -- define the function that we will optimize
     let step = performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
 
     -- take fixedBeta if it is defined, and optimize otherwise
-    (finalBeta,finalQmap,finaltaskAggr,finalError) <- case fixedBeta of
+    case fixedBeta of
                     Nothing -> do
                         initialBeta' <- BQ.findMinimumBeta args False epsilon Nothing dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData attMap tableGs colTableCounts
                         -- we cannot use beta=0 for combined sensitivity, as it would result in an infinite loop
@@ -521,15 +524,15 @@ findOptimalBeta args outputTableName epsilon fixedBeta dataPath separator initia
                         let betaMin = 0
                         let unit = betaMax / numOfSearchSteps
                         let initialBeta = if combinedSens args && initialBeta' == 0 then unit else initialBeta'
-                        (initialQmap,initialTaskAggr,initialError) <- step False (Just initialBeta)
-                        findOptimalBeta2 unit step betaMin betaMax initialBeta initialQmap initialTaskAggr initialError
+                        (initQmap,modQmap,taskAggr,err) <- step False (Just initialBeta)
+                        (optBeta, optQmap, optTaskAggr, optError) <- findOptimalBeta2 unit step betaMin betaMax initialBeta modQmap taskAggr err
+                        return (optBeta, initQmap, optQmap, optTaskAggr, optError)
                     Just beta' -> do
-                        (qmap',taskAggr',err') <- step False (Just beta')
-                        return (beta', qmap',taskAggr', err')
-    return (finalBeta,finalQmap,finaltaskAggr,finalError)
+                        (initQmap,modQmap,taskAggr,err) <- step False (Just beta')
+                        return (beta',initQmap,modQmap,taskAggr,err)
 
 -- binary search on beta
-findOptimalBeta2 :: Double -> (Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+findOptimalBeta2 :: Double -> (Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
 findOptimalBeta2 unit step betaMin betaMax bestBeta bestQmap bestTaskAggr bestError =
 
     if abs(betaMax - betaMin) <= unit || (betaMax == 1/0) then do
@@ -537,8 +540,8 @@ findOptimalBeta2 unit step betaMin betaMax bestBeta bestQmap bestTaskAggr bestEr
     else do
         let betaU = (betaMin + betaMax + unit) / 2.0
         let betaL = (betaMin + betaMax - unit) / 2.0
-        (qmapU, taskAggrU, errU) <- step True (Just betaU)
-        (qmapL, taskAggrL, errL) <- step True (Just betaL)
+        (_, qmapU, taskAggrU, errU) <- step True (Just betaU)
+        (_, qmapL, taskAggrL, errL) <- step True (Just betaL)
         let (beta, qmap, taskAggr, err, betaMin',betaMax') = if errU < errL then (betaU, qmapU, taskAggrU, errU, betaU, betaMax) else (betaL, qmapL, taskAggrL, errL, betaMin, betaL)
         let (beta', qmap', taskAggr', err') = if err < bestError then (beta, qmap, taskAggr, err) else (bestBeta, bestQmap, bestTaskAggr, bestError)
         findOptimalBeta2 unit step betaMin' betaMax' beta' qmap' taskAggr' err'
@@ -546,28 +549,28 @@ findOptimalBeta2 unit step betaMin betaMax bestBeta bestQmap bestTaskAggr bestEr
 
 -- linear search on beta (experimental, currently not used)
 -- remember that we need to start from beta > 0 in CS analysis
-findOptimalBetaL :: (Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+findOptimalBetaL :: (Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],Double)) -> Double -> Double -> Double -> M.Map [String] Double -> M.Map [String] [(String, [(String, (Double, Double))])] -> Double -> IO (Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
 findOptimalBetaL step beta betaMax bestBeta bestQmap bestTaskAggr bestError =
 
     if (beta > betaMax) || (betaMax == 1/0) then do
         return (bestBeta, bestQmap, bestTaskAggr, bestError)
     else do
-        (qmap, taskAggr, err) <- step True (Just beta)
+        (_, qmap, taskAggr, err) <- step True (Just beta)
         let (beta', qmap', taskAggr', err') = if err < bestError then (beta, qmap, taskAggr, err) else (bestBeta, bestQmap, bestTaskAggr, bestError)
         findOptimalBetaL step (beta+(betaMax / numOfSearchSteps)) betaMax beta' qmap' taskAggr' err'
 
 
 -- if we have several final groups, we combine errors into an l2-norm of errors
-extractFinalResults :: Double -> [(String, [(String, (Double, Double))])] -> [String] -> [((String,String),[([String], Double, Double, Double)])]
-extractFinalResults qr taskAggr key =
-    concat $ map (\(taskName,res) -> map (\ (tableName, (b,sds)) -> ((taskName,tableName), [(key, qr, b, sds)])) res   ) taskAggr
+extractFinalResults :: Double -> Double -> [(String, [(String, (Double, Double))])] -> [String] -> [((String,String),[([String], Double, Double, Double, Double)])]
+extractFinalResults initQr modQr taskAggr key =
+    concat $ map (\(taskName,res) -> map (\ (tableName, (b,sds)) -> ((taskName,tableName), [(key, initQr, modQr, b, sds)])) res   ) taskAggr
 
-extractFinalResult :: Double -> [(String, [(String, (Double, Double))])] -> String -> String -> (Double,Double,Double)
-extractFinalResult qr taskAggr taskName tableName =
+extractFinalResult :: Double -> Double -> [(String, [(String, (Double, Double))])] -> String -> String -> (Double,Double,Double,Double)
+extractFinalResult initQr modQr taskAggr taskName tableName =
 
   let resultMap = M.fromList $ (M.fromList taskAggr) ! tableName in
   let (b, sds) = resultMap ! taskName in
-  (qr, b, sds)
+  (initQr, modQr, b, sds)
 
 combinedSdss :: [Double] -> Double
 combinedSdss sdss = sum sdss
@@ -575,32 +578,32 @@ combinedSdss sdss = sum sdss
 combinedEtas :: [Double] -> [Double] -> [Double]
 combinedEtas bs sdss = zipWith (\b sds -> (sds / b)) bs sdss
 
-combinedErrs :: [Double] -> [Double] -> [Double] -> Double
-combinedErrs qrs bs sdss =
-    let qnorm   = sqrt $ sum $ map (^2) qrs in
-    let errnorm = sqrt $ sum $ map (^2) $ combinedEtas bs sdss in
+combinedErrs :: [Double] -> [Double] -> [Double] -> [Double] -> Double
+combinedErrs initQrs modQrs bs sdss =
+    let qnorm   = sqrt $ sum $ map (^2) initQrs in
+    let errnorm = sqrt $ sum $ zipWith3 (\qi qm err -> (qm + err - qi)^2) initQrs modQrs (combinedEtas bs sdss) in
     errnorm / qnorm
     --sqrt $ sum $ zipWith3 (\qr b sds -> ((sds / b) / qr) ^ 2) qrs bs sdss
 
-performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
+performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
 performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts silent beta = do
 
-  (qmap,taskAggrMap) <- performAnalysis args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
-  let (qrs, bs, sdss) = unzip3 $ map (\key -> extractFinalResult (qmap ! key) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys qmap)
-  let err = combinedErrs qrs bs sdss
+  (initQmap, modQmap, taskAggrMap) <- performAnalysis args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  let (initQrs, modQrs, bs, sdss) = unzip4 $ map (\key -> extractFinalResult (initQmap ! key) (modQmap ! key) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys initQmap)
+  let err = combinedErrs initQrs modQrs bs sdss
 
-  return (qmap,taskAggrMap,err)
+  return (initQmap, modQmap, taskAggrMap,err)
 
 
-performAnalysis :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
+performAnalysis :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> IO (M.Map [String] Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])])
 performAnalysis args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
-  (qmap,taskAggrMap',_) <- BQ.performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts Nothing
+  (initQmap,taskAggrMap',modQmap) <- BQ.performAnalyses' args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts Nothing
 
   -- if we choose beta that is not compatible with epsilon during optimization, we get a negative b, so we set it to 0 to get Infinity relative error
   -- in policy analysis, this means that desired epsilon, and hence the guessing advantage bound, could not be achieved
   let taskAggrMap = M.fromList $ map (\(key,taskAggrGroup) -> (key, map (\(taskName,res) -> (taskName, map (\ (tableName, (b,sds)) -> (tableName, (max b 0, sds)) ) res)) taskAggrGroup)) (M.toList taskAggrMap')
-  return (qmap, taskAggrMap)
+  return (initQmap, modQmap, taskAggrMap)
 
 -- brute force search on b works well
 findOptimalB :: Double -> Double -> Double -> Double -> Double -> Double -> (Double,Double)

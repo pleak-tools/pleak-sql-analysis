@@ -1,0 +1,52 @@
+high_F,low_F,city,state,high_C,low_C
+72,53,Atlanta,Georgia,22,12
+80,59,Austin,Texas,27,15
+65,45,Baltimore,Maryland,18,7
+74,53,Birmingham,Alabama,23,12
+59,44,Boston,Massachusetts,15,7
+56,40,Buffalo,New York,14,5
+71,49,Charlotte,North Carolina,22,9
+59,41,Chicago,Illinois,15,5
+65,43,Cincinnati,Ohio,18,6
+60,43,Cleveland,Ohio,15,6
+63,44,Columbus,Ohio,17,7
+77,57,Dallas,Texas,25,14
+64,36,Denver,Colorado,18,2
+59,42,Detroit,Michigan,15,5
+61,40,Hartford,Connecticut,16,5
+80,60,Houston,Texas,27,16
+63,44,Indianapolis,Indiana,17,7
+79,58,Jacksonville,Florida,26,14
+66,48,Kansas City,Missouri,19,9
+80,59,Las Vegas,Nevada,27,15
+75,56,Los Angeles,California,24,13
+68,49,Louisville,Kentucky,20,9
+73,54,Memphis,Tennessee,23,12
+84,70,Miami,Florida,29,21
+56,40,Milwaukee,Wisconsin,13,5
+55,37,Minneapolis,Minnesota,13,3
+70,49,Nashville,Tennessee,21,9
+78,61,New Orleans,Louisiana,26,16
+62,48,New York,New York,17,9
+72,51,Oklahoma City,Oklahoma,22,10
+83,63,Orlando,Florida,28,17
+65,47,Philadelphia,Pennsylvania,18,8
+87,63,Phoenix,Arizona,31,17
+61,42,Pittsburgh,Pennsylvania,16,6
+63,45,Portland,Oregon,17,7
+61,43,Providence,Rhode Island,16,6
+72,50,Raleigh,North Carolina,22,10
+70,48,Richmond,Virginia,21,9
+81,53,Riverside,California,27,11
+57,39,Rochester,New York,14,4
+74,48,Sacramento,California,23,9
+64,42,Salt Lake City,Utah,18,5
+80,59,San Antonio,Texas,27,15
+70,58,San Diego,California,21,14
+64,51,San Francisco,California,18,10
+71,50,San Jose,California,22,10
+61,46,Seattle,Washington,16,8
+66,48,St. Louis,Missouri,19,9
+82,65,Tampa,Florida,28,18
+68,52,Virginia Beach,Virginia,20,11
+67,50,Washington,DC,19,10

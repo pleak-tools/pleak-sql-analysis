@@ -78,6 +78,8 @@ Examples:
 
       dist/build/banach/banach -QDs --db-create-tables demo_schema.sql demo_query.sql demo_constraints.att --epsilon 1.0 --beta 0.1
 
+    More examples can be found in the subdirectories of 'lightweight-examples', where 'test.sh' scripts show how to run these examples.
+
 The parameter --db-create-tables reads data from .db files and stores it to PostgreSQL database. Hence, if the data has already been uploaded once and it has not been updated, there is no need to create the tables again, and --db-create-tables can be removed.
 
  * Derivative sensitivity analysis for time series:
@@ -103,7 +105,7 @@ The parameter --db-create-tables reads data from .db files and stores it to Post
      dist/build/banach/banach -QDp --db-create-tables demo_schema.sql demo_query.sql demo_constraints.att --policy=demo_attacker_goal.sql --epsilon 0.3
 
    where
-   - demo_attacker_goal.sql is the query representing the attacker's goal, i.e. what he is trying to guess
+   - demo_attacker_goal.sql is the query representing the attacker's goal, i.e. what he is trying to guess with which precision
    - epsilon is the desired upper bound on guesing advantage
 
  * Combined sensitivity analysis (assumes that pleak-sql-analysis/localsensitivity-cabal has been built):

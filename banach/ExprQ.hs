@@ -33,8 +33,8 @@ data Expr = Power VarName Double          -- x^r with norm | |, or E^r with norm
           | Max [VarName]                 -- max{E1,...,En} with norm ||(N1,...,Nn)||_p, p is arbitrary in [1,infinity]
           | Sum [VarName]                 -- E1+...+En with norm that is not specified yet and will be derived later
           | Id VarName                    -- identity function, used for input table values
-          | ARMin                         -- special placeholder for aggregated minimum
-          | ARMax                         -- special placeholder for aggregated maximum
+--          | ARMin                         -- special placeholder for aggregated minimum
+--          | ARMax                         -- special placeholder for aggregated maximum
           | Text String                   -- this is needed to store strings that remain public and go only into the filters
           | Like VarName VarName          -- stores LIKE expressions for filtering
           | Comp Ordering VarName VarName -- compares two variables, turns to sigmoid/tauoid if necessary
@@ -50,6 +50,7 @@ data TableExpr = SelectProd VarName        -- product (map E rows) with norm ||(
                | SelectMax VarName         -- max (map E rows) with norm ||(N1,...,Nn)||_p where Ni is N applied to ith row, p is arbitrary in [1,infinity]
                | SelectL Double VarName    -- ||(E1,...,En)||_p with norm ||(N1,...,Nn)||_p
                | SelectSum VarName         -- E1+...+En with norm that is not specified yet and will be derived later
+               | SelectAvg VarName         -- (E1+...+En) / n with norm that is not specified yet and will be derived later
                | SelectSumBin VarName      -- sums binary variables
                | SelectCount VarName       -- counts the rows, is rewritten to other expressions
                | SelectPlain VarName       -- does not apply aggregation, is used only for intermediate representation
@@ -79,6 +80,7 @@ getVarNameFromTableExpr t =
         SelectMax x    -> x
         SelectL _ x    -> x
         SelectSum  x   -> x
+        SelectAvg  x   -> x
         SelectSumBin x -> x
         SelectCount x  -> x
         SelectDistinct x -> x
@@ -93,6 +95,7 @@ setVarNameToTableExpr t x =
         SelectMax _    -> SelectMax x
         SelectL p _    -> SelectL p x
         SelectSum _    -> SelectSum x
+        SelectAvg _    -> SelectAvg x
         SelectSumBin _ -> SelectSumBin x
         SelectCount _  -> SelectCount x
         SelectDistinct _ -> SelectDistinct x
@@ -234,6 +237,7 @@ updatePreficesTableExpr fullTablePaths prefix expr =
         SelectMax x      -> SelectMax      (updatePrefices fullTablePaths prefix x)
         SelectL p x      -> SelectL p      (updatePrefices fullTablePaths prefix x)
         SelectSum  x     -> SelectSum      (updatePrefices fullTablePaths prefix x)
+        SelectAvg  x     -> SelectAvg      (updatePrefices fullTablePaths prefix x)
         SelectSumBin x   -> SelectSumBin   (updatePrefices fullTablePaths prefix x)
         SelectCount x    -> SelectCount    (updatePrefices fullTablePaths prefix x)
         SelectDistinct x -> SelectDistinct (updatePrefices fullTablePaths prefix x)
@@ -241,6 +245,7 @@ updatePreficesTableExpr fullTablePaths prefix expr =
         SelectGroup x    -> SelectGroup    (updatePrefices fullTablePaths prefix x)
 
 -- puts preanalysed aggregated function results into correspoding placeholders
+{-
 applyPrecAggr :: Double -> Double -> B.Expr -> B.Expr
 applyPrecAggr arMin arMax expr =
 
@@ -282,11 +287,13 @@ applyPrecAggrTable arMin arMax expr =
         B.SelectMax  es    -> B.SelectMax    $ map (applyPrecAggr arMin arMax) es
         B.SelectSump p es  -> B.SelectSump p $ map (applyPrecAggr arMin arMax) es
         B.SelectSumInf es  -> B.SelectSumInf $ map (applyPrecAggr arMin arMax) es
+-}
 
 -- uses preanalysed aggregated function results
-precAggr :: [Double] -> [Double] -> [B.TableExpr] -> [B.TableExpr]
-precAggr (arMin:arMins) (arMax:arMaxs) (e:es) =
-    (applyPrecAggrTable arMin arMax e) : precAggr arMins arMaxs es
+--precAggr :: [Double] -> [Double] -> [B.TableExpr] -> [B.TableExpr]
+--precAggr (arMin:arMins) (arMax:arMaxs) (e:es) =
+--    (applyPrecAggrTable arMin arMax e) : precAggr arMins arMaxs es
+
 
 allUnique :: Ord a => [a] -> Bool
 allUnique xs =
@@ -337,8 +344,8 @@ exprToString isPublic asgnMap expr =
         Max xs           -> "greatest(" ++ (intercalate ", " $ map processRec xs) ++ ")"
         Sum xs           -> "(" ++ (intercalate " + " $ map processRec xs) ++ ")"
         Id  x            -> processRec x
-        ARMin            -> "(ArMin PLACEHOLDER)"
-        ARMax            -> "(ArMax PLACEHOLDER)"
+--        ARMin            -> "(ArMin PLACEHOLDER)"
+--        ARMax            -> "(ArMax PLACEHOLDER)"
         Text s           -> s
         Like x y         -> "(" ++ processRec x ++ " LIKE " ++ processRec y ++ ")"
         Comp EQ x1 x2    -> if isPublic then
@@ -388,6 +395,7 @@ tableExprToString isPublic asgnMap b =
         SelectMax x    -> "MAX(" ++ processRec x ++ ")"
         SelectL p x    -> "(SUM(" ++ processRec x ++ " ^ " ++ show p ++ ") ^ " ++ show (1/p) ++ ")"
         SelectSum  x   -> "SUM(" ++ processRec x ++ ")"
+        SelectAvg  x   -> "AVG(" ++ processRec x ++ ")"
         SelectSumBin x -> "SUM(" ++ processRec x ++ ")"
         SelectCount x  -> "COUNT(" ++ processRec x ++ ")"
         SelectDistinct  x  -> "DISTINCT(" ++ processRec x ++ ")"
@@ -609,8 +617,8 @@ exprToBExpr sigmoidBeta sensitiveCols inputMap asgnMap t =
         Id x             ->  processRec id (\z -> B.Power z 1.0) x
 
         -- in the following, 1.0 and -1.0 are used only to show whether it was min or max, and will be modified later
-        ARMax            -> (S.empty, B.Prec (B.AR {B.fx =  1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}}))
-        ARMin            -> (S.empty, B.Prec (B.AR {B.fx = -1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}}))
+--        ARMax            -> (S.empty, B.Prec (B.AR {B.fx =  1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}}))
+--        ARMin            -> (S.empty, B.Prec (B.AR {B.fx = -1.0, B.subf = B.SUB {B.subg = id, B.subBeta = 0.0}, B.sdsf = B.SUB {B.subg = id, B.subBeta = 0.0}}))
 
         Comp GT x1 x2    -> let (usedVars1,e1) = processRec id (\z -> B.Power z 1.0) x1 in
                             let (usedVars2,e2) = processRec id (\z -> B.Power z 1.0) x2 in
@@ -698,4 +706,5 @@ tableExprToBTableExpr sigmoidBeta sensitiveCols inputMap asgnMap t =
         SelectCount x  -> (fst $ processRec x, B.SelectL 0.0 $ map (const (B.Const 1.0)) [snd $ processRec x])
         SelectDistinct  _  -> error $ error_queryExpr_syntax t
         SelectPlain _      -> error $ error_queryExpr_syntax t
+        SelectAvg  _       -> error $ error_queryExpr_syntax t
     where processRec x = exprToBExpr sigmoidBeta sensitiveCols inputMap asgnMap (asgnMap ! x)

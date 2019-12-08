@@ -1,0 +1,4 @@
+weather.high_F range 50 90;
+weather.low_F  range 30 80;
+weather.high_C range 10 35;
+weather.low_C  range 0  25;

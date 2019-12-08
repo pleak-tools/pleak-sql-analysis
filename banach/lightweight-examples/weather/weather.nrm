@@ -1,0 +1,7 @@
+rows: all;
+cols: high_F low_F high_C low_C;
+
+x = linf high_F high_C;
+y = linf low_F low_C;
+z = lp 1.0 high_C low_C;
+return lp 1.0 z;

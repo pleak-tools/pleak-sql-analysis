@@ -194,6 +194,7 @@ extractTableExpr _ (SelExp _ (App _ (Name _ [Nmc aggrOp]) [expr])) i =
     case aggrOp2 of
         "count" -> F arg (SelectCount y)
         "sum"   -> F arg (SelectSum y)
+        "avg"   -> F arg (SelectAvg y)
         "min"   -> F arg (SelectMin y)
         "max"   -> F arg (SelectMax y)
         _       -> error $ error_queryExpr_aggrFinal aggrOp
@@ -205,6 +206,7 @@ extractTableExpr _ (SelectItem _ (App _ (Name _ [Nmc aggrOp]) [expr]) (Nmc colNa
     case aggrOp2 of
         "count" -> F arg (SelectCount y)
         "sum"   -> F arg (SelectSum y)
+        "avg"   -> F arg (SelectAvg y)
         "min"   -> F arg (SelectMin y)
         "max"   -> F arg (SelectMax y)
         _       -> error $ error_queryExpr_aggrFinal aggrOp

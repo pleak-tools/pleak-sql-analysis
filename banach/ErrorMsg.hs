@@ -54,6 +54,7 @@ error_queryExpr_compStr t          = errorTag ++ " We cannot yet compare two sen
 error_queryExpr_groupBy            = errorTag ++ " GROUP BY is allowed only for queries of the form SELECT x1,...,xn, y FROM t GROUP BY x1,...,xn"
 error_queryExpr_aggrInterm t       = errorTag ++ " Aggregator " ++ show t ++ " not supported in the intermediate tables."
 error_queryExpr_aggrFinal t        = errorTag ++ " Aggregator " ++ show t ++ " not supported in the final query."
+error_queryExpr_aggrAvg            = errorTag ++ " Aggregator AVG is supported only without sensitive filters."
 error_queryExpr_singleColumn       = errorTag ++ " Only a single output in the final query is supported."
 error_queryExpr_undefinedVars t    = error_queryExpr t ++ ",\n some of its arguments are undefined."
 error_queryExpr_missingInputVars t = error_queryExpr t ++ ",\n the input has to be an input table column."

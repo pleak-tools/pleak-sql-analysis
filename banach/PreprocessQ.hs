@@ -713,7 +713,12 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap i
     -- we filter out rows using _globally_ public filters, since different filterings would be bad for sensitivity over all tables
     let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap True x)) filterAexprs in
 
-    let (filtQueryFun, pubFilterAexprs) = addFiltersToQuery query filterAexprs filterSensVars in
+    let (filtQueryFun', pubFilterAexprs) = addFiltersToQuery query filterAexprs filterSensVars in
+
+    let F queryAexpr' queryAggr' = filtQueryFun' in
+    if ((case queryAggr' of {SelectAvg y -> True; _ -> False}) && (length filterSensVars > 1 || S.size (head filterSensVars) > 0)) then error error_queryExpr_aggrAvg else
+    -- we divide each row output by COUNT(*) to get the average
+    let filtQueryFun = (case queryAggr' of {SelectAvg y -> F (ABinary AMult queryAexpr' (AText "(countT.cntinv)")) (SelectSum y); _ -> filtQueryFun'}) in
 
     let (queryExpr,queryAggr,filtQueryStr) = queryToExpr sigmoidBeta inputMap sensitiveColSet (applyQueryTypes fullTypeMap filtQueryFun) in
     let pubFilter  = map aexprToString pubFilterAexprs in
@@ -754,13 +759,14 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap i
     let wh  = if length pubFilter == 0 then "true" else intercalate " AND " pubFilter in
 
     -- compute min/max queries using sel, fr, wh
-    -- TODO check if it still works if the MIN/MAX query in turn uses subqueries
-    let minmaxQuery = case queryAggr of
-                          B.SelectMin _ -> ", (SELECT MIN(" ++ queryRangeLBstr ++ ") AS min, MAX(" ++ queryRangeUBstr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
-                          B.SelectMax _ -> ", (SELECT MIN(" ++ queryRangeLBstr ++ ") AS min, MAX(" ++ queryRangeUBstr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
-                          _             -> ""
+    -- TODO not optimal if the query in turn uses aggregate subqueries
+    let additionalQuery = case queryAggr of
+                          B.SelectMin  _ -> ", (SELECT MIN(" ++ queryRangeLBstr ++ ") AS min, MAX(" ++ queryRangeUBstr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
+                          B.SelectMax  _ -> ", (SELECT MIN(" ++ queryRangeLBstr ++ ") AS min, MAX(" ++ queryRangeUBstr ++ ") AS max FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS minmaxT"
+                          B.SelectSump _ _ -> ", (SELECT COUNT(*) AS cnt, 1.0 / COUNT(*) AS cntinv FROM " ++ fr ++ " WHERE " ++ wh ++ ") AS countT"
+                          _                -> ""
     in
-    let initQueryParts = (sel,fr ++ minmaxQuery,wh) in
+    let initQueryParts = (sel,fr ++ additionalQuery,wh) in
 
     -- construct tableExprData for both main query and all the subqueries
     let dataWrtEachTable' = map (dataWrtOneInputTable debug sigmoidPrecision inputMap queryAggr initQueryParts newQueryName inputTableMap) directTableAliases

@@ -1119,6 +1119,12 @@ analyzeTableExprQ fr wh sensCond srt colNames sensitiveVarSet varStates colTable
 performAnalyses :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState ->
                    [(String, Maybe Double)] -> [Int] -> Maybe String -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
 performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts extraWheres = do
+    (qmap, taskAggr, queryResults) <- performAnalyses' args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts extraWheres
+    let queryResult = case compare (M.size queryResults) (length []) of {GT -> head (M.elems queryResults); _ -> error "performAnalyses: query result not obtained"}
+    return (qmap, taskAggr, queryResult)
+
+performAnalyses' :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> Maybe String -> IO (M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])],  M.Map [String] Double)
+performAnalyses' args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts extraWheres = do
   let debug = not (alternative args) && not silent
   let vb    = not (succinct args)
   let tableGmap = M.fromList tableGs
@@ -1194,7 +1200,7 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
   -- here we converted forM to foldM to keep track of subexpression map that collects intermediate AR-s
   -- res00 <- forM tableExprData $ \ (tableName, taskName, te, (_,fromPart,wherePart)) -> do
   let tableExprData = getData tableExprData'
-  (_,res00,queryResult,taskNames,groupNames,usedTaskNames) <- foldM (\ (subQueryMap',results',queryResult,taskNames',groupNames',usedTaskNames')
+  (_,res00,queryResults,taskNames,groupNames,usedTaskNames) <- foldM (\ (subQueryMap',results',queryResults,taskNames',groupNames',usedTaskNames')
                                                                        (tableName, taskName, group, te, (sensCond,fromPart,wherePart), usedTaskNames, queryStr) -> do
     when debug $ putStrLn ""
     when debug $ putStrLn "--------------------------------"
@@ -1225,11 +1231,11 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
         let usedTaskNamess = replicate (length results) usedTaskNames
 
         --return (tableName, result)
-        return (newSubQueryMap, results' ++ results, head qrs, taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)
+        return (newSubQueryMap, results' ++ results, queryResults ++ qrs, taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)
       Just Nothing ->
         -- this table is considered insensitive, so computing its sensitivity is skipped
         -- return (tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))
-        return (subQueryMap', results' ++ [(tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))], queryResult, taskNames' ++ [taskName], groupNames' ++ [groupStrings], usedTaskNames' ++ [usedTaskNames])
+        return (subQueryMap', results' ++ [(tableName, (0, 0, printf "Table %s skipped" tableName, (0,0,0,0,0)))], queryResults, taskNames' ++ [taskName], groupNames' ++ [groupStrings], usedTaskNames' ++ [usedTaskNames])
       Just tableG -> do
         (newSubQueryMap,results0) <- pa tableG
         let (qrs,results) = unzip $ map (\ (x1,(x2,x3,x4,x5,x6)) -> (x6,(x1,(x2,x3,x4,x5)))) results0
@@ -1238,9 +1244,8 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
         let groupNames     = replicate (length results) groupStrings
         let usedTaskNamess = replicate (length results) usedTaskNames
         --return (tableName, result)
-        return (newSubQueryMap, results' ++ results, head qrs, taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)) (M.empty,[],error "performAnalyses: query result not obtained",[],[],[]) tableExprData
+        return (newSubQueryMap, results' ++ results, queryResults ++ qrs, taskNames' ++ taskNames, groupNames' ++ groupNames, usedTaskNames' ++ usedTaskNamess)) (M.empty,[],[],[],[],[]) tableExprData
   -- ######################
-
 
   -- all groups are now coming from the final table
   let taskMaps' = concat $ zipWith3 (\ ts gr i -> map (\t -> ((t,gr),[i])) ts) usedTaskNames groupNames [round 0 ..]
@@ -1324,8 +1329,6 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
   let taskAggr = M.fromListWith (++) $ taskAggr'
 
   when (debug && vb) $ putStrLn ("--- ")
-  when (debug && vb) $ putStrLn ("qmapKeys: " ++ (show qmap))
-  when (debug && vb) $ putStrLn ("--- ")
   when (debug && vb) $ putStrLn ("taskkeys: " ++ (show taskAggr))
   when (debug && vb) $ putStrLn ("--- ")
   when (debug && vb) $ putStrLn ("taskmap: " ++ (show taskMap))
@@ -1336,7 +1339,13 @@ performAnalyses args silent epsilon' fixedBeta dataPath separator initialQuery i
 
   -- queryResult may be different from the one in qmap because it uses the modified query (with sigmoid instead of private filters, etc.) instead of original query
   -- it is used for time series analysis
-  return (qmap, taskAggr, queryResult)
+  -- and it was actually needed also for the other types of analysis, so we now are using it everywhere!
+  let modifedQmap = M.fromList $ zip groupNames queryResults
+  when (debug && vb) $ putStrLn ("--- ")
+  when (debug && vb) $ putStrLn ("initialQMap:  " ++ show qmap)
+  when (debug && vb) $ putStrLn ("modifiedQMap: " ++ show modifedQmap)
+  when (debug && vb) $ putStrLn ("--- ")
+  return (qmap, taskAggr, modifedQmap)
 
 -- find the minimum value of beta that is allowed for all tables
 findMinimumBeta :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
@@ -1442,11 +1451,19 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
     when debug $ putStrLn "-- modified query:  "
     when debug $ putStrLn (show qr ++ ";")
     --when (dbSensitivity args && debug) $ sendDoubleQueryToDb args (show qr) >>= \ qr -> printf "database returns %0.6f (relative error from sigmoids %0.3f%%)\n" qr (abs (qr / initialQr - 1) * 100)
+    qr_value <- do
+        res <- sendDoubleQueryToDb args (show qr)
+        when debug $ printf "database returns %0.6f\n" res
+        return res
+
+    {-
     qr_value <- case timeSeries args of Just _  -> do
                                             res <- sendDoubleQueryToDb args (show qr)
                                             when debug $ printf "database returns %0.6f\n" res
                                             return res
                                         Nothing -> return $ error "Query result here currently computed only for time series analysis"
+    -}
+
     let sds = constProp $ subg (sdsf ar) beta
     when debug $ putStrLn "-- beta-smooth derivative sensitivity query:"
 

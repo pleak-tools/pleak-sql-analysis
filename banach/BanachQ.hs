@@ -1151,6 +1151,7 @@ performAnalyses' args silent epsilon' fixedBeta dataPath separator initialQuery 
   --qr <- if (dbSensitivity args) then sendDoubleQueryToDb args initialQuery else (do return 0)
 
   -- a group-by query may return several outputs; we store it as a map group -> value
+  -- TODO we need to somehow attach the resulting column names to the map list
   qmapList <- if (dbSensitivity args) then sendStringListsDoublesQueryToDb args initialQuery else (do return [([],0)])
 
   let qmap = M.fromList qmapList
@@ -1327,13 +1328,16 @@ performAnalyses' args silent epsilon' fixedBeta dataPath separator initialQuery 
                      ) taskAggr0
 
   let taskAggr = M.fromListWith (++) $ taskAggr'
-
+  when (debug && vb) $ putStrLn ("--- ")
+  when (debug && vb) $ putStrLn ("groupNames: " ++ (show groupNames))
+  when (debug && vb) $ putStrLn ("--- ")
+  when (debug && vb) $ putStrLn ("queryResults: " ++ (show queryResults))
   when (debug && vb) $ putStrLn ("--- ")
   when (debug && vb) $ putStrLn ("taskkeys: " ++ (show taskAggr))
   when (debug && vb) $ putStrLn ("--- ")
   when (debug && vb) $ putStrLn ("taskmap: " ++ (show taskMap))
   when (debug && vb) $ putStrLn ("--- ")
-  when (debug && vb) $ putStrLn ("tasknames: " ++ (show taskNameList))
+  when (debug && vb) $ putStrLn ("tasknames: " ++ (show taskNames))
   when (debug && vb) $ putStrLn ("--- ")
   when (debug && vb) $ putStrLn ("usedTaskNames: " ++ (show usedTaskNames))
 
@@ -1341,6 +1345,8 @@ performAnalyses' args silent epsilon' fixedBeta dataPath separator initialQuery 
   -- it is used for time series analysis
   -- and it was actually needed also for the other types of analysis, so we now are using it everywhere!
   let modifedQmap = M.fromList $ zip groupNames queryResults
+  -- TODO use this after initialQMap gets formatted similarly
+  --let modifedQmap = M.fromList $ zip (zip groupNames taskNames) queryResults
   when (debug && vb) $ putStrLn ("--- ")
   when (debug && vb) $ putStrLn ("initialQMap:  " ++ show qmap)
   when (debug && vb) $ putStrLn ("modifiedQMap: " ++ show modifedQmap)
@@ -1562,7 +1568,7 @@ processIntermediateResults args silent beta taskName analyzedTable group ar subE
     when debug $ putStrLn (show tbl_fx)
     when debug $ putStrLn (show tbl_sens)
     when debug $ putStrLn ("------------------")
-    let intermediateTableCreateStatement1 = insertIntoIntermediateAggrTableSql outputTableName [tbl_fx]
+    let intermediateTableCreateStatement1 = insertUniqueIntoIntermediateAggrTableSql outputTableName [tbl_fx]
     let intermediateTableCreateStatement2 = insertIntoIntermediateAggrTableSensSql ("_sens_" ++ outputTableName) [tbl_sens]
     let intermediateTableCreateStatement = intermediateTableCreateStatement1 ++ intermediateTableCreateStatement2
     when debug $ putStrLn (show intermediateTableCreateStatement)

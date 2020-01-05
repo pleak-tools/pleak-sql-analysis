@@ -640,15 +640,14 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
 
 --------------------------
 -- get all variables
-getAllAExprVars :: (Ord a, Show a) => Bool -> AExpr a -> S.Set a
+getAllAExprVars :: Bool -> AExpr String -> S.Set String
 getAllAExprVars sensOnly aexpr =
     case aexpr of
         AVar x -> processBase x
         AConst c -> S.empty
         AText c -> S.empty
 
-        -- TODO check if we want treat subtable outputs as variables
-        ASubExpr _ _ _ -> S.empty
+        ASubExpr t x g -> if g then S.singleton (preficedVarName t x) else S.empty
         AZeroSens x  -> if sensOnly then S.empty else processRec x
 
         AAbs x  -> processRec x
@@ -747,8 +746,8 @@ getAllSubExprs sensOnly aexpr =
     where processRec x = getAllSubExprs sensOnly x
           processBase x = S.singleton x
 
-aexprToColSet :: (Show a, Ord a, Show b, Ord b) => M.Map a b -> Bool -> AExpr a -> S.Set b
-aexprToColSet inputMap sensOnly aexpr = S.map (inputMap ! ) $ getAllAExprVars sensOnly aexpr
+--aexprToColSet :: (Show a, Ord a, Show b, Ord b) => M.Map a b -> Bool -> AExpr a -> S.Set b
+--aexprToColSet inputMap sensOnly aexpr = S.map (inputMap ! ) $ getAllAExprVars sensOnly aexpr
 
 --------------------------
 -- substitute variable subexpressions
@@ -898,11 +897,11 @@ aexprRange subTableAliasMap typeMap attMap sensVars aexpr =
     case aexpr of
 
         -- we look for known constraints in attMap, and if it is not there, use the typeMap
-        -- TODO attMap contains tableNames while typeMap and sensVars contain aliases!
+        -- attMap and typeMap contain aliases while sensVars contains tableNames
         AVar x   -> let v = queryNameToVarName x in
                     if not (S.member v sensVars) then Range (AVar x) (AVar x)
-                    else if M.member v attMap then attMap ! v
-                    else case typeMap ! v of
+                    else if M.member x attMap then attMap ! x
+                    else case typeMap ! x of
                              "int"  -> Range (AConst (-2^32)) (AConst (2^32))
                              "bool" -> Range (AConst 0) (AConst 1)
                              _      -> unknown

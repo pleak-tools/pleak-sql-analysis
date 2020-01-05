@@ -18,16 +18,19 @@ import qualified Data.Set as S
 sensRows :: String -> String
 sensRows tableName = tableName ++ "_sensRows"
 
-insertUniqueIntoIntermediateAggrTableSql :: String -> String -> Int -> [String] -> [String]
-insertUniqueIntoIntermediateAggrTableSql tableName uniqueColName uniqueColIndex tbl =
-  let numRows = 1 in
+insertUniqueIntoIntermediateAggrTableSql :: String -> [[String]] -> [String]
+insertUniqueIntoIntermediateAggrTableSql tableName tbl =
+  let numRows = length tbl in
   let sensTableName = sensRows tableName in
   let sensRows = [0..] in
   let sensRowsSet = S.fromList (take numRows sensRows) in
-  [
-    "INSERT INTO " ++ tableName ++ " SELECT " ++ intercalate ", " (zipWith (\ r i -> intercalate ", " (r ++ [show i])) [tbl] [0..]) ++ " WHERE NOT EXISTS (SELECT 1 FROM " ++ tableName ++ " WHERE " ++ uniqueColName ++ " = " ++ tbl !! uniqueColIndex ++ ")",
-    "INSERT INTO " ++ sensTableName ++ " SELECT " ++ intercalate ", " (map (\ i -> show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false")) [0..numRows-1]) ++ " WHERE NOT EXISTS (SELECT 1 FROM " ++ sensTableName ++ " WHERE id = 0)"]
 
+  (map (insertUniqueOneRow tableName) tbl) ++ ["INSERT INTO " ++ sensTableName ++ " SELECT " ++ intercalate ", " (map (\ i -> show i ++ ", " ++ (if i `S.member` sensRowsSet then "true" else "false")) [0..numRows-1]) ++ " WHERE NOT EXISTS (SELECT 1 FROM " ++ sensTableName ++ " WHERE id = 0)"]
+
+insertUniqueOneRow :: String -> [String] -> String
+insertUniqueOneRow tableName tbl =
+  let values = intercalate ", " (zipWith (\ r i -> intercalate ", " (r ++ [show i])) [tbl] [0..]) in
+  "INSERT INTO " ++ tableName ++ " SELECT " ++ values ++ " EXCEPT SELECT * FROM " ++ tableName
 
 insertIntoIntermediateAggrTableSql :: String -> [[String]] -> [String]
 insertIntoIntermediateAggrTableSql tableName tbl =

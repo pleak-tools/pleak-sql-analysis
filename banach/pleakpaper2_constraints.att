@@ -1,0 +1,4 @@
+ship.latitude range -300 300;
+ship.longitude range -300 300;
+port.name set 'alma' 'cow' 'lehm' 'milk' 'piim';
+ship.max_speed range 20 80;

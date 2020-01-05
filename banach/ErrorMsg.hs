@@ -5,7 +5,7 @@ import qualified Data.Map as M
 -- map element sampling with a more readable error message
 -- requires keys and values to be showable
 (!) :: (Show k, Show a, Ord k) => M.Map k a -> k -> a
-(!) xs x = if M.member x xs then xs M.! x else error $ error_mapElem x (M.keys xs)
+(!) xs x = if M.member x xs then xs M.! x else error $ error_mapElem x xs --(M.keys xs)
 
 -- if the data is showable, let us show it in the error
 at1 :: (Show a) => [a] -> Int -> a
@@ -90,7 +90,7 @@ error_internal_badlength z xs ys       = error_internal ++ " the following data 
 
 error_internal_empty_taskname t        = error_internal ++ " the name of the output table " ++ t ++ " was not found in the query map."
 
-error_mapElem x xs     = inErrTag ++ " Element " ++ show x ++ " is not in " ++ show xs
+error_mapElem x xs     = inErrTag ++ " Element " ++ show x ++ " is not in the map " ++ show xs
 error_arrElem x xs     = inErrTag ++ " Index " ++ show x ++ " is out of bounds in array " ++ show xs
 
 -- norm-related errors

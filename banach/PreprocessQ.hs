@@ -314,6 +314,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     (outputTableName,queryMap) <- parseQueryMap defaultOutputTableName queryFileContents
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Query map: " ++ show queryMap
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Output table name: " ++ show outputTableName
 
     schemaFileContents <- readInput inputSchema
     schemas <- parseSchemas schemaFileContents
@@ -345,21 +347,35 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- extract the tables that should be read from input files, take into account copies
     -- substitute intermediate queries into the aggregated query
-    let (usedTaskNames', inputTableAliases', inputTableNames', subTableAliasMap, outputGroups, outputQueryFuns', filterAexprs') = processQuery outputTableName queryMap attMap "" outputTableName outputTableName
-    let (outputQueryFuns, taskNames) = unzip outputQueryFuns'
+    let (usedTaskNames', inputTableAliases', inputTableNames', subTableAliasMap, subexprGroups, subexprQueryFuns', filterAexprs') = processQuery outputTableName queryMap attMap "" outputTableName outputTableName
+    let (subexprQueryFuns, taskNames) = unzip subexprQueryFuns'
 
     -- by construction, the used table aliases may repeat, so we discard repetitions first
     let (inputTableAliases, inputTableNames, usedTaskNames) = unzip3 $ zipWith3 (\xs ys zs -> unzip3 $ S.toList $ S.fromList $ zip3 xs ys zs) inputTableAliases' inputTableNames' usedTaskNames'
     let (allInputTableNames,allInputTableAliases) = unzip $ nub $ zip (concat inputTableNames) (concat inputTableAliases)
     let tableAliasMap = M.union (M.fromList $ map (\(x,y) -> (y,[x])) subTableAliasMap) $ M.fromListWith (++) $ zip allInputTableNames (map (\x -> [x]) allInputTableAliases)
 
+    let (outputQueryFuns,intermediateQueryFuns) = (\(xs,ys) -> (map fst xs, map fst ys)) $ partition (\(qf,tn) -> tn == outputTableName) $ zip subexprQueryFuns taskNames
+    let (outputGroups,   intermediateGroups)    = (\(xs,ys) -> (map fst xs, map fst ys)) $ partition (\(qf,tn) -> tn == outputTableName) $ zip subexprGroups taskNames
+
+    let commonOutputQueryFuns = filter isCommonQuery outputQueryFuns
+    --when (length commonOutputQueryFuns > 1) $ error error_queryExpr_singleColumn
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "Queries: " ++ show outputQueryFuns
+    traceIOIfDebug debug $ "All (sub)queries: " ++ show subexprQueryFuns
     traceIOIfDebug debug $ "*"
-    traceIOIfDebug debug $ "Task names: " ++ show taskNames
+    traceIOIfDebug debug $ "All task names: " ++ show taskNames
     traceIOIfDebug debug $ "*"
-    traceIOIfDebug debug $ "Groups: " ++ show outputGroups
+    traceIOIfDebug debug $ "All groups: " ++ show subexprGroups
+    traceIOIfDebug debug $ "***"
+    traceIOIfDebug debug $ "Output (sub)queries: " ++ show outputQueryFuns
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Output groups: " ++ show outputGroups
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "Intermediate (sub)queries: " ++ show intermediateQueryFuns
+    traceIOIfDebug debug $ "*"
+    traceIOIfDebug debug $ "intermediate groups: " ++ show intermediateGroups
+    traceIOIfDebug debug $ "*"
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Used task names: " ++ show usedTaskNames
     traceIOIfDebug debug $ "*"
@@ -389,7 +405,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     -- the columns of the cross product are ordered according to "M.keys inputTableMap"
     let orderedTableAliases = M.keys inputTableMap
 
-    let subExprsQ = map (\ (F aexpr _) -> getAllSubExprs False aexpr) outputQueryFuns
+    let subExprsQ = map (\ (F aexpr _) -> getAllSubExprs False aexpr) subexprQueryFuns
     let subExprsF = map (\fs -> foldr S.union S.empty (map (getAllSubExprs False) fs)) filterAexprs'
     let subExprs  = zipWith S.union subExprsQ subExprsF
 
@@ -397,7 +413,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let intermediateColNameSetsF = map (S.map fst) subExprsF
     let intermediateColNameSets = intermediateColNameSetsQ ++ intermediateColNameSetsF
 
-    let allIntermediateGroupColNameList = concat $ map (\gr -> let (x,ys) = (getGroupTableName gr, getGroupColName gr) in map (preficedVarName x) ys) outputGroups
+    let allIntermediateGroupColNameList = concat $ map (\gr -> let (x,ys) = (getGroupTableName gr, getGroupColName gr) in map (preficedVarName x) ys) subexprGroups
     let allIntermediateColNameList      = map (uncurry preficedVarName) $ concat $ map S.toList intermediateColNameSets
 
     let uniqueSubExprvarList = S.toList $ S.fromList $ allIntermediateColNameList ++ allIntermediateGroupColNameList
@@ -462,15 +478,15 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let filterAexprs = map (map (snd . applyAexprTypes fullTypeMap)) filterAexprs'
 
     traceIOIfDebug debug $ "----------------"
-    traceIOIfDebug debug $ "All query funs (w/o filter): " ++ show outputQueryFuns
+    traceIOIfDebug debug $ "All query funs (w/o filter): " ++ show subexprQueryFuns
     traceIOIfDebug debug $ "Used input table names: " ++ show inputTableNames
     traceIOIfDebug debug $ "Used input table aliases: " ++ show inputTableAliases
     traceIOIfDebug debug $ "All filters:" ++ show filterAexprs
 
 
     -- process the query blocks one by one, concatenate and reverse, so that subqueries would be processed before superqueries
-    let initialSubQueryDataMap = M.fromList $ zipWith6 (\t g q f ts tn -> let qn = getQueryName q in (qn,(t,g,q,f,ts,tn))) inputTableAliases outputGroups outputQueryFuns filterAexprs usedTaskNames taskNames
-    let orderedQueryNames = map getQueryName outputQueryFuns
+    let initialSubQueryDataMap = M.fromList $ zipWith6 (\t g q f ts tn -> let qn = getQueryName q in (qn,(t,g,q,f,ts,tn))) inputTableAliases subexprGroups subexprQueryFuns filterAexprs usedTaskNames taskNames
+    let orderedQueryNames = map getQueryName subexprQueryFuns
     let subQueryDataMap'  = constructQueryData initialSubQueryDataMap orderedQueryNames
 
     -- remove the auxiliary group-tables, as we do not need them anymore
@@ -485,8 +501,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     traceIOIfDebug debug $ "----------------"
 
     -- reconstruct the initial query
-    let allQueryStrs = M.fromList $ map (\f -> let qn = getQueryName f in (qn, constructInitialQuery subQueryDataMap' inputTableMap qn)) outputQueryFuns
-    let initialQuery = allQueryStrs ! (getQueryName $ head outputQueryFuns)
+    let allQueryStrs = M.fromList $ map (\f -> let qn = getQueryName f in (qn, constructInitialQuery subQueryDataMap' inputTableMap qn)) subexprQueryFuns
+    let initialQuery = allQueryStrs ! (getQueryName $ head subexprQueryFuns)
     let initialQueryGroups = ((\(_,_,_,_,_,gr,_,_,_,_) -> gr) (subQueryDataMap ! outputQueryName))
     let numOfOutputs = product $ map length (getGroupValues initialQueryGroups)
 
@@ -507,8 +523,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     -- if we are using combined sensitivity, then groups are not allowed
     --let usingCombinedSensitivity = foldr (||) False $ map (\g -> case g of {Just a -> if a == 1/0 then False else True; _ -> True}) (map snd tableGs)
-    --when (usingCombinedSensitivity && length outputQueryFuns > 1) $ error $ error_noCSGroupSupport
-    when (combinedSens args && length outputQueryFuns > 1) $ error $ error_noCSGroupSupport
+    --when (usingCombinedSensitivity && length subexprQueryFuns > 1) $ error $ error_noCSGroupSupport
+    when (combinedSens args && length subexprQueryFuns > 1) $ error $ error_noCSGroupSupport
 
     -- the last column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]
@@ -532,7 +548,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
 
     -- generate the tables for intermediate aggragate queries
-    let aggrIntermediateQueryFuns = filter (\(x,_) -> isAggrQuery x) $ zip (tail outputQueryFuns) (tail outputGroups)
+    -- let aggrIntermediateQueryFuns = filter (\(x,_) -> isAggrQuery x) $ zip (tail subexprQueryFuns) (tail subexprGroups)
+    let aggrIntermediateQueryFuns = filter (\(x,_) -> isAggrQuery x) $ zip intermediateQueryFuns intermediateGroups
 
     -- the follwing queries are called as a part of performAnalyses, to avoid duplications during beta optimization
     when debug $ putStrLn "================================="
@@ -618,8 +635,9 @@ constructInitialQuery subQueryDataMap inputTableMap queryName =
 
     -- add groups
     let groupVar = if hasGroups groups then concat $ zipWith (\gv gc -> gv ++ " AS " ++ gc ++ ",") (getGroupVarName groups) (getGroupColName groups) else "" in
-    let groupBy  = if hasGroups groups then " GROUP BY " ++ (intercalate ", " (getGroupColName groups)) else "" in
-    let alias    = if isIntermediateQueryName queryName && isAggrQuery query then " AS " ++ (queryNameToVarName queryName) else "" in
+    let groupBy  = if hasGroups groups then " GROUP BY " ++ (intercalate ", " (getGroupVarName groups)) else "" in
+    --let alias    = if isIntermediateQueryName queryName && isAggrQuery query then " AS " ++ (queryNameToVarName queryName) else "" in
+    let alias    = if isAggrQuery query then " AS " ++ (queryNameToVarName queryName) else "" in
     let mainSelect = "SELECT " ++ groupVar ++ queryStr ++ alias in
     --let mainFrom   = intercalate ", " directTables in
     let mainWhere  = if length filtersStr == 0 then "true" else intercalate " AND " filtersStr in
@@ -711,8 +729,7 @@ getQueryDataForGroup debug policy sigmoidBeta sigmoidPrecision attMap inputMap i
     -}
 
     -- we filter out rows using _globally_ public filters, since different filterings would be bad for sensitivity over all tables
-    let filterSensVars = map (\x -> S.intersection sensitiveColSet (aexprToColSet inputMap True x)) filterAexprs in
-
+    let filterSensVars = map (\x -> S.intersection (S.fromList sensitiveVarList) (getAllAExprVars True x)) filterAexprs in
     let (filtQueryFun', pubFilterAexprs) = addFiltersToQuery query filterAexprs filterSensVars in
 
     let F queryAexpr' queryAggr' = filtQueryFun' in

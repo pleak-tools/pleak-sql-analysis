@@ -11,7 +11,7 @@ import ProgramOptions
 import DatabaseQ
 import PolicyQ
 import Banach(gamma)
-import BanachQ(AnalysisDataWrtTable(..), DataWrtTable(..), TaskMap, performAnalyses)
+import BanachQ(AnalysisDataWrtTable(..), DataWrtTable(..), TaskMap, performAnalyses, findMaximumGsens, findGub)
 
 budgetSuffix :: String
 budgetSuffix = "_budget"
@@ -42,7 +42,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
   --when debug $ printf "typeMap = %s\n" (show typeMap)
   --when debug $ printf "taskMap = %s\n" (show taskMap)
   --when debug $ printf "attMap = %s\n" (show attMap)
-  --when debug $ printf "tableGs = %s\n" (show tableGs)
+  when debug $ printf "tableGs = %s\n" (show tableGs)
   --when debug $ printf "colTableCounts = %s\n" (show colTableCounts)
   when debug $ printf "tableNames = %s\n" (show tableNames)
   when debug $ printf "tableAliases = %s\n" (show tableAliases)
@@ -50,6 +50,27 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
   let tablesAndAliases = groupByFst $ zip tableNames tableAliases
   let tableToAliasesMap = Map.fromList tablesAndAliases
   let uniqueTables = map fst tablesAndAliases
+
+  let tableGmap = Map.fromList tableGs
+  let minG = minimum $ concatMap (\ t -> case Map.lookup t tableGmap of
+                Nothing            -> case getG args of Just g -> [g]
+                Just Nothing       -> []
+                Just (Just tableG) -> [tableG]) uniqueTables
+  when debug $ printf "minG = %f\n" minG
+
+  maxGsens <- findMaximumGsens args False epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  when debug $ printf "maxGsens = %f\n" maxGsens
+  gub <- findGub args False epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  when debug $ printf "gub = %f\n" gub
+
+  case (maxProvUses args, maxTimepoints args) of
+    (Just mProvUses, Just mTimepoints) -> do
+      let floorLog2 n | n <= 0 = -1
+                 | otherwise = floorLog2 (n `div` 2) + 1
+      let logTimepoints = floorLog2 mTimepoints + 1
+      let globalNoiseLevel = fromIntegral mProvUses * fromIntegral logTimepoints * max (gub / minG) maxGsens / epsilon
+      printf "globalNoiseLevel = %f\n" globalNoiseLevel
+    _ -> return ()
 
   let timeCols = splitOn "," timeCol
   let

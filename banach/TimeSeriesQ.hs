@@ -28,16 +28,36 @@ getFromAndWhere (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = 
 groupByFst :: (Ord a) => [(a,b)] -> [(a,[b])]
 groupByFst = map (\ g -> (fst (head g), map snd g)) . groupBy (\ x y -> fst x == fst y) . sortBy (\ x y -> compare (fst x) (fst y))
 
+floorLog2 :: Int -> Int
+floorLog2 n | n <= 0 = -1
+            | otherwise = floorLog2 (n `div` 2) + 1
+-- maximum number of times the budget of a provenance is used when a fixed amount of budget is used per row use
+maxBudgetUses :: ProgramOptions -> Int -> Int
+maxBudgetUses args n = (floorLog2 n + 1) * (case maxProvUses args of Just mpu -> mpu; Nothing -> 1)
+-- maximum number of times the budget of a provenance is used when a fixed amount of budget is used per time period when a row is used
+maxBudgetTimeperiods :: ProgramOptions -> Int -> Int
+maxBudgetTimeperiods args n =
+  let f 0 = []
+      f n = let m = n `div` 2 in (n - m) : f m
+  in sum $ map (min (maxProvTimepoints args)) $ f n
+
+
 performTimeSeriesDPAnalysis :: String -> [String] -> [String] -> ProgramOptions -> String -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> AttMap ->
                                [(String, Maybe Double)] -> [Int] -> IO ()
 performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   let debug    = not (alternative args)
-  let epsilon  = getEpsilon args
-  let beta     = getBeta args
-  let delta    = getDelta args
+  let epsilon0 = getEpsilon args
+  let beta0    = getBeta args
+  let delta0   = getDelta args
+  let (epsilon,beta,delta) =
+        case maxTimepoints args of
+          Just mTimepoints -> let mbtp = fromIntegral (maxBudgetTimeperiods args mTimepoints)
+                              in (epsilon0/mbtp, fmap (/mbtp) beta0, delta0/mbtp)
+          Nothing          -> (epsilon0, beta0, delta0)
 
   when debug $ printf "epsilon = %0.6f\n" epsilon
+  when debug $ printf "beta = %s\n" (show beta)
   when debug $ printf "gamma = %0.6f\n" gamma
   --when debug $ printf "typeMap = %s\n" (show typeMap)
   --when debug $ printf "taskMap = %s\n" (show taskMap)
@@ -65,10 +85,10 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
 
   case (maxProvUses args, maxTimepoints args) of
     (Just mProvUses, Just mTimepoints) -> do
-      let floorLog2 n | n <= 0 = -1
-                 | otherwise = floorLog2 (n `div` 2) + 1
-      let logTimepoints = floorLog2 mTimepoints + 1
-      let globalNoiseLevel = fromIntegral mProvUses * fromIntegral logTimepoints * max (gub / minG) maxGsens / epsilon
+      let mbu = fromIntegral (maxBudgetUses args mTimepoints)
+      let epsilon_gs = epsilon0 / mbu
+      printf "epsilon_gs = %f\n" epsilon_gs
+      let globalNoiseLevel = max (gub / minG) maxGsens / epsilon_gs
       printf "globalNoiseLevel = %f\n" globalNoiseLevel
     _ -> return ()
 
@@ -264,7 +284,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
         -- compute the number of intervals with each power-of-two length released so far
         let f 0 = []
             f n = let m = n `div` 2 in (n - m) : f m
-        let totalAllowedEpsilon = epsilon * fromIntegral (sum $ map (min (maxProvTimepoints args)) $ f time)
+        let totalAllowedEpsilon = epsilon * fromIntegral (maxBudgetTimeperiods args time)
         when debug $ printf "total epsilon used so far = %0.6f (private)\n" totalUsedEpsilon
         printf "total epsilon allowed so far = %0.6f (public)\n" totalAllowedEpsilon
         when debug $ when (totalUsedEpsilon > totalAllowedEpsilon + epsilon*0.5) $ putStrLn "PRIVACY LEAK: budget exceeded, DP not guaranteed anymore (and this message leaks further)"

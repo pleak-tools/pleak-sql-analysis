@@ -37,6 +37,7 @@ maxBudgetUses args n = (floorLog2 n + 1) * (case maxProvUses args of Just mpu ->
 -- maximum number of times the budget of a provenance is used when a fixed amount of budget is used per time period when a row is used
 maxBudgetTimeperiods :: ProgramOptions -> Int -> Int
 maxBudgetTimeperiods args n =
+  -- compute the number of intervals with each power-of-two length released so far
   let f 0 = []
       f n = let m = n `div` 2 in (n - m) : f m
   in sum $ map (min (maxProvTimepoints args)) $ f n
@@ -83,14 +84,15 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
   gub <- findGub args False epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData attMap tableGs colTableCounts
   when debug $ printf "gub = %f\n" gub
 
-  case (maxProvUses args, maxTimepoints args) of
+  (useGlobal, epsilon_gs, noiseLevel_gs) <- case (maxProvUses args, maxTimepoints args) of
     (Just mProvUses, Just mTimepoints) -> do
       let mbu = fromIntegral (maxBudgetUses args mTimepoints)
       let epsilon_gs = epsilon0 / mbu
       printf "epsilon_gs = %f\n" epsilon_gs
-      let globalNoiseLevel = max (gub / minG) maxGsens / epsilon_gs
-      printf "globalNoiseLevel = %f\n" globalNoiseLevel
-    _ -> return ()
+      let noiseLevel_gs = max (gub / minG) maxGsens / epsilon_gs
+      printf "noiseLevel_gs = %f\n" noiseLevel_gs
+      return (True, epsilon_gs, noiseLevel_gs)
+    _ -> return (False, undefined, undefined)
 
   let timeCols = splitOn "," timeCol
   let
@@ -203,7 +205,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
         let
           createBudgetQueries :: [String] -> String -> IO [String]
           createBudgetQueries provCols budgetTable = do
-            let usedRowsQueries = map (\ col -> "SELECT DISTINCT " ++ col ++ getFromAndWhere (head tableExprData_addsOrRemoves)) provCols
+            let usedRowsQueries = map (\ col -> "SELECT DISTINCT " ++ col ++ " AS id" ++ getFromAndWhere (head tableExprData_addsOrRemoves)) provCols
             let usedRowsQuery = case usedRowsQueries of [q] -> q
                                                         qs  -> intercalate " UNION " $ map (\ q -> '(' : q ++ ")") qs
             when debug $ putStrLn usedRowsQuery
@@ -213,7 +215,19 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
             let updateBudgetsQuery = "UPDATE " ++ budgetTable ++ " SET budget = budget + " ++ show epsilon ++ " WHERE id IN (" ++ usedRowsQuery ++ ")"
             when debug $ putStrLn createBudgetsQuery
             when debug $ putStrLn updateBudgetsQuery
-            return [createBudgetsQuery, updateBudgetsQuery]
+            -- queries for fixed budget per row use
+            let rowUsesQueries = map (\ col -> "SELECT " ++ col ++ " AS id" ++ getFromAndWhere (head tableExprData_addsOrRemoves)) provCols
+            let rowUsesQuery = case rowUsesQueries of [q] -> q
+                                                      qs  -> intercalate " UNION " $ map (\ q -> '(' : q ++ ")") qs
+            let rowUsesCountsQuery = "SELECT sub.id AS id, count(*) as count FROM (" ++ rowUsesQuery ++ ") as sub GROUP BY sub.id"
+            when useGlobal $ do
+              when debug $ putStrLn "rowUsesCountsQuery:"
+              when debug $ putStrLn rowUsesCountsQuery
+            let updateBudgetsQuery_gs = "UPDATE " ++ budgetTable ++ " SET budget = budget + sub.count*" ++ show epsilon_gs ++ " FROM (" ++ rowUsesCountsQuery ++ ") as sub WHERE " ++ budgetTable ++ ".id = sub.id"
+            when useGlobal $ do
+              when debug $ putStrLn "updateBudgetsQuery_gs:"
+              when debug $ putStrLn updateBudgetsQuery_gs
+            return [createBudgetsQuery, if useGlobal then updateBudgetsQuery_gs else updateBudgetsQuery]
         createBudgetsQueries1 <- fmap concat $ forM tablesAndAliases $ \ (tn, tas) ->
           if tn `Set.member` provenanceTablesSet
             then return []
@@ -251,7 +265,8 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
         when debug $ printf "beta = %0.6f\n" beta
         let noiseLevel = sensitivity / b
         printf "noise level = %0.6f\n" noiseLevel
-        return (queryResult, noiseLevel)
+        when useGlobal $ printf "using global noise level %0.6f instead\n" noiseLevel_gs
+        return (queryResult, if useGlobal then noiseLevel_gs else noiseLevel)
 
     let state' = map (\ (value, noiseLev) -> (value + 0, max noiseLev 0)) state
     --let state' = map (\ (value, noiseLev) -> (value + queryResult, max noiseLev noiseLevel)) state
@@ -281,13 +296,11 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
     totalUsedEpsilon <- sendDoubleQueryToDb args getMaxBudgetQuery
     if combinedSens args
       then do
-        -- compute the number of intervals with each power-of-two length released so far
-        let f 0 = []
-            f n = let m = n `div` 2 in (n - m) : f m
-        let totalAllowedEpsilon = epsilon * fromIntegral (maxBudgetTimeperiods args time)
+        let totalAllowedEpsilon = if useGlobal then epsilon_gs * fromIntegral (maxBudgetUses args time)
+                                               else epsilon * fromIntegral (maxBudgetTimeperiods args time)
         when debug $ printf "total epsilon used so far = %0.6f (private)\n" totalUsedEpsilon
         printf "total epsilon allowed so far = %0.6f (public)\n" totalAllowedEpsilon
-        when debug $ when (totalUsedEpsilon > totalAllowedEpsilon + epsilon*0.5) $ putStrLn "PRIVACY LEAK: budget exceeded, DP not guaranteed anymore (and this message leaks further)"
+        when debug $ when (totalUsedEpsilon > totalAllowedEpsilon + (if useGlobal then epsilon_gs else epsilon)*0.5) $ putStrLn "PRIVACY LEAK: budget exceeded, DP not guaranteed anymore (and this message leaks further)"
       else
         printf "total epsilon used so far = %0.6f\n" totalUsedEpsilon
 
@@ -299,6 +312,6 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
     let nl = sqrt (sum (map (^2) nls))
     printf "r[%d] = %0.6f ± %0.6f\n" time val nl
 
-    return (time,state'',releases')) (0::Int,[(0,0)],[]) (lines contents)
+    return (time,state'',releases')) (0::Int,[(0,0)],[]) ((case maxTimepoints args of Just n -> take n; Nothing -> id) $ lines contents)
 
   return ()

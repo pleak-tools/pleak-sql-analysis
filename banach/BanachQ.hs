@@ -1087,7 +1087,7 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens sens
         AR fx _ (SUB sdsg subBeta) gub gsens _ = combine (analyzeExprQ cols sensitiveVarSet varStates colTableCounts computeGsens subQueryMap expr)
       in
         aR {fx = fx,
-            sdsf = SUB (\ beta -> sdsg beta `Where` (sensCond ++ " AND " ++ srt ++ ".sensitive")) subBeta,
+            sdsf = SUB (\ beta -> sdsg beta `Where` (sensCond ++ (if equal sensCond "" then "" else " AND ") ++ srt ++ ".sensitive")) subBeta,
             gub = gub,
             gsens = gsens}
     twoStepCombine combine_p combine_inf expr =
@@ -1097,7 +1097,7 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens sens
       in aR {fx = fx,
              sdsf = SUB (\ beta ->
                            let
-                             subquery = GroupBy ((sdsg beta `As` "sdsg") `Where` (sensCond ++ " AND " ++ srt ++ ".sensitive")) (srt ++ ".ID") ""
+                             subquery = GroupBy ((sdsg beta `As` "sdsg") `Where` (sensCond ++ (if equal sensCond "" then "" else " AND ") ++ srt ++ ".sensitive")) (srt ++ ".ID") ""
                              AR _ _ (SUB sdsg2 _) _ _ _ = combine_p $ AR {sdsf = SUB (fixedArg beta $ VarQ "sdsg") subBeta}
                              mainquery = sdsg2 beta
                            in
@@ -1612,7 +1612,8 @@ performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskNam
 
     let results00 = map (\analyzedTable ->
             let extFromPart  = if equal analyzedTable tableName then fromPart else fromPart  ++ ", _sens_" ++ tableName in
-            let extWherePart = if equal analyzedTable tableName then wherePart else wherePart ++ " AND _sens_" ++ tableName ++ ".tableName = \'" ++ analyzedTable ++ "\'"
+            let extWherePart = if equal analyzedTable tableName then wherePart else wherePart ++ (if equal wherePart "" then "" else " AND ")
+                                  ++ "_sens_" ++ tableName ++ ".tableName = \'" ++ analyzedTable ++ "\'"
                                   ++ (concat $ map (\groupColumn -> " AND _sens_" ++ tableName ++ "." ++ groupColumn ++ " = " ++ tableName ++ "." ++ groupColumn) groupColumns) in
             f extFromPart extWherePart analyzedTable subExprAnalysisResults) analyzedTables
 

@@ -1127,6 +1127,7 @@ performAnalyses' :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -
 performAnalyses' args silent epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskNameList sensitiveVarList tableExprData' attMap tableGs colTableCounts extraWheres = do
   let debug = not (alternative args) && not silent
   let vb    = not (succinct args)
+  --printf "performAnalyses': debug = %s, vb = %s\n" (show debug) (show vb)
   let tableGmap = M.fromList tableGs
   let tableGstr = intercalate "," $
                     map (\ tg -> case tg of (tbl,Nothing)               -> tbl
@@ -1418,6 +1419,71 @@ findMaximumGsens1 args silent fromPart wherePart sensCond tableName taskName gro
     let maxGsens = foldr max 0 $ map gsens ars
     when debug $ printf "tableName=%s maxGsens=%0.6f\n" tableName maxGsens
     return (outputMap, maxGsens)
+
+
+-- find the maximum value of gub over all tables (actually gub should be the same for all tables)
+findGub :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO Double
+findGub args silent epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
+    let varStates = map (anyVarStateToRange . (M.findWithDefault Exact `flip` attMap)) colNames
+    -- ######################
+    -- subqueries are taken into account for computation of beta
+    let tableExprData = getData tableExprData'
+    (_,maxGubs) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (sensCond,fromPart,wherePart),_, _) -> do
+        (newSubQueryMap,result) <- findGub1 args silent fromPart wherePart sensCond tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
+        return (newSubQueryMap, results' ++ [result])) (M.empty,[]) tableExprData
+    -- ######################
+    return $ maximum maxGubs
+
+-- find the maximum value of gub for a given (copy of a) table
+findGub1 :: ProgramOptions -> Bool -> String -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (OneGroupData,(M.Map String AnalysisResult)) -> TableExpr -> [Int] -> IO (M.Map String (OneGroupData,(M.Map String AnalysisResult)), Double)
+findGub1 args silent fromPart wherePart sensCond tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
+
+    let debug = not (alternative args) && not silent
+
+    let sensitiveVarSet = S.fromList sensitiveVarList
+    let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
+    let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
+
+    let f x y _ w = let res = analyzeTableExprQ x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
+    (outputMap,results) <- performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f
+
+    let (_,ars) = unzip results
+    let maxGub = foldr max 0 $ map gub ars
+    when debug $ printf "tableName=%s maxGub=%0.6f\n" tableName maxGub
+    return (outputMap, maxGub)
+
+
+-- find the SELECT part (without the SELECT keyword and SUM function) of the modified query (actually fx should be the same for all tables)
+findModifiedQuery :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> [(String,[(String, String)])] -> [String] -> [DataWrtTable] -> M.Map String VarState -> [(String, Maybe Double)] -> [Int] -> IO String
+findModifiedQuery args silent epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData' attMap tableGs colTableCounts = do
+    let varStates = map (anyVarStateToRange . (M.findWithDefault Exact `flip` attMap)) colNames
+    -- ######################
+    -- subqueries are taken into account for computation of beta
+    let tableExprData = getData tableExprData'
+    (_,fxs) <- foldM (\ (subQueryMap',results') (tableName, taskName, gr, te, (sensCond,fromPart,wherePart),_, _) -> do
+        (newSubQueryMap,result) <- findModifiedQuery1 args silent fromPart wherePart sensCond tableName taskName gr colNames varStates sensitiveVarList subQueryMap' te colTableCounts
+        return (newSubQueryMap, results' ++ [result])) (M.empty,[]) tableExprData
+    -- ######################
+    return $ head fxs
+
+-- find the modified query for a given (copy of a) table
+findModifiedQuery1 :: ProgramOptions -> Bool -> String -> String -> String -> String -> String -> OneGroupData-> [String] -> [VarState] -> [String] -> M.Map String (OneGroupData,(M.Map String AnalysisResult)) -> TableExpr -> [Int] -> IO (M.Map String (OneGroupData,(M.Map String AnalysisResult)), String)
+findModifiedQuery1 args silent fromPart wherePart sensCond tableName taskName group colNames varStates sensitiveVarList subExprMap te colTableCounts = do
+
+    let debug = not (alternative args) && not silent
+
+    let sensitiveVarSet = S.fromList sensitiveVarList
+    let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
+    let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
+
+    let f x y _ w = let res = analyzeTableExprQ x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
+    (outputMap,results) <- performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f
+
+    let (_,ars) = unzip results
+    let theFx = head $ map ((\ (Select (FunQ fun s) f w) -> if fun P.== "sum" then show s else error "findModifiedQuery1: function " ++ fun ++ " not supported") . fx) ars
+    when debug $ printf "tableName=%s fx:\n%s\n" tableName theFx
+    return (outputMap, theFx)
+
 
 
 

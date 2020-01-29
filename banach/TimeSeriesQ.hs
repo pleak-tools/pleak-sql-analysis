@@ -11,10 +11,13 @@ import ProgramOptions
 import DatabaseQ
 import PolicyQ
 import Banach(gamma)
-import BanachQ(AnalysisDataWrtTable(..), DataWrtTable(..), TaskMap, performAnalyses)
+import BanachQ(AnalysisDataWrtTable(..), DataWrtTable(..), TaskMap, performAnalyses, findMaximumGsens, findGub, findModifiedQuery)
 
 budgetSuffix :: String
 budgetSuffix = "_budget"
+
+budgetAliasSuffix :: String
+budgetAliasSuffix = "_budgetalias"
 
 provenanceBudgetTable :: String
 provenanceBudgetTable = "provenancebudget"
@@ -22,27 +25,55 @@ provenanceBudgetTable = "provenancebudget"
 addWhereCond :: String -> DataWrtTable -> DataWrtTable
 addWhereCond cond (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = DWT (ADWT x1 x2 x3 (x4sensCond,x4from, if x4where == "" then cond else "(" ++ cond ++ ") AND (" ++ x4where ++ ")")) x5 x6 x7 x8
 
+addFrom :: String -> DataWrtTable -> DataWrtTable
+addFrom extraFrom (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = DWT (ADWT x1 x2 x3 (x4sensCond, if x4from == "" then extraFrom else x4from ++ ", " ++ extraFrom, x4where)) x5 x6 x7 x8
+
+addFroms :: [String] -> DataWrtTable -> DataWrtTable
+addFroms []         = id
+addFroms extraFroms = addFrom (intercalate ", " extraFroms)
+
 getFromAndWhere :: DataWrtTable -> String
 getFromAndWhere (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = (if x4from == "" then "" else " FROM " ++ x4from) ++ (if x4where == "" then "" else " WHERE " ++ x4where)
 
 groupByFst :: (Ord a) => [(a,b)] -> [(a,[b])]
 groupByFst = map (\ g -> (fst (head g), map snd g)) . groupBy (\ x y -> fst x == fst y) . sortBy (\ x y -> compare (fst x) (fst y))
 
+floorLog2 :: Int -> Int
+floorLog2 n | n <= 0 = -1
+            | otherwise = floorLog2 (n `div` 2) + 1
+-- maximum number of times the budget of a provenance is used when a fixed amount of budget is used per row use
+maxBudgetUses :: ProgramOptions -> Int -> Int
+maxBudgetUses args n = (floorLog2 n + 1) * (case maxProvUses args of Just mpu -> mpu; Nothing -> 1)
+-- maximum number of times the budget of a provenance is used when a fixed amount of budget is used per time period when a row is used
+maxBudgetTimeperiods :: ProgramOptions -> Int -> Int
+maxBudgetTimeperiods args n =
+  -- compute the number of intervals with each power-of-two length released so far
+  let f 0 = []
+      f n = let m = n `div` 2 in (n - m) : f m
+  in sum $ map (min (maxProvTimepoints args)) $ f n
+
+
 performTimeSeriesDPAnalysis :: String -> [String] -> [String] -> ProgramOptions -> String -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> AttMap ->
                                [(String, Maybe Double)] -> [Int] -> IO ()
 performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts = do
 
   let debug    = not (alternative args)
-  let epsilon  = getEpsilon args
-  let beta     = getBeta args
-  let delta    = getDelta args
+  let epsilon0 = getEpsilon args
+  let beta0    = getBeta args
+  let delta0   = getDelta args
+  let (epsilon,beta,delta) =
+        case maxTimepoints args of
+          Just mTimepoints -> let mbtp = fromIntegral (maxBudgetTimeperiods args mTimepoints)
+                              in (epsilon0/mbtp, fmap (/mbtp) beta0, delta0/mbtp)
+          Nothing          -> (epsilon0, beta0, delta0)
 
   when debug $ printf "epsilon = %0.6f\n" epsilon
+  when debug $ printf "beta = %s\n" (show beta)
   when debug $ printf "gamma = %0.6f\n" gamma
   --when debug $ printf "typeMap = %s\n" (show typeMap)
   --when debug $ printf "taskMap = %s\n" (show taskMap)
   --when debug $ printf "attMap = %s\n" (show attMap)
-  --when debug $ printf "tableGs = %s\n" (show tableGs)
+  when debug $ printf "tableGs = %s\n" (show tableGs)
   --when debug $ printf "colTableCounts = %s\n" (show colTableCounts)
   when debug $ printf "tableNames = %s\n" (show tableNames)
   when debug $ printf "tableAliases = %s\n" (show tableAliases)
@@ -50,6 +81,30 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
   let tablesAndAliases = groupByFst $ zip tableNames tableAliases
   let tableToAliasesMap = Map.fromList tablesAndAliases
   let uniqueTables = map fst tablesAndAliases
+
+  let tableGmap = Map.fromList tableGs
+  let minG = minimum $ concatMap (\ t -> case Map.lookup t tableGmap of
+                Nothing            -> case getG args of Just g -> [g]
+                Just Nothing       -> []
+                Just (Just tableG) -> [tableG]) uniqueTables
+  when debug $ printf "minG = %f\n" minG
+
+  maxGsens <- findMaximumGsens args False epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  when debug $ printf "maxGsens = %f\n" maxGsens
+  gub <- findGub args False epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  when debug $ printf "gub = %f\n" gub
+  modifiedQuery <- findModifiedQuery args False epsilon beta dataPath separator initialQuery colNames typeMap sensitiveVarList tableExprData attMap tableGs colTableCounts
+  when debug $ printf "fx = %s\n" modifiedQuery
+
+  (useGlobal, epsilon_gs, noiseLevel_gs) <- case (maxProvUses args, maxTimepoints args) of
+    (Just mProvUses, Just mTimepoints) -> do
+      let mbu = fromIntegral (maxBudgetUses args mTimepoints)
+      let epsilon_gs = epsilon0 / mbu
+      printf "epsilon_gs = %f\n" epsilon_gs
+      let noiseLevel_gs = max (fromIntegral (if excludeExhausted args then length tableAliases + 1 else 1) * gub / minG) maxGsens / epsilon_gs
+      printf "noiseLevel_gs = %f\n" noiseLevel_gs
+      return (True, epsilon_gs, noiseLevel_gs)
+    _ -> return (False, undefined, undefined)
 
   let timeCols = splitOn "," timeCol
   let
@@ -89,6 +144,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
           timeCols
     provenanceCols = concatMap (\ (table,col) -> let tas = tableToAliasesMap Map.! table in map (\ ta -> ta ++ "." ++ col) tas) provenanceTablesAndCols
     provenanceTablesSet = Set.fromList (map fst provenanceTablesAndCols)
+    tableToProvenanceColMap = Map.fromList provenanceTablesAndCols
   let addTimeStr = case addTimeCols of [c] -> c
                                        cs  -> "GREATEST(" ++ intercalate "," cs ++ ")"
   when debug $ printf "addTimeStr = %s\n" addTimeStr
@@ -100,11 +156,30 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
   unless addsUsed $ fail "At least one add time column must be given for time series analysis"
   let provenancesUsed = not (null provenanceTablesAndCols)
 
+  let rowUseRatios = map (\ ta -> ta ++ budgetAliasSuffix ++ ".useratio") tableAliases
+  let rowUseRatio = case rowUseRatios of [c] -> c
+                                         cs -> "LEAST(" ++ intercalate "," cs ++ ")"
+  when debug $ when (excludeExhausted args) $ printf "rowUseRatio: %s\n" rowUseRatio
+  let modifiedQueryWithExcludedRows = "SELECT sum(" ++ (if excludeExhausted args then "(" ++ modifiedQuery ++ ") * " ++ rowUseRatio else modifiedQuery) ++ ")"
+  when debug $ printf "modifiedQueryWithExcludedRows: %s\n" modifiedQueryWithExcludedRows
+  let extraFromsForExcludingRows = if excludeExhausted args then zipWith (\ tn ta -> (if tn `Set.member` provenanceTablesSet then provenanceBudgetTable else tn ++ budgetSuffix) ++ " AS " ++ ta ++ budgetAliasSuffix)
+                                                                         tableNames tableAliases
+                                                            else []
+  when debug $ printf "extraFromsForExcludingRows: %s\n" (show extraFromsForExcludingRows)
+  let extraWheresForExcludingRows = if excludeExhausted args then intercalate " AND " (zipWith (\ tn ta -> ta ++ "." ++ (case Map.lookup tn tableToProvenanceColMap of Just provCol -> provCol
+                                                                                                                                                                       Nothing -> "ID") ++ " = " ++ ta ++ budgetAliasSuffix ++ ".ID")
+                                                                                               tableNames tableAliases)
+                                                             else ""
+  when debug $ printf "extraWheresForExcludingRows: %s\n" extraWheresForExcludingRows
+  let addFromsAndWheresForExcludingRows = if excludeExhausted args then addFroms extraFromsForExcludingRows . addWhereCond extraWheresForExcludingRows else id
+  let createQueryForExcludingRows tableExprData = modifiedQueryWithExcludedRows ++ getFromAndWhere (addFromsAndWheresForExcludingRows tableExprData)
+
+
   let
     createBudgetTableQueries :: String -> IO [String]
     createBudgetTableQueries budgetTable = do
       let query1 = "DROP TABLE IF EXISTS " ++ budgetTable
-      let query2 = "CREATE TABLE " ++ budgetTable ++ " (ID int8, budget double precision)"
+      let query2 = "CREATE TABLE " ++ budgetTable ++ (if excludeExhausted args then " (ID int8, budget double precision, useratio double precision)" else " (ID int8, budget double precision)")
       when debug $ putStrLn query1
       when debug $ putStrLn query2
       return [query1, query2]
@@ -162,7 +237,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
         let
           createBudgetQueries :: [String] -> String -> IO [String]
           createBudgetQueries provCols budgetTable = do
-            let usedRowsQueries = map (\ col -> "SELECT DISTINCT " ++ col ++ getFromAndWhere (head tableExprData_addsOrRemoves)) provCols
+            let usedRowsQueries = map (\ col -> "SELECT DISTINCT " ++ col ++ " AS id" ++ getFromAndWhere (head tableExprData_addsOrRemoves)) provCols
             let usedRowsQuery = case usedRowsQueries of [q] -> q
                                                         qs  -> intercalate " UNION " $ map (\ q -> '(' : q ++ ")") qs
             when debug $ putStrLn usedRowsQuery
@@ -172,7 +247,24 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
             let updateBudgetsQuery = "UPDATE " ++ budgetTable ++ " SET budget = budget + " ++ show epsilon ++ " WHERE id IN (" ++ usedRowsQuery ++ ")"
             when debug $ putStrLn createBudgetsQuery
             when debug $ putStrLn updateBudgetsQuery
-            return [createBudgetsQuery, updateBudgetsQuery]
+            -- queries for fixed budget per row use
+            let rowUsesQueries = map (\ col -> "SELECT " ++ col ++ " AS id" ++ getFromAndWhere (head tableExprData_addsOrRemoves)) provCols
+            let rowUsesQuery = case rowUsesQueries of [q] -> q
+                                                      qs  -> intercalate " UNION " $ map (\ q -> '(' : q ++ ")") qs
+            let rowUsesCountsQuery = "SELECT sub.id AS id, count(*) as count FROM (" ++ rowUsesQuery ++ ") as sub GROUP BY sub.id"
+            when useGlobal $ do
+              when debug $ putStrLn "rowUsesCountsQuery:"
+              when debug $ putStrLn rowUsesCountsQuery
+            let rowUsedEpsilon = "(sub.count*" ++ show epsilon_gs ++ ")"
+            let rowRemainingBudget = "GREATEST(0," ++ show epsilon0 ++ " - budget)"
+            let updateBudgetsQuery_gsn = "UPDATE " ++ budgetTable ++ " SET budget = budget + " ++ rowUsedEpsilon ++ " FROM (" ++ rowUsesCountsQuery ++ ") as sub WHERE " ++ budgetTable ++ ".id = sub.id"
+            let updateBudgetsQuery_gsx = "UPDATE " ++ budgetTable ++ " SET (useratio,budget) = (LEAST(" ++ rowRemainingBudget ++ "," ++ rowUsedEpsilon ++ ") / " ++ rowUsedEpsilon ++
+                                         ", budget + LEAST(" ++ rowUsedEpsilon ++ "," ++ rowRemainingBudget ++ ")) FROM (" ++ rowUsesCountsQuery ++ ") as sub WHERE " ++ budgetTable ++ ".id = sub.id"
+            let updateBudgetsQuery_gs = if excludeExhausted args then updateBudgetsQuery_gsx else updateBudgetsQuery_gsn
+            when useGlobal $ do
+              when debug $ putStrLn "updateBudgetsQuery_gs:"
+              when debug $ putStrLn updateBudgetsQuery_gs
+            return [createBudgetsQuery, if useGlobal then updateBudgetsQuery_gs else updateBudgetsQuery]
         createBudgetsQueries1 <- fmap concat $ forM tablesAndAliases $ \ (tn, tas) ->
           if tn `Set.member` provenanceTablesSet
             then return []
@@ -187,7 +279,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
             else return []
         let createBudgetsQueries = createBudgetsQueries1 ++ createBudgetsQueries2
 
-        (qmap, taskAggr, queryResult) <-
+        (qmap, taskAggr, queryResult0) <-
           if removesUsed
             then do
               (qmapA, taskAggrA, queryResultA) <- performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList
@@ -202,6 +294,21 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
             else performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_adds attMap tableGs colTableCounts (Just addCond)
         sendQueriesToDbAndCommit args createBudgetsQueries
 
+        queryResult <- if excludeExhausted args
+          then do
+            when debug $ printf "queryResult0: %0.6f\n" queryResult0
+            let query_adds = createQueryForExcludingRows (head tableExprData_adds)
+            let query_removes = createQueryForExcludingRows (head tableExprData_removes)
+            queryResultA <- sendDoubleQueryToDb args query_adds
+            queryResultR <- if removesUsed then sendDoubleQueryToDb args query_removes else return 0
+            when debug $ printf "query_adds: %s\n" query_adds
+            when debug $ printf "sum of adds (with excluded rows) = %0.6f\n" queryResultA
+            when removesUsed $ do
+              when debug $ printf "query_removes: %s\n" query_removes
+              when debug $ printf "sum of removes (with excluded rows) = %0.6f\n" queryResultR
+            return (queryResultA - queryResultR)
+          else return queryResult0
+
         printf "change in query result = %0.6f\n" queryResult
         let (b,sensitivity) = snd $ head $ filter ((== "all input tables together") . fst) $ snd $ head $ taskAggr Map.! []
         when debug $ printf "sensitivity = %0.6f\n" sensitivity
@@ -210,7 +317,8 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
         when debug $ printf "beta = %0.6f\n" beta
         let noiseLevel = sensitivity / b
         printf "noise level = %0.6f\n" noiseLevel
-        return (queryResult, noiseLevel)
+        when useGlobal $ printf "using global noise level %0.6f instead\n" noiseLevel_gs
+        return (queryResult, if useGlobal then noiseLevel_gs else noiseLevel)
 
     let state' = map (\ (value, noiseLev) -> (value + 0, max noiseLev 0)) state
     --let state' = map (\ (value, noiseLev) -> (value + queryResult, max noiseLev noiseLevel)) state
@@ -240,13 +348,11 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
     totalUsedEpsilon <- sendDoubleQueryToDb args getMaxBudgetQuery
     if combinedSens args
       then do
-        -- compute the number of intervals with each power-of-two length released so far
-        let f 0 = []
-            f n = let m = n `div` 2 in (n - m) : f m
-        let totalAllowedEpsilon = epsilon * fromIntegral (sum $ map (min (maxProvTimepoints args)) $ f time)
+        let totalAllowedEpsilon = if useGlobal then epsilon_gs * fromIntegral (maxBudgetUses args time)
+                                               else epsilon * fromIntegral (maxBudgetTimeperiods args time)
         when debug $ printf "total epsilon used so far = %0.6f (private)\n" totalUsedEpsilon
         printf "total epsilon allowed so far = %0.6f (public)\n" totalAllowedEpsilon
-        when debug $ when (totalUsedEpsilon > totalAllowedEpsilon + epsilon*0.5) $ putStrLn "PRIVACY LEAK: budget exceeded, DP not guaranteed anymore (and this message leaks further)"
+        when debug $ when (totalUsedEpsilon > totalAllowedEpsilon + (if useGlobal then epsilon_gs else epsilon)*0.5) $ putStrLn "PRIVACY LEAK: budget exceeded, DP not guaranteed anymore (and this message leaks further)"
       else
         printf "total epsilon used so far = %0.6f\n" totalUsedEpsilon
 
@@ -258,6 +364,6 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
     let nl = sqrt (sum (map (^2) nls))
     printf "r[%d] = %0.6f ± %0.6f\n" time val nl
 
-    return (time,state'',releases')) (0::Int,[(0,0)],[]) (lines contents)
+    return (time,state'',releases')) (0::Int,[(0,0)],[]) ((case maxTimepoints args of Just n -> take n; Nothing -> id) $ lines contents)
 
   return ()

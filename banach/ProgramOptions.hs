@@ -19,6 +19,7 @@ data ProgramOptions
     maxProvTimepoints:: Int,
     maxProvUses      :: Maybe Int,
     maxTimepoints    :: Maybe Int,
+    useGlobalSens    :: Bool,
     excludeExhausted :: Bool,
     policyAnalysis   :: Bool,
     generateQueries  :: Bool,
@@ -51,6 +52,7 @@ programArgs = ProgramOptions
   <*> option auto (short 'm' <> long "max-prov-timepoints" <> value 1 <> help "Specify the maximum number of time points where a provenance (or row) can affect the query change, including the time points when it is joined with other rows (default is 1)")
   <*> optional (option auto (short 'M' <> long "max-prov-uses" <> help "Specify the maximum number of times a provenance (or row) can be used (i.e. appear in the joined table)"))
   <*> optional (option auto (short 'T' <> long "max-timepoints" <> help "Specify the maximum number of time points in the time series"))
+  <*> switch (short 'g' <> long "global-sensitivity" <> hidden <> help "Use global Banach sensitivity instead of local (only implemented for time series analysis with fixed budget per row use)")
   <*> switch (short 'x' <> long "exclude-exhausted" <> hidden <> help "Exclude rows with exhausted budget from the query result")
   <*> switch (short 'p' <> long "policy-analysis" <> hidden <> help "Analyse privacy treating epsilon in [0,1] as attacker's guessing probability")
   <*> switch (short 'Q' <> long "queries" <> hidden <> help "Generate SQL queries for computing sensitivity instead of actually computing it")

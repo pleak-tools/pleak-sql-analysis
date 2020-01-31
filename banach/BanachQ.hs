@@ -1072,14 +1072,16 @@ combineArsSumInfT :: AnalysisResult -> AnalysisResult
 combineArsSumInfT ar =
   (combineArsSumT ar) {sdsf = SUB (\ beta -> lpnormT 1 (subg (sdsf ar) beta)) (subBeta (sdsf ar))}
 
-analyzeTableExpr :: [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> String -> String -> (M.Map String AnalysisResult) -> TableExpr-> AnalysisResult
-analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens sensCond srt subQueryMap te =
+-- useFixedBudgetPerRowUse should be true if and only if (maxProvUses args) != Nothing
+-- useFixedBudgetPerRowUse=True is implemented only for SUM queries
+analyzeTableExpr :: [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> Bool -> String -> String -> (M.Map String AnalysisResult) -> TableExpr -> AnalysisResult
+analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens useFixedBudgetPerRowUse sensCond srt subQueryMap te =
   case te of
     SelectMin (expr : _) -> oneStepCombine combineArsMinT expr
     SelectMax (expr : _) -> oneStepCombine combineArsMaxT expr
     SelectL p (expr : _) -> twoStepCombine (combineArsLT p) (combineArsLpInfT p) expr
-    SelectSump p (expr : _) -> twoStepCombine (combineArsSumpT p) combineArsSumInfT expr
-    SelectSumInf (expr : _) -> oneStepCombine combineArsSumInfT expr
+    SelectSump p (expr : _) -> twoStepCombine (combineArsSumpT p) (if useFixedBudgetPerRowUse then combineArsSumpT 1 else combineArsSumInfT) expr
+    SelectSumInf (expr : _) -> (if useFixedBudgetPerRowUse then twoStepCombine combineArsSumInfT (combineArsSumpT 1) else oneStepCombine combineArsSumInfT) expr
   where
     fixedArg arg expr arg' | arg' P.== arg = expr
     oneStepCombine combine expr =
@@ -1111,9 +1113,10 @@ analyzeTableExpr cols sensitiveVarSet varStates colTableCounts computeGsens sens
 -- fr may contain multiple tables and aliases, e.g. "t as t1, t as t2, t3"
 -- wh is the WHERE condition as a string, e.g. "t1.c1 = t2.c1 AND t1.c2 >= t2.c2"
 -- srt is the name of the sensitive rows table
-analyzeTableExprQ :: String -> String -> String -> String -> [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> (M.Map String AnalysisResult) -> TableExpr -> AnalysisResult
-analyzeTableExprQ fr wh sensCond srt colNames sensitiveVarSet varStates colTableCounts computeGsens subQueryMap te =
-  let AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens sensCond srt subQueryMap te in
+analyzeTableExprQ :: ProgramOptions -> String -> String -> String -> String -> [String] -> S.Set Int -> [VarState] -> [Int] -> Bool -> (M.Map String AnalysisResult) -> TableExpr -> AnalysisResult
+analyzeTableExprQ args fr wh sensCond srt colNames sensitiveVarSet varStates colTableCounts computeGsens subQueryMap te =
+  let useFixedBudgetPerRowUse = case maxProvUses args of Just _ -> True; Nothing -> False
+      AR fx1 (SUB subf1g subf1beta) (SUB sdsf1g sdsf1beta) gub gsens vs = analyzeTableExpr colNames sensitiveVarSet varStates colTableCounts computeGsens useFixedBudgetPerRowUse sensCond srt subQueryMap te in
   AR (Select fx1 fr wh) (SUB ((\ x -> Select x fr wh) . subf1g) subf1beta) (SUB ((\ x -> Select x fr wh) . sdsf1g) sdsf1beta) gub gsens vs
 
 performAnalyses :: ProgramOptions -> Bool -> Double -> Maybe Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> TaskMap -> [String] -> [DataWrtTable] -> M.Map String VarState ->
@@ -1135,11 +1138,14 @@ performAnalyses' args silent epsilon' fixedBeta dataPath separator initialQuery 
                                                          | otherwise    -> tbl ++ ':' : show g)
                         tableGs
 
+  -- for time series analysis, we execute initial queries in module TimeSeriesQ instead of here, to avoid executing them again at each time point
+  case timeSeries args of
+    Nothing -> do
+      when debug $ putStrLn "================================="
+      when debug $ putStrLn "Computing queries that create empty intermediate query tables and the input tables\n"
 
-  when debug $ putStrLn "================================="
-  when debug $ putStrLn "Computing queries that create empty intermediate query tables and the input tables\n"
-
-  sendQueriesToDbAndCommit args initQueries
+      sendQueriesToDbAndCommit args initQueries
+    _ -> return ()
 
   --when debug $ printf "tableGstr = %s\n" tableGstr
   when debug $ putStrLn "================================="
@@ -1380,7 +1386,7 @@ findMinimumBeta1 args silent fromPart wherePart sensCond tableName taskName grou
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
 
-    let f x y _ w = let res = analyzeTableExprQ x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False w te in (do return (res,res))
+    let f x y _ w = let res = analyzeTableExprQ args x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False w te in (do return (res,res))
     (outputMap,results) <- performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f
 
     let (_,ars) = unzip results
@@ -1412,7 +1418,7 @@ findMaximumGsens1 args silent fromPart wherePart sensCond tableName taskName gro
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
 
-    let f x y _ w = let res = analyzeTableExprQ x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
+    let f x y _ w = let res = analyzeTableExprQ args x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
     (outputMap,results) <- performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f
 
     let (_,ars) = unzip results
@@ -1444,7 +1450,7 @@ findGub1 args silent fromPart wherePart sensCond tableName taskName group colNam
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
 
-    let f x y _ w = let res = analyzeTableExprQ x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
+    let f x y _ w = let res = analyzeTableExprQ args x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
     (outputMap,results) <- performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f
 
     let (_,ars) = unzip results
@@ -1476,7 +1482,7 @@ findModifiedQuery1 args silent fromPart wherePart sensCond tableName taskName gr
     let sensitiveVarIndices = [i | (i,colName) <- zip [round 0..] colNames, colName `S.member` sensitiveVarSet]
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
 
-    let f x y _ w = let res = analyzeTableExprQ x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
+    let f x y _ w = let res = analyzeTableExprQ args x y sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True w te in (do return (res,res))
     (outputMap,results) <- performSubExprAnalysis args silent fromPart wherePart sensCond tableName taskName group subExprMap f
 
     let (_,ars) = unzip results
@@ -1503,8 +1509,8 @@ performAnalysis args silent epsilon fixedBeta initialQr fromPart wherePart sensC
     let sensitiveVarIndicesSet = S.fromList sensitiveVarIndices
     --when debug $ printf "sensitiveVarIndices = %s\n" (show sensitiveVarIndices)
 
-    let ar_for_gsens = analyzeTableExprQ fromPart wherePart sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True subExprMap te
-    let ar = (analyzeTableExprQ fromPart wherePart sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False subExprMap te) {gsens = gsens ar_for_gsens}
+    let ar_for_gsens = analyzeTableExprQ args fromPart wherePart sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts True subExprMap te
+    let ar = (analyzeTableExprQ args fromPart wherePart sensCond (sensRows tableName) colNames sensitiveVarIndicesSet varStates colTableCounts False subExprMap te) {gsens = gsens ar_for_gsens}
 
     when (debug && vb) $putStrLn "Analysis result:"
     when (debug && vb) $print ar

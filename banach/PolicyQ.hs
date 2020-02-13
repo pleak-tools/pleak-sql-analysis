@@ -214,6 +214,39 @@ isLeakedVar plcState attState =
             (RangePr lb ubs, ApproxWrtLinf r) -> (sum $ map (\ub -> if (ub - lb) / 2 <= r then ubs ! ub else 0) (M.keys ubs)) == 1
             (Normal mu sigma, ApproxWrtLinf r) -> 3 * (sqrt 2) * sigma <= r
 
+            (IntSubSet   xs,  Approx r) -> let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+            (IntSubSetUn xs,  Approx r) -> let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+            (IntSubSetPr mp,  Approx r) -> let xs = M.keys mp in
+                                                  let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+
+            (IntSubSet   xs,  ApproxWrtLp _ r) -> let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+            (IntSubSetUn xs,  ApproxWrtLp _ r) -> let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+            (IntSubSetPr mp,  ApproxWrtLp _ r) -> let xs = M.keys mp in
+                                                  let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+
+            (IntSubSet   xs,  ApproxWrtLinf r) -> let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+            (IntSubSetUn xs,  ApproxWrtLinf r) -> let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+            (IntSubSetPr mp,  ApproxWrtLinf r) -> let xs = M.keys mp in
+                                                  let lb = foldl min (head xs) (tail xs) in
+                                                  let ub = foldl max 0 xs in
+                                                  fromIntegral (ub - lb) <= r
+
             _ -> error $ error_badAttackerPolicyCombination attState plcState
 
 

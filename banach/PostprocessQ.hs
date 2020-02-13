@@ -128,12 +128,14 @@ compute_eps_for_a pos ga numOfRows xmap expr sample_a nq =
                                     if not b then
                                         unzip $ replicate numOfRows (1.0, 1.0)
                                     else
-                                        -- this 'aa' defines the probability area, and not the distance
+                                        -- this 'aa' defines distance in the scaled space
+                                        -- the value 'aa * ur' should be used to compute g
                                         let aa = if d then rr
                                                 else max r $ min rr sample_a
                                         in unzip $ map (\xs -> case g xs (ur * aa) of
-                                                          Nothing   -> (1.0, if d then 1.0 else 2.0*rr)
-                                                          Just (v,a)-> (v,a)) xss
+                                                          Nothing   -> (1.0, if d then 1.0 else 2.0 * rr)
+                                                          -- since g has been computed in non-scaled space, we need to scale 'a' back
+                                                          Just (v,a)-> (v, a / ur)) xss
                                     ) (M.keys m)
                                in
                                     (map (((fromIntegral s) * ) . product) (transpose vss), foldr max 1.0 (concat ass))) expr
@@ -269,7 +271,7 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
                       let (_,initQrs,modQrs,bs,sdss) = unzip5 zs in
                       let qr  = if length initQrs == 1 then printFloatS (head initQrs) else "[" ++ intercalate ", " (map printFloatS initQrs) ++ "]" in
                       let cauchyError = printFloatL $ (combinedErrs initQrs modQrs bs sdss) * noiseScaleCauchy * 100 in
-                      let cauchyNoise = (let xs = map (* noiseScaleCauchy) (combinedEtas bs sdss) in if length initQrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+                      let cauchyNoise = (let xs = map (* noiseScaleCauchy) (combinedEtas initQrs modQrs bs sdss) in if length initQrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
                       let sds = printFloatL $ combinedSdss sdss in
                       let norm = if tableName == B.resultForAllTables then
                                       "an l_1-norm of all input table norms"
@@ -296,7 +298,7 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
                       --trace ("laplace bs1: " ++ show laplaceBs) $
 
                       let laplaceError = printFloatL $ (combinedErrs initQrs modQrs laplaceBs sdss) * noiseScaleLaplace * 100 in
-                      let laplaceNoise = (let xs =  map (* noiseScaleLaplace) (combinedEtas laplaceBs sdss) in if length initQrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+                      let laplaceNoise = (let xs =  map (* noiseScaleLaplace) (combinedEtas initQrs modQrs laplaceBs sdss) in if length initQrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
                       [tableName,sds,qr,cauchyNoise,cauchyError,finalBeta,laplaceDelta,laplaceNoise,laplaceError,norm]) res)
 
           )) taskList
@@ -449,7 +451,7 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
 
   -- additional outputs
   let (initQrs, modQrs, cauchyBs, finalSdss) = unzip4 $ map (\key -> extractFinalResult (if M.member key initQmap then initQmap ! key else 0) (if M.member key modQmap then modQmap ! key else 0) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys taskAggrMap)
-  let cauchyNoise = combinedEtas cauchyBs finalSdss
+  let cauchyNoise = combinedEtas initQrs modQrs cauchyBs finalSdss
 
 
   -- (epsilon,delta)-DP related stuff:
@@ -461,7 +463,7 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
 
   let laplaceDeltas = zipWith4 (\sds beta b eps -> if beta == 0 then 0 else 2*exp(eps-1-(eps-b)/beta)) finalSdss allBetas laplaceBs laplaceEpsilons
   let laplaceError = combinedErrs initQrs modQrs laplaceBs finalSdss
-  let laplaceNoise = combinedEtas laplaceBs finalSdss
+  let laplaceNoise = combinedEtas initQrs modQrs laplaceBs finalSdss
 
   -- if there are different (eps,delta) for several outputs, we show the minimal of them to the user for short representation
   let laplaceDelta   = foldr min (1/0) laplaceDeltas
@@ -504,8 +506,11 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
                                                      show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
                     ("Laplace noise distribution: ", "add noise a*z, where z ~ 1 / 2 * exp(-x)")]
 
+  --TODO this is temporary, put this back!
   let sep = if alternative args then [B.unitSeparator2] else "\n"
   let out = if alternative args then map snd outputList else map (\(x,y) -> x ++ y) outputList
+  --let sep = if False then [B.unitSeparator2] else "\n"
+  --let out = if False then map snd outputList else map (\(x,y) -> x ++ y) outputList
   putStrLn $ intercalate sep out
 
 
@@ -575,13 +580,13 @@ extractFinalResult initQr modQr taskAggr taskName tableName =
 combinedSdss :: [Double] -> Double
 combinedSdss sdss = sum sdss
 
-combinedEtas :: [Double] -> [Double] -> [Double]
-combinedEtas bs sdss = zipWith (\b sds -> (sds / b)) bs sdss
+combinedEtas :: [Double] -> [Double] -> [Double] -> [Double] -> [Double]
+combinedEtas initQrs modQrs bs sdss = zipWith4 (\qi qm b sds -> abs(qm - qi) + (sds / b)) initQrs modQrs bs sdss
 
 combinedErrs :: [Double] -> [Double] -> [Double] -> [Double] -> Double
 combinedErrs initQrs modQrs bs sdss =
     let qnorm   = sqrt $ sum $ map (^2) initQrs in
-    let errnorm = sqrt $ sum $ zipWith3 (\qi qm err -> (qm + err - qi)^2) initQrs modQrs (combinedEtas bs sdss) in
+    let errnorm = sqrt $ sum $ map (^2) (combinedEtas initQrs modQrs bs sdss) in
     errnorm / qnorm
     --sqrt $ sum $ zipWith3 (\qr b sds -> ((sds / b) / qr) ^ 2) qrs bs sdss
 

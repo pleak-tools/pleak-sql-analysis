@@ -1139,13 +1139,14 @@ performAnalyses' args silent epsilon' fixedBeta dataPath separator initialQuery 
                         tableGs
 
   -- for time series analysis, we execute initial queries in module TimeSeriesQ instead of here, to avoid executing them again at each time point
-  case timeSeries args of
-    Nothing -> do
-      when debug $ putStrLn "================================="
-      when debug $ putStrLn "Computing queries that create empty intermediate query tables and the input tables\n"
+  -- it turned out that for the guessing advantage analysis it is more reasonable to execute these queries in module PreprocessQ as well
+  --case timeSeries args of
+  --  Nothing -> do
+  --    when debug $ putStrLn "================================="
+  --    when debug $ putStrLn "Computing queries that create empty intermediate query tables and the input tables\n"
 
-      sendQueriesToDbAndCommit args initQueries
-    _ -> return ()
+  --    sendQueriesToDbAndCommit args initQueries
+  --  _ -> return ()
 
   --when debug $ printf "tableGstr = %s\n" tableGstr
   when debug $ putStrLn "================================="

@@ -556,10 +556,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     when debug $ putStrLn "Generating SQL statements for creating empty intermediate query tables:\n"
     let subtableQueries = concat $ map (\ ((F _ y),z) -> let x = getVarNameFromTableExpr y in initIntermediateAggrTableSql fullTypeMap x z) aggrIntermediateQueryFuns
     traceIOIfDebug debug $ "Subtable queries : " ++ show subtableQueries
-    --sendQueriesToDbAndCommit args subtableQueries
 
-    -- this has moved here from BanachQ since it is easier to extract pure input table names here
-    --let uniqueTableNames = nub $ concat inputTableNames
+
     let uniqueTableNamesAndSR = M.toList $ M.fromList $ M.elems $ M.map (\td -> (getTableName td, getSensRows td)) inputTableMap
     let separator = delimiter args
     when debug $ putStrLn "Generating SQL statements for creating input tables:\n"
@@ -569,8 +567,8 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
                                                          when debug $ putStr (concatMap (++ ";\n") cts)
                                                          return cts
 
-    --when (dbCreateTables args) $ sendQueriesToDbAndCommit args (concat ctss)
     let initQueries = subtableQueries ++ if dbCreateTables args then concat ctss else []
+    sendQueriesToDbAndCommit args (concat ctss)
 
     -- return data to the banach space analyser
     let tableExprData = (outputTableName,plcMaps,attMap,dataPath,initialQuery,initQueries,numOfOutputs, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs,

@@ -506,7 +506,6 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
                                                      show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
                     ("Laplace noise distribution: ", "add noise a*z, where z ~ 1 / 2 * exp(-x)")]
 
-  --TODO this is temporary, put this back!
   let sep = if alternative args then [B.unitSeparator2] else "\n"
   let out = if alternative args then map snd outputList else map (\(x,y) -> x ++ y) outputList
   --let sep = if False then [B.unitSeparator2] else "\n"

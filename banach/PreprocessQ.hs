@@ -568,7 +568,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
                                                          return cts
 
     let initQueries = subtableQueries ++ if dbCreateTables args then concat ctss else []
-    sendQueriesToDbAndCommit args (concat ctss)
+    sendQueriesToDbAndCommit args initQueries
 
     -- return data to the banach space analyser
     let tableExprData = (outputTableName,plcMaps,attMap,dataPath,initialQuery,initQueries,numOfOutputs, extColNames, typeList, taskMap, sensitiveVarList, dataWrtEachTable, tableGs,

@@ -268,6 +268,7 @@ applyAexprNormalize bexpr =
             _        -> []
     in if length xs == 0 then [aexpr] else xs
 
+-- TODO make all operations case insensitive
 extractScalarExpr :: ScalarExpr -> AExpr String
 extractScalarExpr expr =
     --trace (show expr) $
@@ -295,7 +296,6 @@ extractScalarExpr expr =
         BinaryOp _ (Name _ [Nmc "+"]) x1 x2 -> ABinary AAdd (extractScalarExpr x1) (extractScalarExpr x2)
         BinaryOp _ (Name _ [Nmc "-"]) x1 x2 -> ABinary ASub (extractScalarExpr x1) (extractScalarExpr x2)
 
-
         BinaryOp _ (Name _ [Nmc "^"]) x1 x2 ->
             let z2 = extractScalarExpr x2 in
                 case z2 of
@@ -304,13 +304,21 @@ extractScalarExpr expr =
         PrefixOp _ (Name _ [Nmc "not"]) x -> AUnary ANot (extractScalarExpr x)
         PrefixOp _ (Name _ [Nmc "-"])   x -> AUnary ANeg (extractScalarExpr x)
 
-        App _ (Name _ [Nmc "abs"]) [x] -> AAbs (extractScalarExpr x)
-        App _ (Name _ [Nmc "log"]) [x] -> AUnary ALn (extractScalarExpr x)
-        App _ (Name _ [Nmc "floor"]) [x] -> AUnary AFloor (extractScalarExpr x)
-        App _ (Name _ [Nmc "exp"]) [x] -> AUnary (AExp 1.0) (extractScalarExpr x)
-        App _ (Name _ [Nmc "least"])    xs -> AMins (map extractScalarExpr xs)
-        App _ (Name _ [Nmc "greatest"]) xs -> AMaxs (map extractScalarExpr xs)
-        App _ (Name _ [Nmc "point"]) xs -> AVector (map extractScalarExpr xs)
+        App _ (Name _ [Nmc opName]) [x] ->
+            let opName2 = map toLower opName in
+            case opName2 of
+                "abs"   -> AAbs (extractScalarExpr x)
+                "log"   -> AUnary ALn (extractScalarExpr x)
+                "floor" -> AUnary AFloor (extractScalarExpr x)
+                "exp"   -> AUnary (AExp 1.0) (extractScalarExpr x)
+                _        -> error $ error_queryExpr expr
+
+        App _ (Name _ [Nmc opName]) xs ->
+            let opName2 = map toLower opName in
+            case opName2 of
+                "least"    -> AMins (map extractScalarExpr xs)
+                "greatest" -> AMaxs (map extractScalarExpr xs)
+                "point"    -> AVector (map extractScalarExpr xs)
 
         Star _ -> AConst 0.0
         Parens _ x -> extractScalarExpr x

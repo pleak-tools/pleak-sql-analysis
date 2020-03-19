@@ -244,9 +244,9 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
   let outList = map (\((taskName,tableName), zs) -> (taskName,[(tableName,zs)])) $ M.toList outMap
   let taskList = M.toList $ M.fromListWith (++) outList
 
-  let sep1 = if alternative args then [B.unitSeparator] else "\n"
-  let sep2 = if alternative args then [B.unitSeparator2] else "\n\n"
-  let sep3 = if alternative args then [B.unitSeparator3] else "\t"
+  let sep1 = if alternative args && not (succinct args) then [B.unitSeparator] else "\n"
+  let sep2 = if alternative args && not (succinct args) then [B.unitSeparator2] else "\n\n"
+  let sep3 = if alternative args && not (succinct args) then [B.unitSeparator3] else " "
 
   let (_,normsExprs,normsAggrs) = unzip3 $ map BQ.getExtra tableExprData
   let inputTableNames = BQ.getTableNames tableExprData
@@ -506,7 +506,7 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
                                                      show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
                     ("Laplace noise distribution: ", "add noise a*z, where z ~ 1 / 2 * exp(-x)")]
 
-  let sep = if alternative args then [B.unitSeparator2] else "\n"
+  let sep = if alternative args && not (succinct args) then [B.unitSeparator2] else "\n"
   let out = if alternative args then map snd outputList else map (\(x,y) -> x ++ y) outputList
   --let sep = if False then [B.unitSeparator2] else "\n"
   --let out = if False then map snd outputList else map (\(x,y) -> x ++ y) outputList

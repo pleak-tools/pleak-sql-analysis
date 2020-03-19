@@ -1,0 +1,7 @@
+aggr_count
+slot 0.000000 11.10 0.00 0.000000 0.100000 9.08e-5 NaN NaN --
+ship_parameters 0.000000 11.10 0.00 0.000000 0.100000 9.08e-5 NaN NaN --
+ship 21.213203 11.10 212.13 1911.866799 0.100000 9.08e-5 Infinity Infinity || 0.2* (|| "latitude","longitude" ||_2.0),|| "length" ||_1.0 ||_1.0, rows l_inf
+port 0.000000 11.10 0.00 0.000000 0.100000 9.08e-5 NaN NaN --
+berth 0.000000 11.10 0.00 0.000000 0.100000 9.08e-5 NaN NaN --
+all input tables together 21.213203 11.10 212.13 1911.866799 0.100000 9.08e-5 Infinity Infinity an l_1-norm of all input table norms

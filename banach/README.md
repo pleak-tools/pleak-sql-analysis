@@ -1,5 +1,19 @@
 # SQL derivative sensitivity analysis tool for pleak.io
 
+## Prerequisites
+
+To set up SQL derivative sensitivity analysis tool, you need to install:
+
+1) Postgresql - `sudo apt install postgresql postgresql-contrib`
+
+2) Libpq - `sudo apt-get install libpq-dev`
+
+3) Cabal-install - `sudo apt-get install cabal-install`
+
+4) GHC - `sudo apt-get install ghc`
+
+## Building
+
 Building for the first time:
 
 `cabal sandbox init`
@@ -30,7 +44,7 @@ If dependencies or project structure has changed then
 may be necessary.
 
 
-If PostgreSQL has not been installed yet, it needs to be done before running. The analyser has been tested with version 9.5.13.
+If PostgreSQL has not been installed yet, it needs to be done before running. The analyser has been tested with versions from 9.5.13 to 10.
 
 After PostgreSQL has been installed, it is necessary to create a database named 'banach'.
 Permissions on 'banach' database need to be given to the user that runs the analyser.
@@ -78,7 +92,7 @@ Examples:
 
       dist/build/banach/banach -QDs --db-create-tables demo_schema.sql demo_query.sql demo_constraints.att --epsilon 1.0 --beta 0.1
 
-    More examples can be found in the subdirectories of 'lightweight-examples', where 'test.sh' scripts show how to run these examples.
+    More examples can be found in the subdirectories of 'lightweight-examples', where 'demo.sh' scripts show how to run these examples.
 
 The parameter --db-create-tables reads data from .db files and stores it to PostgreSQL database. Hence, if the data has already been uploaded once and it has not been updated, there is no need to create the tables again, and --db-create-tables can be removed.
 

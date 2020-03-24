@@ -60,11 +60,11 @@ executable banach
   -- other-extensions:    
   
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.8 && <4.10,
+  build-depends:       base >=4.8 && <4.14,
                        boxes >= 0.1.5 && <= 0.1.5,
                        containers >=0.5 && <0.6,
                        HDBC >= 2.4.0.2 && <= 2.4.0.3,
-                       HDBC-postgresql >= 2.3.2.5 && <= 2.3.2.7,
+                       HDBC-postgresql >= 2.3.2.5 && <= 2.3.2.6,
                        megaparsec >=6.4 && <6.5,
                        mtl >= 2.2.1 && <= 2.2.2,
                        optparse-applicative >= 0.14 && <= 0.15.1,

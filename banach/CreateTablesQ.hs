@@ -138,7 +138,7 @@ createTableSqlTyped args dataPath separator tableName sRows types = do
     where
         stringForm s t =
                        if length s == 0 then "NULL"
-                       else if map toLower (take 3 t) /= "int" && map toLower (take 5 t) /= "float" then
+                       else if map toLower (take 3 t) /= "int" && map toLower (take 5 t) /= "float" && map toLower (take 6 t) /= "bigint" then
                            if head s == '\'' then s
                            else if head s == '\"' then "\'" ++ tail (init s) ++ "\'"
                            else "\'" ++ s ++ "\'"

@@ -80,7 +80,7 @@ readDBDifferentTypes dbFileName separator tableName typeMap = do
     let varTypes = map (\x -> typeMap ! tableName ! x) varNames
 
     let filtBool   = map (\s -> map toLower (take 4 s) == "bool") varTypes
-    let filtInt    = map (\s -> map toLower (take 3 s) == "int") varTypes
+    let filtInt    = map (\s -> map toLower (take 3 s) == "int" || map toLower (take 6 s) == "bigint") varTypes
     let filtDouble = map (\s -> map toLower (take 5 s) == "float") varTypes
     let filtString = map (\s -> map toLower (take 4 s) == "text") varTypes
 

@@ -19,6 +19,14 @@ sendQueriesToDbAndCommit args qs' =
     withDb args $ \ conn -> do mapM_ (quickQuery' conn `flip` []) qs
                                commit conn
 
+-- in TimeSeriesQ we need to use queries that contain the character '$' but replaceImproperSymbols replaced it with '_'
+-- so we need to use this special version of sendQueriesToDbAndCommit that does not do this replacement
+sendQueriesToDbAndCommit_noReplaceImproperSymbols :: ProgramOptions -> [String] -> IO ()
+sendQueriesToDbAndCommit_noReplaceImproperSymbols args qs' =
+    let qs = qs' in
+    withDb args $ \ conn -> do mapM_ (quickQuery' conn `flip` []) qs
+                               commit conn
+
 -- execute a query (e.g. SELECT) that does not change the database
 sendQueryToDb :: ProgramOptions -> String -> IO [[SqlValue]]
 sendQueryToDb args q' =

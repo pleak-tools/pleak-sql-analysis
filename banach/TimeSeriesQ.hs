@@ -22,6 +22,9 @@ budgetAliasSuffix = "_budgetalias"
 provenanceBudgetTable :: String
 provenanceBudgetTable = "provenancebudget"
 
+usedRowsTable :: String
+usedRowsTable = "usedrowsinjoinedtable"
+
 addWhereCond :: String -> DataWrtTable -> DataWrtTable
 addWhereCond cond (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = DWT (ADWT x1 x2 x3 (x4sensCond,x4from, if x4where == "" then cond else "(" ++ cond ++ ") AND (" ++ x4where ++ ")")) x5 x6 x7 x8
 
@@ -195,15 +198,18 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
   let rowUseRatio = case rowUseRatios of [c] -> c
                                          cs -> "LEAST(" ++ intercalate "," cs ++ ")"
   when debug $ when (excludeExhausted args) $ printf "rowUseRatio: %s\n" rowUseRatio
-  let modifiedQueryWithExcludedRows = "SELECT sum(" ++ (if excludeExhausted args then "(" ++ modifiedQuery ++ ") * " ++ rowUseRatio else modifiedQuery) ++ ")"
+  let modifiedQueryWithExcludedRows = "SELECT sum(" ++ (if excludeExhausted args && not (oneToN args) then "(" ++ modifiedQuery ++ ") * " ++ rowUseRatio else modifiedQuery) ++ ")"
   when debug $ printf "modifiedQueryWithExcludedRows: %s\n" modifiedQueryWithExcludedRows
-  let extraFromsForExcludingRows = if excludeExhausted args then zipWith (\ tn ta -> (if tn `Set.member` provenanceTablesSet then provenanceBudgetTable else tn ++ budgetSuffix) ++ " AS " ++ ta ++ budgetAliasSuffix)
-                                                                         tableNames tableAliases
+  let extraFromsForExcludingRows = if excludeExhausted args then if oneToN args then [usedRowsTable]
+                                                                                else zipWith (\ tn ta -> (if tn `Set.member` provenanceTablesSet then provenanceBudgetTable else tn ++ budgetSuffix) ++ " AS " ++ ta ++ budgetAliasSuffix)
+                                                                                             tableNames tableAliases
                                                             else []
   when debug $ printf "extraFromsForExcludingRows: %s\n" (show extraFromsForExcludingRows)
-  let extraWheresForExcludingRows = if excludeExhausted args then intercalate " AND " (zipWith (\ tn ta -> ta ++ "." ++ (case Map.lookup tn tableToProvenanceColMap of Just provCol -> provCol
-                                                                                                                                                                       Nothing -> "ID") ++ " = " ++ ta ++ budgetAliasSuffix ++ ".ID")
-                                                                                               tableNames tableAliases)
+  let extraWheresForExcludingRows = if excludeExhausted args then if oneToN args then intercalate " AND " (map (\ ta -> ta ++ ".ID = " ++ usedRowsTable ++ "." ++ ta ++ "_id") tableAliases)
+                                                                                 else intercalate " AND " (zipWith (\ tn ta -> ta ++ "." ++ (case Map.lookup tn tableToProvenanceColMap of
+                                                                                                                                               Just provCol -> provCol
+                                                                                                                                               Nothing -> "ID") ++ " = " ++ ta ++ budgetAliasSuffix ++ ".ID")
+                                                                                                                   tableNames tableAliases)
                                                              else ""
   when debug $ printf "extraWheresForExcludingRows: %s\n" extraWheresForExcludingRows
   let addFromsAndWheresForExcludingRows = if excludeExhausted args then addFroms extraFromsForExcludingRows . addWhereCond extraWheresForExcludingRows else id
@@ -215,13 +221,24 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
     createBudgetTableQueries :: String -> IO [String]
     createBudgetTableQueries budgetTable = do
       let query1 = "DROP TABLE IF EXISTS " ++ budgetTable
-      let query2 = "CREATE TABLE " ++ budgetTable ++ (if excludeExhausted args then " (ID int8, budget double precision, useratio double precision)" else " (ID int8, budget double precision)")
+      let query2 = "CREATE TABLE " ++ budgetTable ++ (if excludeExhausted args && not (oneToN args) then " (ID int8, budget double precision, useratio double precision)" else " (ID int8, budget double precision)")
       when debug $ putStrLn query1
       when debug $ putStrLn query2
       return [query1, query2]
+    makeCreateUsedRowsTableQuery :: IO [String]
+    makeCreateUsedRowsTableQuery =
+      if oneToN args
+        then do
+          let query1 = "DROP TABLE IF EXISTS " ++ usedRowsTable
+          let query2 = "CREATE TABLE " ++ usedRowsTable ++ " (" ++ intercalate ", " (map (\ (tn, [ta]) -> ta ++ "_id int8") tablesAndAliases) ++ ")"
+          when debug $ putStrLn query1
+          when debug $ putStrLn query2
+          return [query1,query2]
+        else return []
   let budgetTables = map (++ budgetSuffix) (filter (`Set.notMember` provenanceTablesSet) uniqueTables) ++ (if provenancesUsed then [provenanceBudgetTable] else [])
   createBudgetTablesQueries <- fmap concat $ mapM createBudgetTableQueries budgetTables
-  sendQueriesToDbAndCommit args createBudgetTablesQueries
+  createUsedRowsTableQuery <- makeCreateUsedRowsTableQuery
+  sendQueriesToDbAndCommit args (createBudgetTablesQueries ++ createUsedRowsTableQuery ++ createUsedRowsTableQuery)
 
   let getMaxBudgetQuery = "SELECT max(m) FROM (" ++ (intercalate " UNION " $ map (\ t -> "(SELECT max(budget) as m FROM " ++ t ++ ")") budgetTables) ++ ") as sub"
   when debug $ putStrLn getMaxBudgetQuery
@@ -296,7 +313,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
             let updateBudgetsQuery_gsn = "UPDATE " ++ budgetTable ++ " SET budget = budget + " ++ rowUsedEpsilon ++ " FROM (" ++ rowUsesCountsQuery ++ ") as sub WHERE " ++ budgetTable ++ ".id = sub.id"
             let updateBudgetsQuery_gsx = "UPDATE " ++ budgetTable ++ " SET (useratio,budget) = (LEAST(" ++ rowRemainingBudget ++ "," ++ rowUsedEpsilon ++ ") / " ++ rowUsedEpsilon ++
                                          ", budget + LEAST(" ++ rowUsedEpsilon ++ "," ++ rowRemainingBudget ++ ")) FROM (" ++ rowUsesCountsQuery ++ ") as sub WHERE " ++ budgetTable ++ ".id = sub.id"
-            let updateBudgetsQuery_gs = if excludeExhausted args then updateBudgetsQuery_gsx else updateBudgetsQuery_gsn
+            let updateBudgetsQuery_gs = if excludeExhausted args then (if oneToN args then "" else updateBudgetsQuery_gsx) else updateBudgetsQuery_gsn
             when useFixedBudgetPerRowUse $ do
               when debug $ putStrLn "updateBudgetsQuery_gs:"
               when debug $ putStrLn updateBudgetsQuery_gs
@@ -313,7 +330,24 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
               when debug $ printf "Provenance tables:\n"
               createBudgetQueries provenanceCols provenanceBudgetTable
             else return []
-        let createBudgetsQueries = createBudgetsQueries1 ++ createBudgetsQueries2
+        createBudgetQueries_oneton <-
+          if oneToN args
+            then do
+              let selectedIDs = intercalate ", " $ map (\ (tn, [ta]) -> ta ++ ".ID AS " ++ ta ++ "_id") tablesAndAliases
+              let isThereEnoughBudget = intercalate " AND " $ map (\ (tn, [ta]) -> "(SELECT " ++ show epsilon0 ++ " - budget FROM " ++ tn ++ budgetSuffix ++ " WHERE id = r." ++ ta ++ "_id) >= " ++ show epsilon_gs) tablesAndAliases
+              let updateBudgets = concatMap (\ (tn, [ta]) -> "UPDATE " ++ tn ++ budgetSuffix ++ " SET budget = budget + " ++ show epsilon_gs ++ " WHERE id = r." ++ ta ++ "_id; ") tablesAndAliases
+              let addUsedRow = "INSERT INTO " ++ usedRowsTable ++ " (" ++ intercalate ", " (map (\ (tn, [ta]) -> ta ++ "_id") tablesAndAliases)
+                                                                       ++ ") VALUES (" ++ intercalate ", " (map (\ (tn, [ta]) -> "r." ++ ta ++ "_id") tablesAndAliases) ++ "); "
+              let updateBudgetsQuery_gsx1n = "do $$ declare r record; begin DELETE FROM " ++ usedRowsTable ++ "; for r in SELECT " ++ selectedIDs ++ getFromAndWhere (head tableExprData_addsOrRemoves)
+                    ++ " order by " ++ intercalate ", " (map (\ (tn, [ta]) -> ta ++ "_id") tablesAndAliases)
+                    ++ " loop " ++
+                      "if " ++ isThereEnoughBudget ++ " then " ++ updateBudgets ++ addUsedRow ++ "end if;"
+                    ++ " end loop; end $$"
+              when debug $ putStrLn "updateBudgetsQuery_gsx1n:"
+              when debug $ putStrLn updateBudgetsQuery_gsx1n
+              return [updateBudgetsQuery_gsx1n]
+            else return []
+        let createBudgetsQueries = createBudgetsQueries1 ++ createBudgetsQueries2 ++ createBudgetQueries_oneton
 
         (qmap, taskAggr, queryResult0) <-
           if useFixedBudgetPerRowUse
@@ -331,7 +365,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
                   when debug $ printf "sum of removes = %0.6f\n" queryResultR
                   return (qmapAR, taskAggrAR, queryResultA - queryResultR)
                 else performAnalyses args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData_adds attMap tableGs colTableCounts (Just addCond)
-        sendQueriesToDbAndCommit args createBudgetsQueries
+        sendQueriesToDbAndCommit_noReplaceImproperSymbols args createBudgetsQueries
 
         queryResult <- if useFixedBudgetPerRowUse
           then do

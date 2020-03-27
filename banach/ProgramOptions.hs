@@ -21,6 +21,7 @@ data ProgramOptions
     maxTimepoints    :: Maybe Int,
     useGlobalSens    :: Bool,
     excludeExhausted :: Bool,
+    oneToN           :: Bool,
     policyAnalysis   :: Bool,
     generateQueries  :: Bool,
     dbSensitivity    :: Bool,
@@ -54,6 +55,7 @@ programArgs = ProgramOptions
   <*> optional (option auto (short 'T' <> long "max-timepoints" <> help "Specify the maximum number of time points in the time series"))
   <*> switch (short 'g' <> long "global-sensitivity" <> hidden <> help "Use global Banach sensitivity instead of local (only implemented for time series analysis with fixed budget per row use)")
   <*> switch (short 'x' <> long "exclude-exhausted" <> hidden <> help "Exclude rows with exhausted budget from the query result")
+  <*> switch (long "one-to-n" <> hidden <> help "Use the mechanism for 1:n joins for excluding rows with exhausted budget, requires -x")
   <*> switch (short 'p' <> long "policy-analysis" <> hidden <> help "Analyse privacy treating epsilon in [0,1] as attacker's guessing probability")
   <*> switch (short 'Q' <> long "queries" <> hidden <> help "Generate SQL queries for computing sensitivity instead of actually computing it")
   <*> switch (short 'D' <> long "db-sensitivity" <> hidden <> help "Send the generated query for computing sensitivity automatically to the database")

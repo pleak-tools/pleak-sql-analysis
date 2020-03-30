@@ -297,6 +297,15 @@ allCombsOfLists [] = [[]]
 allCombsOfLists (xs:xss) =
     [(y:ys) | y <- xs, ys <- allCombsOfLists xss]
 
+cleanTypeName x =
+    case x of
+        "int"    -> "int"
+        "bigint" -> "int"
+        "bool"   -> "bool"
+        "text"   -> "text"
+        "float"  -> "float"
+        _        -> error_typeDoesNotExist x
+
 -- putting everything together
 getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String
                           -> IO (String,PlcCostType, AttMap, String, String, [String], Int, [String], [(String,[(String,String)])], BQ.TaskMap, [String], [BQ.DataWrtTable],[(String, Maybe Double)],[Int],[String],[String])
@@ -321,7 +330,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     schemas <- parseSchemas schemaFileContents
 
     let typeList' = map extractTypes schemas
-    let typeList  = map (\(x,ys) -> (x, map (\(y1,y2) -> (y1, takeWhile (\z -> ord(z) >= 65) (map toLower y2) )) ys)) typeList'
+    let typeList  = map (\(x,ys) -> (x, map (\(y1,y2) -> (y1, (cleanTypeName . takeWhile (\z -> ord(z) >= 65)) (map toLower y2) )) ys)) typeList'
     let typeMap  = M.fromList $ map (\(x,ys) -> (x, M.fromList ys)) typeList
 
     traceIOIfDebug debug $ "*"

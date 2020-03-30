@@ -26,7 +26,7 @@ To set up SQL analysis tools, you need to install:
 
 All three analysers can be built using cabal. Find specific details in [SQL global sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/globalsensitivity-cabal), [SQL local sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/localsensitivity-cabal) and [SQL derivative sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/banach) directories.
 
-All three analysers can be used as command-line analysers or with GUI in [Pleak sensitivities editor](https://github.com/pleak-tools/pleak-sensitivities-editors).
+All three analysers can be used as command-line analysers or with GUI in [Pleak sensitivities editor](https://github.com/pleak-tools/pleak-sensitivities-editor).
 
 ## License
 

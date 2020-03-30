@@ -22,9 +22,11 @@ To set up SQL analysis tools, you need to install:
 
 5) Z3 Theorem Prover - to install, you can clone it from [https://github.com/Z3Prover/z3](https://github.com/Z3Prover/z3) and compile it yourself or (on some Linux versions, for example Ubuntu 16.4) execute `apt install z3`. You will need Z3 to be in the PATH.
 
-## Building
+## Building & using
 
-All three analysers can be build using cabal. Find specific details in [SQL global sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/globalsensitivity-cabal), [SQL local sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/localsensitivity-cabal) and [SQL derivative sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/banach) directories.
+All three analysers can be built using cabal. Find specific details in [SQL global sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/globalsensitivity-cabal), [SQL local sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/localsensitivity-cabal) and [SQL derivative sensitivity analysis tool](https://github.com/pleak-tools/pleak-sql-analysis/tree/master/banach) directories.
+
+All three analysers can be used as command-line analysers or with GUI in [Pleak sensitivities editor](https://github.com/pleak-tools/pleak-sensitivities-editors).
 
 ## License
 

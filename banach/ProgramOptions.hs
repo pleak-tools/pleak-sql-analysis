@@ -22,6 +22,7 @@ data ProgramOptions
     useGlobalSens    :: Bool,
     excludeExhausted :: Bool,
     oneToN           :: Bool,
+    increasingBudgets:: Bool,
     policyAnalysis   :: Bool,
     generateQueries  :: Bool,
     dbSensitivity    :: Bool,
@@ -56,6 +57,7 @@ programArgs = ProgramOptions
   <*> switch (short 'g' <> long "global-sensitivity" <> hidden <> help "Use global Banach sensitivity instead of local (only implemented for time series analysis with fixed budget per row use)")
   <*> switch (short 'x' <> long "exclude-exhausted" <> hidden <> help "Exclude rows with exhausted budget from the query result")
   <*> switch (long "one-to-n" <> hidden <> help "Use the mechanism for 1:n joins for excluding rows with exhausted budget, requires -x")
+  <*> switch (long "increasing-budgets" <> hidden <> help "Allow increasing budgets between timepoints, the budgets must be increased (i.e. used budget decreased) manually in the DBMS, e.g. UPDATE t11_budget SET budget = budget - 1; note that the database contains the amount of used budget, not the remaining budget")
   <*> switch (short 'p' <> long "policy-analysis" <> hidden <> help "Analyse privacy treating epsilon in [0,1] as attacker's guessing probability")
   <*> switch (short 'Q' <> long "queries" <> hidden <> help "Generate SQL queries for computing sensitivity instead of actually computing it")
   <*> switch (short 'D' <> long "db-sensitivity" <> hidden <> help "Send the generated query for computing sensitivity automatically to the database")

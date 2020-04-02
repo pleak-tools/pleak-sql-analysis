@@ -131,11 +131,11 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
       -- used for smoothing Banach sensitivity
       case beta_pru of
         Just beta_pru -> do
-          let minBanachSens = exp (- beta_pru * minG / fromIntegral (if excludeExhausted args then length tableAliases + 1 else 1)) * maxGsens
+          let minBanachSens = exp (- beta_pru * minG / fromIntegral (if excludeExhausted args && not (oneToN args) then length tableAliases + 1 else 1)) * maxGsens
           when debug $ printf "minBanachSens = %0.6f\n" minBanachSens
         Nothing -> return ()
       -- global sensitivity for adding/removing rows
-      let gs_arr = fromIntegral (if excludeExhausted args then length tableAliases + 1 else 1) * gub / minG
+      let gs_arr = fromIntegral (if excludeExhausted args then (if oneToN args && not (increasingBudgets args) then 2 else length tableAliases + 1) else 1) * gub / minG
       when debug $ printf "gs_arr = %f\n" gs_arr
       let sensitivity_gs = max gs_arr maxGsens
       when debug $ printf "sensitivity_gs = %0.6f\n" sensitivity_gs
@@ -392,13 +392,13 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
                 -- for budget-per-row-use time series analysis. we do the combining here, not in the BanachQ module
                 let args' = args { combinedSens = False }
                 (_qmap, taskAggr, _queryResult) <- performAnalyses args' silent epsilon_gs beta_pru dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList
-                                                                    tableExprData_addsOrRemoves attMap tableGs colTableCounts (Just addOrRemoveCond)
+                                                                   (map addFromsAndWheresForExcludingRows tableExprData_addsOrRemoves) attMap tableGs colTableCounts (Just addOrRemoveCond)
                 let (b,sensitivity) = snd $ head $ filter ((== "all input tables together") . fst) $ snd $ head $ taskAggr Map.! []
                 when debug $ printf "Banach sensitivity = %0.6f\n" sensitivity
                 when debug $ printf "Banach b = %0.6f\n" b
                 let beta = epsilon_gs / (gamma + 1) - b
                 when debug $ printf "Banach beta = %0.6f\n" beta
-                let minBanachSens = exp (- beta * minG / fromIntegral (if excludeExhausted args then length tableAliases + 1 else 1)) * maxGsens
+                let minBanachSens = exp (- beta * minG / fromIntegral (if excludeExhausted args && not (oneToN args) then length tableAliases + 1 else 1)) * maxGsens
                 -- used for smoothing Banach sensitivity
                 when debug $ printf "minBanachSens = %0.6f\n" minBanachSens
                 let sensitivity_ls = maximum [gs_arr, sensitivity, minBanachSens]

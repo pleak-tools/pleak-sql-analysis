@@ -1,0 +1,23 @@
+This is a test for time series combined sensitivity (global adding/removing rows sensitivity with local Banach
+sensitivity) with increasing budgets.
+
+To execute it, run ./runtest 
+It pauses before each time point (there are 3 time points in total). Press enter to go on.
+
+After the first time point (after one enter press), add 0.5 to the budget of row with id 1 of table t11.
+This is not done automatically, it is necessary to do it manually in the DBMS (e.g. psql) by running the following query:
+    UPDATE t11_budget SET budget = budget - 0.5 WHERE id = 1;
+Note that database contains the amount of used budget, not the remaining budget, thus we must subtract 0.5 from the
+budget, not add to it.
+
+The noisy query results at each of the 3 timepoints should be
+    r[1] = 85.000000 ± 127091.347828
+    r[2] = 97.000000 ± 127091.347828
+    r[3] = 4101.000000 ± 206839.802819
+whereas if the budget increasing step is skipped then it would be
+    r[1] = 85.000000 ± 127091.347828
+    r[2] = 39.000000 ± 122924.797851
+    r[3] = 4043.000000 ± 204306.141034
+
+Thus the increased budget allows including more of the input in the noisy query result, whereas without the increased
+budget some rows must be excluded (the noise level is also slightly lower due to the excluded rows).

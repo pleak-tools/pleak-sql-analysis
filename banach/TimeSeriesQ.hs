@@ -25,6 +25,10 @@ provenanceBudgetTable = "provenancebudget"
 usedRowsTable :: String
 usedRowsTable = "usedrowsinjoinedtable"
 
+-- multiply the used budget by this factor to avoid the budget being exceeded by an infinitesimal amount due to floating-point rounding errors that can cause a row use to be excluded
+roundDownFactor :: Double
+roundDownFactor = (1 :: Double) - (2e-14 :: Double)
+
 addWhereCond :: String -> DataWrtTable -> DataWrtTable
 addWhereCond cond (DWT (ADWT x1 x2 x3 (x4sensCond,x4from,x4where)) x5 x6 x7 x8) = DWT (ADWT x1 x2 x3 (x4sensCond,x4from, if x4where == "" then cond else "(" ++ cond ++ ") AND (" ++ x4where ++ ")")) x5 x6 x7 x8
 
@@ -66,7 +70,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
   let delta0   = getDelta args
   let (epsilon,beta,delta) =
         case maxTimepoints args of
-          Just mTimepoints -> let mbtp = fromIntegral (maxBudgetTimeperiods args mTimepoints)
+          Just mTimepoints -> let mbtp = fromIntegral (maxBudgetTimeperiods args mTimepoints) / roundDownFactor
                               in (epsilon0/mbtp, fmap (/mbtp) beta0, delta0/mbtp)
           Nothing          -> (epsilon0, beta0, delta0)
 
@@ -122,7 +126,7 @@ performTimeSeriesDPAnalysis timeCol tableNames tableAliases args outputTableName
 
   (useFixedBudgetPerRowUse, epsilon_gs, beta_pru, noiseLevel_gs, gs_arr) <- case (maxProvUses args, maxTimepoints args) of
     (Just mProvUses, Just mTimepoints) -> do
-      let mbu = fromIntegral (maxBudgetUses args mTimepoints)
+      let mbu = fromIntegral (maxBudgetUses args mTimepoints) / roundDownFactor
       -- epsilon allocated per row use
       let epsilon_gs = epsilon0 / mbu
       when debug $ printf "epsilon_gs = %0.6f\n" epsilon_gs

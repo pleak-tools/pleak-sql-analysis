@@ -9,7 +9,7 @@ The analyzer starts running from Main.hs. The analysis runs in three main phases
 These main modules in turn are using various other helpful modules:
 
 * AExprQ.hs - describes an arithmetic expression, into which the SELECT-statement of a query is transformed after parsing. 
-* CreateTablesQ.hs - uploads table data from provided '.csv' files to PSQL database (if --db-create-tables parameter is set)
+* CreateTablesQ.hs - uploads table data from provided '.db' files to PSQL database (if --db-create-tables parameter is set)
 * DatabaseQ.hs - functionalities for interacting with PSQL database (read and insert data).
 * ErrorMsg.hs - lists all error messages that are output for different error cases found in the other modules.
 * ExprQ.hs - describes the input SQL query in a special format that can be consumed by the main sensitivity computing engine. The main difference from AExprQ.hs is that it contains only numberical computations, and special markers showing scaling of norms and/or denoting the places where some part of the expression does not have sensitive variables and can be treated as constant. While AExprQ.hs only describes SELECT-statements without aggregations, ExprQ.hs defines aggregations as well.
@@ -24,13 +24,6 @@ These main modules in turn are using various other helpful modules:
 
 
 Not relevant for derivative sensitivity artifact:
- - AExpr.hs
- - Expr.hs
- - Norms.hs
- - Parser.hs
  - PolicyQ.hs
- - Query.hs
- - Postprocess.hs
- - Preprocess.hs
  - TimeSeriesQ.hs
  - VarstateQ.hs

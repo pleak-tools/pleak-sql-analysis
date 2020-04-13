@@ -1,0 +1,4 @@
+leak
+ship.latitude approx 1;
+ship.longitude approx 1;
+cost 100

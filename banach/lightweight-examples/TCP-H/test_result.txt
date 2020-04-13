@@ -1,0 +1,3 @@
+output
+lineitem 50.000000 380580.00 500.00 0.131378 0.100000 9.08e-5 Infinity Infinity || "l_quantity",1.0e-4* ("l_extendedprice"),50.0* ("l_discount"),|| "l_shipdateF","l_commitdateF","l_receiptdateF" ||_inf ||_1.0, rows l_1.0
+all input tables together 50.000000 380580.00 500.00 0.131378 0.100000 9.08e-5 Infinity Infinity an l_1-norm of all input table norms

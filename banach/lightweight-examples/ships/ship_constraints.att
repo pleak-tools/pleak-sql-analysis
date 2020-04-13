@@ -1,5 +1,6 @@
 ship.ship_id exact;
 port.port_id range 1 6;
+port.name set 'alma' 'cow' 'lehm' 'milk' 'piim';
 
 -- normal distribution parameters are such that Pr[0 < x < 300] ~ 1.
 ship.latitude normal 150 1250;

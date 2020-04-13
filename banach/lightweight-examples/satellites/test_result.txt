@@ -1,0 +1,3 @@
+output
+satellites 0.000250 132.00 2.34 1.770319 0.001000 0.00e0 3.50 2.654336 || || "xx" ||_1.0,|| "yy" ||_1.0,|| "zz" ||_1.0 ||_1.0, rows l_1.0
+all input tables together 0.000250 132.00 2.34 1.770319 0.001000 0.00e0 3.50 2.654336 an l_1-norm of all input table norms

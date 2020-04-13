@@ -1,3 +1,0 @@
-INSERT INTO s SELECT t1.c2 + t2.c2 AS d FROM t AS t1, t AS t2;
-INSERT INTO u SELECT s1.d + s2.d AS e FROM s AS s1, s AS s2;
-SELECT SUM (u1.e + u2.e) FROM u AS u1, u AS u2;

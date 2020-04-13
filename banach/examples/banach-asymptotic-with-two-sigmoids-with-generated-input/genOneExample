@@ -1,5 +1,0 @@
-#!/bin/bash
-# first arg is input size, second arg is subdirectory name
-if [ -z "$2" ]; then echo "Usage: $0 INPUTSIZE SUBDIR"; exit; fi
-./genExample $1 10 > ./$2/t11.db
-./genExample $1 20 > ./$2/t12.db

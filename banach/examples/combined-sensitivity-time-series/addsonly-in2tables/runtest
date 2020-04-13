@@ -1,2 +1,0 @@
-#!/bin/bash
-../../../banach --localsenspath ../../ --db-create-tables -QDct t11.time1,t12.time1 -e 0.2 -B 0.02 -G 10 -m 1 combinedschema.sql combinedquery.sql combinedattacker.att

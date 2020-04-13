@@ -1,0 +1,36 @@
+The analyzer starts running from Main.hs. The analysis runs in three main phases.
+
+- PreprocessQ.hs reads in the query and prepares a data structure for analysis. It transforms the query to its continuous approximation (e.g. replaces filters with sigmoids). It makes the table norms described in .nrm files compatible with the query.
+
+- Banach.hs and BanachQ.hs is the main engine that actually computes the sensitivity of a continuous function on a database.
+
+- PostprocessQ.hs optionally calls BanachQ.hs several times to get a solution with optimal smoothness beta (if it had not been fixed in advance). It converts the sensitivity computed by BanachQ.hs to more interpretable metrics (like absolute and relative errors).
+
+These main modules in turn are using various other helpful modules:
+
+* AExprQ.hs - describes an arithmetic expression, into which the SELECT-statement of a query is transformed after parsing. 
+* CreateTablesQ.hs - uploads table data from provided '.csv' files to PSQL database (if --db-create-tables parameter is set)
+* DatabaseQ.hs - functionalities for interacting with PSQL database (read and insert data).
+* ErrorMsg.hs - lists all error messages that are output for different error cases found in the other modules.
+* ExprQ.hs - describes the input SQL query in a special format that can be consumed by the main sensitivity computing engine. The main difference from AExprQ.hs is that it contains only numberical computations, and special markers showing scaling of norms and/or denoting the places where some part of the expression does not have sensitive variables and can be treated as constant. While AExprQ.hs only describes SELECT-statements without aggregations, ExprQ.hs defines aggregations as well.
+* GroupQ.hs - contains structures that allow to define groups in queries, which is basically just syntactic sugar that splits one query to several queries, one for each possible group.
+* NormsQ.hs - functionality related to computation of norms, and adjusting the "query norm" to the "database norm".
+* ParserQ.hs - a parser for additional auxiliary structures like table norm and possible constraints on attributes (used e.g. to determine the groups in a group by query)
+* ProgramOptions.hs - defines the list of possible program options of the analyzer
+* QueryQ.hs - describes the query data structure
+* RangeUtils.hs - contains some computations of ranges of values (used if the ranges are given as additional constraints on attributes). We can get smaller sensitivity if we restrict an input attribute to a smaller set of values.
+* ReaderQ.hs - reads data from text files before feeding it to parser
+* LoggingQ.hs, SchemaQ.hs, SelectQueryQ.hs - parser for SQL queries and schemas, which is based on 'hssqlppp' library.
+
+
+Not relevant for derivative sensitivity artifact:
+ - AExpr.hs
+ - Expr.hs
+ - Norms.hs
+ - Parser.hs
+ - PolicyQ.hs
+ - Query.hs
+ - Postprocess.hs
+ - Preprocess.hs
+ - TimeSeriesQ.hs
+ - VarstateQ.hs

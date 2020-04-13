@@ -1,9 +1,0 @@
-"input";
-velocity latitude longitude;
-x4 = exp -0.5 velocity;
-x5 = lp 2.0 latitude longitude;
-x6 = prod x4 x5;
-x7 = scaleNorm 0.7 x6;
-return selectMin x7;
-
-//SELECT MIN e^{-0.5*velocity} * sqrt(latitude^2 + longitude^2) FROM input.db

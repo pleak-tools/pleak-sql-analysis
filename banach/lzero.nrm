@@ -1,6 +1,0 @@
-0 1
-x y;
-x2 = l0 x;
-x3 = scaleNorm 100.0 x2;
-r = lp 1.0 x3 y;
-return lp 1.0 r;

@@ -60,9 +60,24 @@ executable banach
   -- other-extensions:    
   
   -- Other library packages from which modules are imported.
-  --build-depends:       base >=4.8 && <4.10, process, strict, megaparsec >=6.4 && <6.5, containers >=0.5 && <0.6, hssqlppp, text, uniplate, optparse-applicative, semigroups, split, HDBC, HDBC-postgresql
-  build-depends:       base >=4.8 && <4.10, process, strict, megaparsec >=6.4 && <6.5, containers >=0.5 && <0.6, parsec, syb, mtl, text, uniplate, optparse-applicative, semigroups, split, HDBC, HDBC-postgresql, boxes, pptable
-  
+  build-depends:       base >=4.8 && <4.14,
+                       boxes >= 0.1.5 && <= 0.1.5,
+                       containers >=0.5 && <0.6,
+                       HDBC >= 2.4.0.2 && <= 2.4.0.3,
+                       HDBC-postgresql >= 2.3.2.5 && <= 2.3.2.6,
+                       megaparsec >=6.4 && <6.5,
+                       mtl >= 2.2.1 && <= 2.2.2,
+                       optparse-applicative >= 0.14 && <= 0.15.1,
+                       parsec >= 3.1.13 && <= 3.1.14,
+                       pptable >= 0.3.0.0 && <= 0.3.0.0,
+                       process >= 1.2.3 && <= 1.4.3.0,
+                       semigroups >= 0.18.3 && <= 0.19.1,
+                       split >= 0.2.3.3 && <= 0.2.3.3,
+                       strict >= 0.3.2 && <= 0.3.2,
+                       syb >= 0.7 && <= 0.7.1,
+                       text >= 1.2.3 && <= 1.2.4,
+                       uniplate >= 1.6.12 && <= 1.6.12
+
   -- Directories containing source files.
   -- hs-source-dirs:      
   

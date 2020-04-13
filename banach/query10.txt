@@ -1,1 +1,0 @@
-SELECT SUM (abs(ship.latitude) ^ 2 + abs(ship.longitude) ^ 2 + abs(ship.max_speed) ^ 2) FROM ship;

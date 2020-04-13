@@ -1,9 +1,0 @@
-3 6
-x y;
-z1 = lp 2.0 x y;
-z2 = scaleNorm 1.0 z1; //it is possible to rescale sensitivity w.r.t. distance here
-return linf z2;
-
-// the row norm is |x,y|_2
-// the aggregation norm over all rows is linf
-// the sensitive rows are those listed in the first line, indexation starts from 1

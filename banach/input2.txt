@@ -1,7 +1,0 @@
-"input2";
-x y v;
-x2 = lp 1.0 x y;
-x3 = lp 1.0 v;
-x4 = prod x2 x3;
-return selectMin x4;
-

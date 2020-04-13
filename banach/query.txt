@@ -1,5 +1,0 @@
-ship_port_distances = SELECT ships.ship_id AS ship_id, ports.port_id AS port_id, sqrt(|(ships.latitude - ports.latitude)| ^ 2 + |(ships.longitude - ports.longitude)| ^ 2) / ships.maxspeed AS time, ships.length AS length FROM ships, ports WHERE ports.available == 1
-
-suitable_ports = SELECT spd.port_id AS port_id, spd.ship_id AS ship_id, spd.time AS time FROM ship_port_distances AS spd, berth WHERE berth.port_id == spd.port_id AND spd.length <= berth.berthlength
-
-SELECT MIN suitable_ports.time FROM suitable_ports

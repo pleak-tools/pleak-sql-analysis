@@ -146,6 +146,9 @@ permuts xs = f (length xs) xs where
 
 
 instance Ord SqlValue where
+  compare SqlNull SqlNull = EQ
+  compare SqlNull _ = LT
+  compare _ SqlNull = GT
   compare (SqlString x1) (SqlString x2) = compare x1 x2
   compare (SqlByteString x1) (SqlByteString x2) = compare x1 x2
   compare (SqlChar x1) (SqlChar x2) = compare x1 x2
@@ -174,11 +177,11 @@ instance Ord SqlValue where
 -- and   p2 is the intersection of all patterns p2 mapped by cpm2 such that p <= p2
 --       (i.e. the smallest pattern p2 mapped by cpm2 such that p <= p2)
 -- The arguments to mergeCpms are given as sorted association lists
-mergeCpms :: [([SqlValue],[DerT])] -> [([SqlValue],[DerT])] -> [([SqlValue],[DerT])]
-mergeCpms [] cpm = cpm
-mergeCpms cpm [] = cpm
-mergeCpms [([],n1)] [([],n2)] = [([], zipWith (+) n1 n2)]
-mergeCpms cpm1 cpm2 = -- trace (printf "mergeCpms %s %s" (show cpm1) (show cpm2)) $
+mergeCpms' :: [([SqlValue],[DerT])] -> [([SqlValue],[DerT])] -> [([SqlValue],[DerT])]
+mergeCpms' [] cpm = []
+mergeCpms' cpm [] = []
+mergeCpms' [([],n1)] [([],n2)] = [([], zipWith (+) n1 n2)]
+mergeCpms' cpm1 cpm2 = -- trace (printf "mergeCpms' %s %s" (show cpm1) (show cpm2)) $
   let
     mgb = map (\ xs -> (head (fst (head xs)), map (\ (ys,n) -> (tail ys, n)) xs)) . groupBy (\ x y -> head (fst x) == head (fst y))
     mgb1 = mgb cpm1
@@ -192,29 +195,107 @@ mergeCpms cpm1 cpm2 = -- trace (printf "mergeCpms %s %s" (show cpm1) (show cpm2)
         (SqlNull,cpm):mgb -> (cpm, mgb)
         _ -> ([], mgb2)
     mapfun (ys,n) = (SqlNull:ys, n)
-    cpm0 = map mapfun $ mergeCpms c10 c20
+    cpm0 = map mapfun $ mergeCpms' c10 c20
     f [] [] = []
     f [] ((x,cpm2):m2) =
       let
         mapfun (ys,n) = (x:ys, n)
       in
-        map mapfun (mergeCpms c10 cpm2) ++ f [] m2
+        map mapfun (mergeCpms' c10 cpm2) ++ f [] m2
     f ((x,cpm1):m1) [] =
       let
         mapfun (ys,n) = (x:ys, n)
       in
-        map mapfun (mergeCpms cpm1 c20) ++ f m1 []
+        map mapfun (mergeCpms' cpm1 c20) ++ f m1 []
     f m1f@((x1,cpm1):m1) m2f@((x2,cpm2):m2) =
       let
         x = min x1 x2
         mapfun (ys,n) = (x:ys, n)
       in
         case compare x1 x2 of
-          EQ -> map mapfun (mergeCpms cpm1 cpm2) ++ f m1 m2
-          LT -> map mapfun (mergeCpms cpm1 c20) ++ f m1 m2f
-          GT -> map mapfun (mergeCpms c10 cpm2) ++ f m1f m2
+          EQ -> map mapfun (mergeCpms' cpm1 cpm2 `simpleMerge` (mergeCpms' c10 cpm2 `simpleMerge` mergeCpms' cpm1 c20)) ++ f m1 m2
+          LT -> map mapfun (mergeCpms' cpm1 c20) ++ f m1 m2f
+          GT -> map mapfun (mergeCpms' c10 cpm2) ++ f m1f m2
   in
     cpm0 ++ f m1 m2
+
+simpleMerge :: [([SqlValue],[DerT])] -> [([SqlValue],[DerT])] -> [([SqlValue],[DerT])]
+simpleMerge [] ys = ys
+simpleMerge xs [] = xs
+simpleMerge xsf@((x,n1):xs) ysf@((y,n2):ys) = case compare x y of
+                                        EQ -> (x,max n1 n2) : simpleMerge xs ys
+                                        LT -> (x,n1) : simpleMerge xs ysf
+                                        GT -> (y,n2) : simpleMerge xsf ys
+
+mergeCpms :: [([SqlValue],[DerT])] -> [([SqlValue],[DerT])] -> [([SqlValue],[DerT])]
+mergeCpms [] cpm = cpm
+mergeCpms cpm [] = cpm
+mergeCpms cpm1 cpm2 = removeZeroDerZeroPattern (mergeCpms' (addZeroDerZeroPattern cpm1) (addZeroDerZeroPattern cpm2))
+
+addZeroDerZeroPattern :: [([SqlValue],[DerT])] -> [([SqlValue],[DerT])]
+addZeroDerZeroPattern [] = undefined
+addZeroDerZeroPattern (x:xs) = patternDerToCpm x ++ xs
+
+removeZeroDerZeroPattern :: [([SqlValue],[DerT])] -> [([SqlValue],[DerT])]
+removeZeroDerZeroPattern [] = []
+removeZeroDerZeroPattern ((p,d):xs) | all (== SqlNull) p && all (== 0) d = xs
+removeZeroDerZeroPattern xs = xs
+
+patternDerToCpm :: ([SqlValue],[DerT]) -> [([SqlValue],[DerT])]
+patternDerToCpm (p,d) | all (== SqlNull) p = [(p,d)]
+                      | otherwise          = [(map (const SqlNull) p, map (const 0) d), (p,d)]
+
+--mergeCpms :: [([SqlValue],[DerT])] -> [([SqlValue],[DerT])] -> [([SqlValue],[DerT])]
+--mergeCpms [] cpm = cpm
+--mergeCpms cpm [] = cpm
+--mergeCpms [([],n1)] [([],n2)] = [([], zipWith (+) n1 n2)]
+--mergeCpms cpm1 cpm2 = -- trace (printf "mergeCpms %s %s" (show cpm1) (show cpm2)) $
+--  let
+--    mgb = map (\ xs -> (head (fst (head xs)), map (\ (ys,n) -> (tail ys, n)) xs)) . groupBy (\ x y -> head (fst x) == head (fst y))
+--    mgb1 = mgb cpm1
+--    mgb2 = mgb cpm2
+--    (c10,m1) =
+--      case mgb1 of
+--        (SqlNull,cpm):mgb -> (cpm, mgb)
+--        _ -> ([], mgb1)
+--    (c20,m2) =
+--      case mgb2 of
+--        (SqlNull,cpm):mgb -> (cpm, mgb)
+--        _ -> ([], mgb2)
+--    mapfun (ys,n) = (SqlNull:ys, n)
+--    cpm0 = map mapfun $ mergeCpms c10 c20
+--    f [] [] = []
+--    f [] ((x,cpm2):m2) =
+--      let
+--        mapfun (ys,n) = (x:ys, n)
+--      in
+--        map mapfun (mergeCpms c10 cpm2) ++ f [] m2
+--    f ((x,cpm1):m1) [] =
+--      let
+--        mapfun (ys,n) = (x:ys, n)
+--      in
+--        map mapfun (mergeCpms cpm1 c20) ++ f m1 []
+--    f m1f@((x1,cpm1):m1) m2f@((x2,cpm2):m2) =
+--      let
+--        x = min x1 x2
+--        mapfun (ys,n) = (x:ys, n)
+--      in
+--        case compare x1 x2 of
+--          EQ -> map mapfun (mergeCpms cpm1 cpm2) ++ f m1 m2
+--          LT -> map mapfun (mergeCpms cpm1 c20) ++ f m1 m2f
+--          GT -> map mapfun (mergeCpms c10 cpm2) ++ f m1f m2
+--  in
+--    cpm0 ++ f m1 m2
+
+--testMergeCpms :: [([SqlValue],[DerT])]
+--testMergeCpms = mergeCpms [([SqlNull,SqlInt64 100],[1]), ([SqlInt64 1000,SqlInt64 200],[2])] [([SqlInt64 1000,SqlInt64 100],[4])]
+--testMergeCpms = mergeCpms [([SqlNull,SqlInt64 100],[1])] [([SqlInt64 1000,SqlNull],[2])]
+--testMergeCpms = mergeCpms [([SqlNull,SqlInt64 100,SqlNull],[1])] [([SqlInt64 1000,SqlNull,SqlInt64 1000],[2])]
+--testMergeCpms = mergeCpms [([SqlNull,SqlInt64 100],[1]), ([SqlInt64 2000,SqlInt64 200],[2])] [([SqlInt64 1000,SqlInt64 100],[4])]
+--testMergeCpms = mergeCpms [] [([SqlInt64 1000,SqlInt64 100],[2])]
+--testMergeCpms = mergeCpms [([SqlNull,SqlInt64 100],[1]), ([SqlInt64 2,SqlInt64 100],[4])] [([SqlInt64 2,SqlInt64 100],[2])]
+--testMergeCpms = mergeCpms [([SqlNull,SqlNull],[1]), ([SqlInt64 2,SqlInt64 100],[4])] [([SqlInt64 2,SqlInt64 100],[2])]
+
 
 mergeManyCpms :: [[([SqlValue],[DerT])]] -> [([SqlValue],[DerT])]
 mergeManyCpms [] = []

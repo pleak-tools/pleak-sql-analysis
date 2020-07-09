@@ -374,9 +374,12 @@ scalarExprAddrs nta = nub . f where
   f (BooleanLit _ b) = []
   f (NumberLit _ s) = []
   f (StringLit _ s) = []
+  f (TypedStringLit _ _ s) = []
   f (Identifier _ ns) = [nta ns]
   f (BinaryOp _ ns e1 e2) = f e1 ++ f e2
+  f (SpecialOp _ n es) = concatMap f es
   f (App _ n es) = concatMap f es
+  f (InPredicate _ e _ (InList _ es)) = f e ++ concatMap f es
   f (Cast _ e _) = f e
   -- TODO alisa added Parens temporarily
   f (Parens _ e) = f e
@@ -857,7 +860,9 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
           let prices = zipWith (/) otherTableGs $ map (fromIntegral :: Int -> Double) tableUseCounts
           --print tableUseCounts
           --print prices
+          putStrLn "Executing query"
           res <- sendQueryToDb args q
+          putStrLn "Finished executing query"
           let nc = numCols dtable
           if null res
             then do
@@ -947,7 +952,7 @@ performLocalSensitivityAnalysis' args writeCombinedOutput np origTableCols origT
         when canComputeSmoothNoiseLevel $ printf "Smooth noise level multiplier = %s\n" (showNoiseLevelList distr_smnlms)
         maxs <- fmap (map maximum . transpose) $ forM ders4 $ \ (els',vs,d) -> do
           let d1 = if null d then 1 else head d
-          printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
+          when debug $ printf "%s -> %s -> %s\n" (show els') (show vs) (show d)
           if canComputeNoiseLevel && length d >= 1
             then return d
             else return [d1]

@@ -488,26 +488,26 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
 
   -- analyser output
   traceIOIfDebug debug ("===============================")
-  let outputList = [("actual outputs y: ",           show (map niceRound initQrs)),
-                    (show (round $ errorUB * 100) ++ "%-noise magnitude a: ",   show (map (niceRound . (* noiseScaleCauchy)) cauchyNoise)),
-                    (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y|: ", show (niceRound (cauchyError * noiseScaleCauchy * 100.0)) ++ "%"),
-                    ("Cauchy (default) distribution: ",  "add noise a*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
-                    ("prior (worst instance): ", show (niceRound pr_pre) ++ "%"),
-                    ("posterior (worst instance): ", show (niceRound pr_post) ++ "%"),
-                    ("DP epsilon: ",                 show (niceRound epsilon)),
-                    ("smoothness beta: ",            show (niceRound finalBeta)),
-                    ("(epsilon,delta) for Laplace: ", "(" ++ show (niceRound laplaceEpsilon) ++
+  let outputList = [("actual outputs y",           show (map niceRound initQrs)),
+                    (show (round $ errorUB * 100) ++ "%-noise magnitude a",   show (map (niceRound . (* noiseScaleCauchy)) cauchyNoise)),
+                    (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y|", show (niceRound (cauchyError * noiseScaleCauchy * 100.0)) ++ "%"),
+                    ("Cauchy noise distribution",  "add noise " ++ show (map niceRound cauchyNoise) ++ "*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
+                    ("prior (worst instance)", show (niceRound pr_pre) ++ "%"),
+                    ("posterior (worst instance)", show (niceRound pr_post) ++ "%"),
+                    ("DP epsilon",                 show (niceRound epsilon)),
+                    ("smoothness beta",            show (niceRound finalBeta)),
+                    ("(epsilon,delta) for Laplace", "(" ++ show (niceRound laplaceEpsilon) ++
                                                       "," ++ show (niceRound laplaceDelta) ++ ")"),
-                    ("norm N: ",                      niceNormPrint norm),
-                    ("beta-smooth sensitivity w.r.t. N: ",  show (map niceRound finalSdss)),
-                    (show (round $ errorUB * 100) ++ "%-noise magnitude a (Laplace): ",
+                    ("norm N",                      niceNormPrint norm),
+                    ("beta-smooth sensitivity w.r.t. N",  show (map niceRound finalSdss)),
+                    (show (round $ errorUB * 100) ++ "%-noise magnitude a (Laplace)",
                                                      show (map (niceRound . (* noiseScaleLaplace)) laplaceNoise)),
-                    (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y| (Laplace): ",
+                    (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y| (Laplace)",
                                                      show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
-                    ("Laplace noise distribution: ", "add noise a*z, where z ~ 1 / 2 * exp(-x)")]
+                    ("Laplace noise distribution", "add noise " ++ show (map niceRound laplaceNoise) ++ "*z, where z ~ 1 / 2 * exp(-x)")]
 
   let sep = if alternative args && not (succinct args) then [B.unitSeparator2] else "\n"
-  let out = if alternative args then map snd outputList else map (\(x,y) -> x ++ y) outputList
+  let out = if alternative args then map (\(x,y) -> x ++ [B.unitSeparator2] ++ y) outputList else map (\(x,y) -> x ++ ": " ++ y) outputList
   --let sep = if False then [B.unitSeparator2] else "\n"
   --let out = if False then map snd outputList else map (\(x,y) -> x ++ y) outputList
   putStrLn $ intercalate sep out

@@ -37,15 +37,47 @@ traceIOIfDebug debug msg = do
 data Result = Result {sensitivity :: String, query_result :: String, cauchy_noise :: String, cauchy_relative_err :: String,
               beta :: String, delta :: String, laplace_noise :: String, laplace_relative_err :: String, norm :: String} deriving (Data, G.Generic, Show)
 
-constructResult [v2,v3,v4,v5,v6,v7,v8,v9,v10] = Result {sensitivity = v2,
-                                                query_result = v3,
-                                                cauchy_noise = v4,
-                                                cauchy_relative_err = v5,
-                                                beta = v6,
-                                                delta = v7,
-                                                laplace_noise = v8,
-                                                laplace_relative_err = v9,
-                                                norm = v10}
+constructResult [qr, cauchyNoise, cauchyError, _, norm, beta, sds, laplaceDelta, laplaceNoise, laplaceError, _]
+     = Result {sensitivity  = sds,
+               query_result = qr,
+               cauchy_noise = cauchyNoise,
+               cauchy_relative_err = cauchyError,
+               beta = beta,
+               delta = laplaceDelta,
+               laplace_noise = laplaceNoise,
+               laplace_relative_err = laplaceError,
+               norm = norm}
+
+niceListPrint :: Bool -> [Double] -> String
+niceListPrint False xs = printFloatS (head xs)
+niceListPrint True xs  = "[" ++ intercalate ", " (map printFloatS xs) ++ "]"
+
+--output labels
+niceOutput_tableName      = "output table name"
+
+niceOutput_y              = "actual query results y"
+niceOutput_err errorUB    = show (round $ errorUB * 100) ++ "%-noise magnitude |a|"
+niceOutput_relErr errorUB = show (round $ errorUB * 100) ++ "%-realtive error |a|/|y|"
+
+niceOutput_cauchyDistr = "Cauchy noise distribution"
+
+niceOutput_delta d              = "DP delta (" ++ d ++ ")"
+niceOutput_err_alt d errorUB    = niceOutput_err errorUB ++ "(" ++ d ++ ")"
+niceOutput_relErr_alt d errorUB = niceOutput_relErr errorUB ++ "(" ++ d ++ ")"
+
+niceOutput_laplaceDistr   = "Laplace noise distribution"
+
+niceOutput_prior     = "prior (worst instance)"
+niceOutput_posterior = "posterior (worst instance)"
+
+niceOutput_norm = "norm N"
+niceOutput_beta = "smoothness beta"
+niceOutput_sds = "beta-smooth sensitivity w.r.t. N"
+niceOutput_eps = "DP epsilon"
+
+-- descriptions of noise probability density functions
+nicePDF_Cauchy  = "sqrt(2) / pi * 1 / (1 + |x|^4)"
+nicePDF_Laplace = "1 / 2 * exp(-x)"
 
 -- number of steps in optimization
 numOfSearchSteps = fromIntegral 100
@@ -269,9 +301,14 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
 
                   (taskName, (map (\ (tableName, zs) ->
                       let (_,initQrs,modQrs,bs,sdss) = unzip5 zs in
-                      let qr  = if length initQrs == 1 then printFloatS (head initQrs) else "[" ++ intercalate ", " (map printFloatS initQrs) ++ "]" in
-                      let cauchyError = printFloatL $ (combinedErrs initQrs modQrs bs sdss) * noiseScaleCauchy * 100 in
-                      let cauchyNoise = (let xs = map (* noiseScaleCauchy) (combinedEtas initQrs modQrs bs sdss) in if length initQrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
+
+                      -- do not print brackets if the list has exactly one element
+                      let printList = niceListPrint (length initQrs /= 1) in
+
+                      let qr  = printList initQrs in
+                      let cauchyScaling = combinedEtas initQrs modQrs bs sdss in
+                      let cauchyError   = printFloatL $ (combinedErrs initQrs modQrs bs sdss) * noiseScaleCauchy * 100 in
+                      let cauchyNoise = printList $ map (* noiseScaleCauchy) cauchyScaling in
                       let sds = printFloatL $ combinedSdss sdss in
                       let norm = if tableName == B.resultForAllTables then
                                       "an l_1-norm of all input table norms"
@@ -297,16 +334,33 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
 
                       --trace ("laplace bs1: " ++ show laplaceBs) $
 
-                      let laplaceError = printFloatL $ (combinedErrs initQrs modQrs laplaceBs sdss) * noiseScaleLaplace * 100 in
-                      let laplaceNoise = (let xs =  map (* noiseScaleLaplace) (combinedEtas initQrs modQrs laplaceBs sdss) in if length initQrs == 1 then printFloatS (head xs) else "[" ++ intercalate ", " (map printFloatS xs) ++ "]") in
-                      [tableName,sds,qr,cauchyNoise,cauchyError,finalBeta,laplaceDelta,laplaceNoise,laplaceError,norm]) res)
+                      let laplaceScaling = combinedEtas initQrs modQrs laplaceBs sdss in
+                      let laplaceError   = printFloatL $ (combinedErrs initQrs modQrs laplaceBs sdss) * noiseScaleLaplace * 100 in
+                      let laplaceNoise   = printList $ map (* noiseScaleLaplace) laplaceScaling in
+                      let outputList = [(niceOutput_tableName,      tableName),
+                                        (niceOutput_y,              qr),
+                                        (niceOutput_err errorUB,    cauchyNoise),
+                                        (niceOutput_relErr errorUB, cauchyError),
+                                        (niceOutput_cauchyDistr, "add noise " ++ printList cauchyScaling ++ "*z, where z ~ " ++ nicePDF_Cauchy),
+
+                                        (niceOutput_norm, norm),
+                                        (niceOutput_beta, finalBeta),
+                                        (niceOutput_sds,  sds),
+
+                                        (niceOutput_delta "Laplace", laplaceDelta),
+                                        (niceOutput_err_alt "Laplace" errorUB,    laplaceNoise),
+                                        (niceOutput_relErr_alt "Laplace" errorUB, laplaceError),
+                                        (niceOutput_laplaceDistr, "add noise " ++ printList laplaceScaling ++ "*z, where z ~ " ++ nicePDF_Laplace)
+                                       ] in
+
+                      outputList) res)
 
           )) taskList
 
-  when (alternative args) $ putStrLn $ intercalate sep2 $ map (\(taskName, xss) -> taskName ++ sep1 ++ intercalate sep1 (map (\xs -> intercalate sep3 xs) xss)) taskStr
+  when (alternative args) $ putStrLn $ intercalate sep2 $ map (\(taskName, xss) -> taskName ++ sep1 ++ intercalate sep1 (map (\xs -> intercalate sep3 (tail $ concat $ map (\(x,y) -> [x, y]) xs)) xss)) taskStr
   forM taskStr $ \(taskName,tableMap) -> do
           when debug $ putStrLn ("-------------------------\nTask: " ++ taskName)
-          let tableResultMap = M.fromList $ map (\(v : vs) -> (v, constructResult vs)) tableMap
+          let tableResultMap = M.fromList $ map (\(v : vs) -> (snd v, constructResult (map snd vs))) tableMap
           when debug $ T.printTable tableResultMap
   putStr ""
 
@@ -485,29 +539,32 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
   traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
 
-
   -- analyser output
   traceIOIfDebug debug ("===============================")
-  let outputList = [("actual outputs y",           show (map niceRound initQrs)),
-                    (show (round $ errorUB * 100) ++ "%-noise magnitude a",   show (map (niceRound . (* noiseScaleCauchy)) cauchyNoise)),
-                    (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y|", show (niceRound (cauchyError * noiseScaleCauchy * 100.0)) ++ "%"),
-                    ("Cauchy noise distribution",  "add noise " ++ show (map niceRound cauchyNoise) ++ "*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)"),
-                    ("prior (worst instance)", show (niceRound pr_pre) ++ "%"),
-                    ("posterior (worst instance)", show (niceRound pr_post) ++ "%"),
-                    ("DP epsilon",                 show (niceRound epsilon)),
-                    ("smoothness beta",            show (niceRound finalBeta)),
-                    ("(epsilon,delta) for Laplace", "(" ++ show (niceRound laplaceEpsilon) ++
-                                                      "," ++ show (niceRound laplaceDelta) ++ ")"),
-                    ("norm N",                      niceNormPrint norm),
-                    ("beta-smooth sensitivity w.r.t. N",  show (map niceRound finalSdss)),
-                    (show (round $ errorUB * 100) ++ "%-noise magnitude a (Laplace)",
-                                                     show (map (niceRound . (* noiseScaleLaplace)) laplaceNoise)),
-                    (show (round $ errorUB * 100) ++ "%-realtive error |a|/|y| (Laplace)",
-                                                     show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
-                    ("Laplace noise distribution", "add noise " ++ show (map niceRound laplaceNoise) ++ "*z, where z ~ 1 / 2 * exp(-x)")]
+
+  -- do not print brackets if the list has exactly one element
+  let printList = niceListPrint (length initQrs /= 1)
+
+  let outputList = [(niceOutput_y,               printList initQrs),
+                    (niceOutput_err errorUB,     printList (map (* noiseScaleCauchy) cauchyNoise)),
+                    (niceOutput_relErr errorUB, show (niceRound (cauchyError * noiseScaleCauchy * 100.0)) ++ "%"),
+                    (niceOutput_cauchyDistr,     "add noise " ++ printList cauchyNoise ++ "*z, where z ~ " ++ nicePDF_Cauchy),
+                    (niceOutput_prior,     show (niceRound pr_pre) ++ "%"),
+                    (niceOutput_posterior, show (niceRound pr_post) ++ "%"),
+                    --("(epsilon,delta) for Laplace", "(" ++ show (niceRound laplaceEpsilon) ++
+                    --                                  "," ++ show (niceRound laplaceDelta) ++ ")"),
+                    (niceOutput_err_alt "Laplace" errorUB,    printList (map (* noiseScaleLaplace) laplaceNoise)),
+                    (niceOutput_relErr_alt "Laplace" errorUB, show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
+
+                    (niceOutput_laplaceDistr, "add noise " ++ printList laplaceNoise ++ "*z, where z ~ " ++ nicePDF_Laplace),
+
+                    (niceOutput_norm, niceNormPrint norm),
+                    (niceOutput_beta, show (niceRound finalBeta)),
+                    (niceOutput_sds,  printList finalSdss),
+                    (niceOutput_eps,  show (niceRound epsilon))]
 
   let sep = if alternative args && not (succinct args) then [B.unitSeparator2] else "\n"
-  let out = if alternative args then map (\(x,y) -> x ++ [B.unitSeparator2] ++ y) outputList else map (\(x,y) -> x ++ ": " ++ y) outputList
+  let out = if alternative args then map (\(x,y) -> x ++ sep ++ y) outputList else map (\(x,y) -> x ++ ": " ++ y) outputList
   --let sep = if False then [B.unitSeparator2] else "\n"
   --let out = if False then map snd outputList else map (\(x,y) -> x ++ y) outputList
   putStrLn $ intercalate sep out

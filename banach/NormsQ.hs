@@ -41,7 +41,7 @@ niceNorm (NormLN z) = if y == "" then "" else "|LN " ++ y ++ " |"
 niceNorm (NormLZero z) = if y == "" then "" else "|| " ++ y ++ " ||_0"
     where y = niceNorm z
 
-niceNorm (NormL (Exactly p) zs) = if y == "" then "" else  "|| " ++ y ++ " ||_" ++ show p
+niceNorm (NormL (Exactly p) zs) = if y == "" then "" else  "|| " ++ y ++ " ||_" ++ show (round p)
     where
         ys = filter (/= "") (map niceNorm zs)
         y = intercalate "," ys
@@ -56,7 +56,7 @@ niceNorm (NormScale a z) = if y == "" then "" else (if a == 1.0 then y else show
 
 niceNorm NormZero = ""
 
-niceADouble (Exactly p) = show p
+niceADouble (Exactly p) = show (round p)
 niceADouble Any = "inf"
 
 

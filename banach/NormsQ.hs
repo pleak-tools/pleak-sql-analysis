@@ -35,18 +35,22 @@ data Norm a = Col a                     -- a variable, if it is toplevel, is tre
 
 niceNorm :: (Show a) => Norm a -> String
 niceNorm (Col x) = show x
-niceNorm (NormLN z) = if y == "" then "" else "|LN " ++ y ++ " |"
+niceNorm (NormLN z) = if y == "" then "" else "|LN " ++ y ++ "|"
     where y = niceNorm z
 
-niceNorm (NormLZero z) = if y == "" then "" else "|| " ++ y ++ " ||_0"
+niceNorm (NormLZero z) = if y == "" then "" else "|" ++ y ++ "|"
     where y = niceNorm z
 
-niceNorm (NormL (Exactly p) zs) = if y == "" then "" else  "|| " ++ y ++ " ||_" ++ show (round p)
+niceNorm (NormL (Exactly p) zs) = if y == "" then ""
+                                  else if length ys == 1 then y
+                                  else  "|" ++ y ++ "|_" ++ show (round p)
     where
         ys = filter (/= "") (map niceNorm zs)
         y = intercalate "," ys
 
-niceNorm (NormL Any zs) = if y == "" then "" else  "|| " ++ y ++ " ||_inf"
+niceNorm (NormL Any zs) = if y == "" then ""
+                          else if length ys == 1 then y
+                          else  "|" ++ y ++ "|_inf"
     where
         ys = filter (/= "") (map niceNorm zs)
         y = intercalate "," ys

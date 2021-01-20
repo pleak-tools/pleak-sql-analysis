@@ -34,18 +34,23 @@ traceIOIfDebug debug msg = do
 
 
 -- this is used only for nice output printing
-data Result = Result {sensitivity :: String, query_result :: String, cauchy_noise :: String, cauchy_relative_err :: String,
-              beta :: String, delta :: String, laplace_noise :: String, laplace_relative_err :: String, norm :: String} deriving (Data, G.Generic, Show)
+data Result = Result {sensitivity :: String, query_result :: String,
+                      cauchy_noise :: String, cauchy_error :: String, cauchy_scale :: String,
+                      beta :: String, delta :: String,
+                      laplace_noise :: String, laplace_error :: String, laplace_scale :: String,
+                      norm :: String} deriving (Data, G.Generic, Show)
 
-constructResult [qr, cauchyNoise, cauchyError, _, norm, beta, sds, laplaceDelta, laplaceNoise, laplaceError, _]
+constructResult [qr, cauchyNoise, cauchyError, cauchyScale, norm, beta, sds, laplaceDelta, laplaceNoise, laplaceError, laplaceScale]
      = Result {sensitivity  = sds,
                query_result = qr,
                cauchy_noise = cauchyNoise,
-               cauchy_relative_err = cauchyError,
+               cauchy_error = cauchyError,
+               cauchy_scale = cauchyScale,
                beta = beta,
                delta = laplaceDelta,
                laplace_noise = laplaceNoise,
-               laplace_relative_err = laplaceError,
+               laplace_error = laplaceError,
+               laplace_scale = laplaceScale,
                norm = norm}
 
 niceListPrint :: Bool -> [Double] -> String
@@ -78,6 +83,11 @@ niceOutput_eps = "DP epsilon"
 -- descriptions of noise probability density functions
 nicePDF_Cauchy  = "sqrt(2) / pi * 1 / (1 + |x|^4)"
 nicePDF_Laplace = "1 / 2 * exp(-x)"
+
+niceNormPrintFull normExpr normAggr =
+    let mainNorm = niceNormPrint normExpr in
+    if mainNorm == "" then "--" else niceNormPrint normExpr ++ ", rows l_" ++ niceADoublePrint normAggr
+
 
 -- number of steps in optimization
 numOfSearchSteps = fromIntegral 100
@@ -296,6 +306,9 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
   traceIOIfDebug debug ("Cauchy noise distribution:  add noise 'Cauchy  noise'*z, where z ~ sqrt(2) / pi * 1 / (1 + |x|^4)")
   traceIOIfDebug debug ("Laplace noise distribution: add noise 'Laplace noise'*z, where z ~ 1 / 2 * exp(-x)")
 
+
+  let allTablesNorm = "||.||_1"
+
   let taskStr =
           map (\(taskName,res) ->
 
@@ -311,13 +324,25 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
                       let cauchyNoise = printList $ map (* noiseScaleCauchy) cauchyScaling in
                       let sds = printFloatL $ combinedSdss sdss in
                       let norm = if tableName == B.resultForAllTables then
-                                      "an l_1-norm of all input table norms"
-                                      -- TODO the following is precise, but is less readable. we also need to remove intermediate tables from the list.
-                                      -- "|| " ++ (intercalate "," $ map (\(normExpr,normAggr) -> niceNormPrint normExpr ++ ", rows l_" ++ show normAggr) $ M.elems normMap) ++ " ||_1"
+
+                                      -- if there are two entries in the result, then there is just one table
+                                      if length res <= 2 then
+                                          let (tableName',_) = head res in
+                                          let (normExpr,normAggr) = (normMap ! tableName') in
+                                          niceNormPrintFull normExpr normAggr
+
+                                      -- if there are more entries, but all other tables are insensitive
+                                      -- we can take the norm of the only sensitive table
+                                      else
+                                          let allNorms = filter (/= "--") $ map (uncurry niceNormPrintFull) $ M.elems normMap in
+                                          if length allNorms == 1 then
+                                              head allNorms
+                                          -- if there are several sensitive tables, we do not write out the full norm
+                                          else
+                                              allTablesNorm
                                  else
                                       let (normExpr,normAggr) = (normMap ! tableName) in
-                                      let mainNorm = niceNormPrint normExpr in
-                                      if mainNorm == "" then "--" else niceNormPrint normExpr ++ ", rows l_" ++ niceADoublePrint normAggr
+                                      niceNormPrintFull normExpr normAggr
                       in
 
                       -- these betas should all be the same in our implementation, otherwise DP w.r.t. several outputs is not well-defined
@@ -336,28 +361,34 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
 
                       let laplaceScaling = combinedEtas initQrs modQrs laplaceBs sdss in
                       let laplaceError   = printFloatL $ (combinedErrs initQrs modQrs laplaceBs sdss) * noiseScaleLaplace * 100 in
-                      let laplaceNoise   = printList $ map (* noiseScaleLaplace) laplaceScaling in
-                      let outputList = [(niceOutput_tableName,      tableName),
-                                        (niceOutput_y,              qr),
-                                        (niceOutput_err errorUB,    cauchyNoise),
-                                        (niceOutput_relErr errorUB, cauchyError),
-                                        (niceOutput_cauchyDistr, "add noise " ++ printList cauchyScaling ++ "*z, where z ~ " ++ nicePDF_Cauchy),
+                      let laplaceNoise  = printList $ map (* noiseScaleLaplace) laplaceScaling in
 
-                                        (niceOutput_norm, norm),
-                                        (niceOutput_beta, finalBeta),
-                                        (niceOutput_sds,  sds),
+                      let outputList = [((niceOutput_tableName,      id), tableName),
+                                        ((niceOutput_y,              id), qr),
+                                        ((niceOutput_err errorUB,    id), cauchyNoise),
+                                        ((niceOutput_relErr errorUB, id), cauchyError),
+                                        ((niceOutput_cauchyDistr,    \x -> "add noise " ++ x ++ "*z, where z ~ " ++ nicePDF_Cauchy), printList cauchyScaling),
 
-                                        (niceOutput_delta "Laplace", laplaceDelta),
-                                        (niceOutput_err_alt "Laplace" errorUB,    laplaceNoise),
-                                        (niceOutput_relErr_alt "Laplace" errorUB, laplaceError),
-                                        (niceOutput_laplaceDistr, "add noise " ++ printList laplaceScaling ++ "*z, where z ~ " ++ nicePDF_Laplace)
+                                        ((niceOutput_norm, \x -> if x == allTablesNorm then "an l_1-norm of all input table norms" else norm), norm),
+                                        ((niceOutput_beta, id), finalBeta),
+                                        ((niceOutput_sds,  id), sds),
+
+                                        ((niceOutput_delta "Laplace",              id), laplaceDelta),
+                                        ((niceOutput_err_alt "Laplace" errorUB,    id), laplaceNoise),
+                                        ((niceOutput_relErr_alt "Laplace" errorUB, id), laplaceError),
+                                        ((niceOutput_laplaceDistr, \x -> "add noise " ++ x ++ "*z, where z ~ " ++ nicePDF_Laplace), printList laplaceScaling)
                                        ] in
 
                       outputList) res)
 
           )) taskList
 
-  when (alternative args) $ putStrLn $ intercalate sep2 $ map (\(taskName, xss) -> taskName ++ sep1 ++ intercalate sep1 (map (\xs -> intercalate sep3 (tail $ concat $ map (\(x,y) -> [x, y]) xs)) xss)) taskStr
+  -- for interaction with PLEAK, we keep the names of outputs
+  when ((alternative args) && not (succinct args)) $ putStrLn $ intercalate sep2 $ map (\(taskName, xss) -> taskName ++ sep1 ++ intercalate sep1 (map (\xs -> intercalate sep3 (tail $ concat $ map (\((x,f),y) -> [x, f y]) xs)) xss)) taskStr
+
+  -- for automated tests, we discard output names (since they are prone to changes) and keep only the values
+  when ((alternative args) && (succinct args)) $ putStrLn $ intercalate sep2 $ map (\(taskName, xss) -> taskName ++ sep1 ++ intercalate sep1 (map (\xs -> intercalate sep3 (map snd xs)) xss)) taskStr
+
   forM taskStr $ \(taskName,tableMap) -> do
           when debug $ putStrLn ("-------------------------\nTask: " ++ taskName)
           let tableResultMap = M.fromList $ map (\(v : vs) -> (snd v, constructResult (map snd vs))) tableMap

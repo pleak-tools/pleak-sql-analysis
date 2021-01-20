@@ -304,7 +304,8 @@ cleanTypeName x =
         "bool"   -> "bool"
         "text"   -> "text"
         "float"  -> "float"
-        _        -> error_typeDoesNotExist x
+        "date"   -> "date"
+        _        -> error $ error_typeDoesNotExist x
 
 -- putting everything together
 getBanachAnalyserInput :: ProgramOptions -> String -> String -> String -> String

@@ -66,7 +66,7 @@ niceOutput_relErr errorUB = show (round $ errorUB * 100) ++ "%-realtive error |a
 
 niceOutput_cauchyDistr = "Cauchy noise distribution"
 
-niceOutput_delta d              = "DP delta (" ++ d ++ ")"
+niceOutput_delta d              = "DP delta" ++ (if d == "" then "" else " (" ++ d ++ ")")
 niceOutput_err_alt d errorUB    = niceOutput_err errorUB ++ "(" ++ d ++ ")"
 niceOutput_relErr_alt d errorUB = niceOutput_relErr errorUB ++ "(" ++ d ++ ")"
 
@@ -78,7 +78,7 @@ niceOutput_posterior = "posterior (worst instance)"
 niceOutput_norm = "norm N"
 niceOutput_beta = "smoothness beta"
 niceOutput_sds = "beta-smooth sensitivity w.r.t. N"
-niceOutput_eps = "DP epsilon"
+niceOutput_eps d = "DP epsilon" ++ (if d == "" then "" else " (" ++ d ++ ")")
 
 -- descriptions of noise probability density functions
 nicePDF_Cauchy  = "sqrt(2) / pi * 1 / (1 + |x|^4)"
@@ -544,7 +544,7 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   -- we restore the betas that have been computed before (these betas are not cauchy-specific)
   -- if beta = 0, we get delta = 0
   let allBetas = map (\b -> epsilon / (4 + 1) - b) cauchyBs
-  let (laplaceEpsilons,laplaceBs) = unzip $ zipWith3 (\sds beta b -> if epsilon < 1/0 then findOptimalB sds beta epsilon 0 0 0 else (1/0,1/0)) finalSdss allBetas cauchyBs
+  let (laplaceEpsilons,laplaceBs) = unzip $ zipWith (if epsilon < 1/0 then findOptimalLapParams epsilon else const $ const (1/0,1/0)) finalSdss allBetas
 
   let laplaceDeltas = zipWith4 (\sds beta b eps -> if beta == 0 then 0 else 2*exp(eps-1-(eps-b)/beta)) finalSdss allBetas laplaceBs laplaceEpsilons
   let laplaceError = combinedErrs initQrs modQrs laplaceBs finalSdss
@@ -582,17 +582,20 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
                     (niceOutput_cauchyDistr,     "add noise " ++ printList cauchyNoise ++ "*z, where z ~ " ++ nicePDF_Cauchy),
                     (niceOutput_prior,     show (niceRound pr_pre) ++ "%"),
                     (niceOutput_posterior, show (niceRound pr_post) ++ "%"),
-                    --("(epsilon,delta) for Laplace", "(" ++ show (niceRound laplaceEpsilon) ++
-                    --                                  "," ++ show (niceRound laplaceDelta) ++ ")"),
                     (niceOutput_err_alt "Laplace" errorUB,    printList (map (* noiseScaleLaplace) laplaceNoise)),
                     (niceOutput_relErr_alt "Laplace" errorUB, show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
 
                     (niceOutput_laplaceDistr, "add noise " ++ printList laplaceNoise ++ "*z, where z ~ " ++ nicePDF_Laplace),
 
-                    (niceOutput_norm, niceNormPrint norm),
-                    (niceOutput_beta, show (niceRound finalBeta)),
-                    (niceOutput_sds,  printList finalSdss),
-                    (niceOutput_eps,  show (niceRound epsilon))]
+                    (niceOutput_norm,    niceNormPrint norm),
+                    (niceOutput_beta,    show (niceRound finalBeta)),
+                    (niceOutput_sds,     printList finalSdss),
+                    (niceOutput_eps "",  show (niceRound epsilon))]
+                    -- to avoid confusion, let us output delta only if it is not 0.0
+                    -- then we do not need to explain our special Laplace mechanism if the standard Laplace works
+                    ++ (if laplaceDelta == 0.0 then []
+                        else [(niceOutput_eps   "Laplace", show (niceRound laplaceEpsilon)),
+                              (niceOutput_delta "Laplace", show (niceRound laplaceDelta))])
 
   let sep = if alternative args && not (succinct args) then [B.unitSeparator2] else "\n"
   let out = if alternative args then map (\(x,y) -> x ++ sep ++ y) outputList else map (\(x,y) -> x ++ ": " ++ y) outputList
@@ -697,24 +700,30 @@ performAnalysis args silent epsilon beta dataPath separator initialQuery initQue
   let taskAggrMap = M.fromList $ map (\(key,taskAggrGroup) -> (key, map (\(taskName,res) -> (taskName, map (\ (tableName, (b,sds)) -> (tableName, (max b 0, sds)) ) res)) taskAggrGroup)) (M.toList taskAggrMap')
   return (initQmap, modQmap, taskAggrMap)
 
--- brute force search on b works well
-findOptimalB :: Double -> Double -> Double -> Double -> Double -> Double -> (Double,Double)
-findOptimalB sds beta eps alpha bestEps bestB =
+-- brute force search over epsilon and b
+findOptimalLapParams :: Double -> Double -> Double -> (Double,Double)
+findOptimalLapParams pureDPEps sds beta =
+    findOptimalEps 0 0 0
+    where
 
-    if (eps == 0) || (alpha > eps) then (bestEps, bestB) else
-    let newEps = eps - alpha in
-    let b = findOptimalB2 sds beta newEps alpha 0 0 in
-    let (newEps',b') = if (b > bestB) && (b + beta <= newEps) then (newEps, b) else (bestEps, bestB) in
-    --trace ("A: " ++ show ((alpha,b,1 - exp(-alpha), 4 * sds * exp(newEps-1-((newEps-b)/beta)) / b))) $
-    findOptimalB sds beta eps (alpha+(eps / numOfSearchSteps)) newEps' b'
+        -- in the first loop, we optimize epsilon
+        findOptimalEps :: Double -> Double -> Double -> (Double,Double)
+        findOptimalEps alpha bestEps bestB =
 
-findOptimalB2 :: Double -> Double -> Double -> Double -> Double -> Double -> Double
-findOptimalB2 sds beta eps alpha b bestB =
-    if (eps - beta) == 0 || (b > eps - beta) then bestB else
-    let z  = 4 * sds * exp(eps-1-((eps-b)/beta)) / b in
-    let b' = if (z >= 0) && (z <= 1 - exp(-alpha)) then b else bestB in
-    --trace ("    B: " ++ show ((b,beta,eps,1 - exp(-alpha), z))) $
-    findOptimalB2 sds beta eps alpha (b+((eps - beta) / numOfSearchSteps)) b'
+           if  (alpha > pureDPEps) then (bestEps, bestB) else
+           let eps = pureDPEps - alpha in
+           let b = findOptimalB eps alpha 0 0 in
+           -- the smaller is b, the more noise need to be added (for a fixed sds)
+           let (eps',b') = if (b > bestB) && (b + beta <= eps) then (eps, b) else (bestEps, bestB) in
+           findOptimalEps (alpha+(pureDPEps / numOfSearchSteps)) eps' b'
+
+        -- in the second loop, we optimize b for the fixed epsilon
+        findOptimalB :: Double -> Double -> Double -> Double -> Double
+        findOptimalB eps alpha b bestB =
+            if  (b > eps - beta) then bestB else
+            let z  = 4 * sds * exp(eps-1-((eps-b)/beta)) / b in
+            let b' = if (z >= 0) && (z <= 1 - exp(-alpha)) then b else bestB in
+            findOptimalB eps alpha (b+((eps - beta) / numOfSearchSteps)) b'
 
 allCombsOfLists [] = [[]]
 allCombsOfLists (xs:xss) =

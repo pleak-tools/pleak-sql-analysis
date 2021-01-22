@@ -544,9 +544,16 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   -- we restore the betas that have been computed before (these betas are not cauchy-specific)
   -- if beta = 0, we get delta = 0
   let allBetas = map (\b -> epsilon / (4 + 1) - b) cauchyBs
-  let (laplaceEpsilons,laplaceBs) = unzip $ zipWith (if epsilon < 1/0 then findOptimalLapParams epsilon else const $ const (1/0,1/0)) finalSdss allBetas
 
-  let laplaceDeltas = zipWith4 (\sds beta b eps -> if beta == 0 then 0 else 2*exp(eps-1-(eps-b)/beta)) finalSdss allBetas laplaceBs laplaceEpsilons
+  -- this is a too rough estimate, let us do it in another way
+  -- let (laplaceEpsilons',laplaceBs') = unzip $ zipWith (if epsilon < 1/0 then findOptimalLapParams epsilon else const $ const (1/0,1/0)) finalSdss allBetas
+  -- let laplaceNoise' = combinedEtas initQrs modQrs laplaceBs' finalSdss
+
+  let laplaceBs       = map (\beta -> epsilon / (exp (beta * a))) allBetas
+  let laplaceEpsilons = zipWith (+) laplaceBs allBetas
+
+  let laplaceDeltas   = zipWith3 (\beta b eps -> if beta == 0 then 0 else 2*exp(eps-1-(eps-b)/beta)) allBetas laplaceBs laplaceEpsilons
+
   let laplaceError = combinedErrs initQrs modQrs laplaceBs finalSdss
   let laplaceNoise = combinedEtas initQrs modQrs laplaceBs finalSdss
 
@@ -554,14 +561,15 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   let laplaceDelta   = foldr min (1/0) laplaceDeltas
   let laplaceEpsilon = foldr min (1/0) laplaceEpsilons
 
+  traceIOIfDebug (debug && vb) ("a: " ++ show a)
   traceIOIfDebug (debug && vb) ("betas: " ++ show allBetas)
   traceIOIfDebug (debug && vb) ("Cauchy bs: " ++ show cauchyBs)
   traceIOIfDebug (debug && vb) ("laplace bs: " ++ show laplaceBs)
   traceIOIfDebug (debug && vb) ("laplace deltas: " ++ show laplaceDeltas)
   traceIOIfDebug (debug && vb) ("laplace epsilons: " ++ show laplaceEpsilons)
-  traceIOIfDebug (debug && vb) ("laplace alphas: " ++ show (map (\eps -> epsilon - eps) laplaceEpsilons))
+  --traceIOIfDebug (debug && vb) ("laplace alphas: " ++ show (map (\eps -> epsilon - eps) laplaceEpsilons))
   traceIOIfDebug (debug && vb) ("Cauchy epsilon: " ++ show epsilon)
-  traceIOIfDebug (debug && vb) ("(1 - delta/chi): " ++ show (zipWith3 (\delta sds b -> 1.0 - 2 * sds * delta / b) laplaceDeltas finalSdss laplaceBs))
+  --traceIOIfDebug (debug && vb) ("(1 - delta/chi): " ++ show (zipWith3 (\delta sds b -> 1.0 - 2 * sds * delta / b) laplaceDeltas finalSdss laplaceBs))
 
   let errorUB = errorUBprob args
   let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
@@ -586,7 +594,6 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
                     (niceOutput_relErr_alt "Laplace" errorUB, show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
 
                     (niceOutput_laplaceDistr, "add noise " ++ printList laplaceNoise ++ "*z, where z ~ " ++ nicePDF_Laplace),
-
                     (niceOutput_norm,    niceNormPrint norm),
                     (niceOutput_beta,    show (niceRound finalBeta)),
                     (niceOutput_sds,     printList finalSdss),

@@ -1,16 +1,16 @@
-INSERT INTO port_enc SELECT port.available AS available, port.latitude AS latitude, port.longitude AS longitude, port.name AS name, port.offloadcapacity AS offloadcapacity, port.offloadtime AS offloadtime, port.port_id AS port_id FROM port AS port;
+INSERT INTO compute_reachable_ports SELECT port.port_id AS port_id, (CEIL(((POINT(ship.longitude,ship.latitude) <@> POINT(port.longitude,port.latitude)) / ship.maxspeed))) AS arrival FROM ship AS ship, port AS port, parameters AS parameters WHERE (((CEIL(((POINT(ship.longitude,ship.latitude) <@> POINT(port.longitude,port.latitude)) / ship.maxspeed))) <= parameters.deadline) AND (ship.name = parameters.shipname) AND (port.port_id = port.port_id));
 
-INSERT INTO count_ships SELECT COUNT(ship.ship_id) AS cnt FROM port_enc AS port_enc, parameters AS parameters, ship AS ship WHERE ((port_enc.name = parameters.portname) AND ((((((ship.latitude + (-(port_enc.latitude))) ^ 2) + ((ship.longitude + (-(port_enc.longitude))) ^ 2)) ^ 0.5) / ship.max_speed) <= parameters.deadline));
+INSERT INTO reachable_ports SELECT rports.arrival AS arrival, rports.port_id AS port_id FROM parameters AS p, compute_reachable_ports AS rports;
 
-INSERT INTO aggr_count_enc SELECT p.name AS name, res.cnt AS cnt FROM port_enc AS p, count_ships AS res;
+INSERT INTO compute_feasible_ports SELECT port.port_id AS undefined FROM reachable_ports AS reachable_ports, port AS port, ship AS ship, parameters AS parameters WHERE ((reachable_ports.port_id = port.port_id) AND port.available AND (port.harbordepth >= ship.draft) AND (port.offloadcapacity >= ship.cargo) AND (ship.name = parameters.shipname));
 
-INSERT INTO aggr_count SELECT ac2.cnt AS cnt, ac2.name AS name FROM aggr_count_enc AS ac2;
+INSERT INTO feasible_ports SELECT  FROM parameters AS p, compute_feasible_ports AS compute_feasible_ports;
 
-INSERT INTO slots_count SELECT COUNT(slot.slot_id) AS slots_number FROM port AS port, parameters AS parameters, berth AS berth, slot AS slot WHERE ((port.name = parameters.portname) AND (port.port_id = berth.port_id) AND (slot.port_id = berth.port_id) AND (slot.berth_id = berth.berth_id) AND (slot.slotstart <= parameters.deadline) AND ((slot.slotstart + port.offloadtime) <= slot.slotend));
+INSERT INTO compute_available_slots SELECT row_number() AS gap_id FROM slot AS s ORDER BY slotstart, gap;
 
-INSERT INTO capacities SELECT p.name AS portname, res.slots_number AS slots_number FROM port AS p, slots_count AS res;
+INSERT INTO available_slots SELECT  FROM compute_available_slots AS compute_available_slots;
 
-INSERT INTO ship_count SELECT ac.name AS name, (LEAST(ac.cnt,cp.slots_number)) AS num_of_ships FROM aggr_count AS ac, capacities AS cp, parameters AS parameters WHERE ((ac.name = cp.portname) AND (ac.name = parameters.portname));
+INSERT INTO assign_slots SELECT p.port_id AS port_id, (LEAST(rp.arrival,aslot.slotstart)) AS offloadstart FROM port AS p, feasible_ports AS feasible_ports, reachable_ports AS rp, berth AS b, available_slots AS available_slots, ship AS s, parameters AS parameters WHERE ((p.port_id = fp.port_id) AND (p.port_id = rp.port_id) AND (p.port_id = b.port_id) AND (aslot.port_id = b.port_id) AND (aslot.berth_id = b.berth_id) AND (s.name = parameters.shipname) AND (b.berthlength >= s.length) AND (rp.arrival <= parameters.deadline) AND (aslot.slotstart <= parameters.deadline) AND ((rp.arrival + p.offloadtime) <= aslot.slotend) AND ((aslot.slotstart + p.offloadtime) <= aslot.slotend));
 
-INSERT INTO result SELECT port.name AS name, MAX(sc.num_of_ships) AS num_of_ships FROM ship_count AS sc, port AS port WHERE (sc.name = port.name) GROUP BY port.name;
+INSERT INTO slot_assignments SELECT sa.offloadstart AS offloadstart, sa.port_id AS port_id FROM parameters AS p, assign_slots AS sa;
 

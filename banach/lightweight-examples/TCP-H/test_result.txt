@@ -1,4 +1,4 @@
 The next test takes a bit more time. Please wait...
 output
-lineitem 380580.00 500.00 0.131378 500.00 |"l_quantity",1.0e-4* ("l_extendedprice"),50.0* ("l_discount"),|"l_shipdateF","l_commitdateF","l_receiptdateF"|_inf|_1, rows l_1 0.100000 50.000000 9.08e-5 Infinity Infinity Infinity
-all input tables together 380580.00 500.00 0.131378 500.00 |"l_quantity",1.0e-4* ("l_extendedprice"),50.0* ("l_discount"),|"l_shipdateF","l_commitdateF","l_receiptdateF"|_inf|_1, rows l_1 0.100000 50.000000 9.08e-5 Infinity Infinity Infinity
+lineitem 380580.00 500.00 0.131378 500.00*z |"l_quantity",1.0e-4* ("l_extendedprice"),50.0* ("l_discount"),|"l_shipdateF","l_commitdateF","l_receiptdateF"|_inf|_1, rows l_1 0.100000 50.000000 9.08e-5 Infinity Infinity Infinity*z
+all input tables together 380580.00 500.00 0.131378 500.00*z |"l_quantity",1.0e-4* ("l_extendedprice"),50.0* ("l_discount"),|"l_shipdateF","l_commitdateF","l_receiptdateF"|_inf|_1, rows l_1 0.100000 50.000000 9.08e-5 Infinity Infinity Infinity*z

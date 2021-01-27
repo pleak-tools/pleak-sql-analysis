@@ -57,6 +57,16 @@ niceListPrint :: Bool -> [Double] -> String
 niceListPrint False xs = printFloatS (head xs)
 niceListPrint True xs  = "[" ++ intercalate ", " (map printFloatS xs) ++ "]"
 
+printAdditiveTerm y =
+    if y == 0 then ""
+    else if y > 0 then "+" ++ printFloatS y
+    else "-" ++ printFloatS (abs y)
+
+niceListScalingPrint :: Bool -> [Double] -> [Double] -> String
+niceListScalingPrint False xs ys = printFloatS (head xs) ++ "*z" ++ printAdditiveTerm (head ys)
+niceListScalingPrint True  xs ys = let zs = zipWith (\x y -> printFloatS x ++ "*z" ++ printAdditiveTerm y) xs ys in
+                                   "[" ++ intercalate ", " zs ++ "]"
+
 --output labels
 niceOutput_tableName      = "output table name"
 
@@ -317,11 +327,14 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
 
                       -- do not print brackets if the list has exactly one element
                       let printList = niceListPrint (length initQrs /= 1) in
+                      let printScalingList = niceListScalingPrint (length initQrs /= 1) in
 
                       let qr  = printList initQrs in
-                      let cauchyScaling = combinedEtas initQrs modQrs bs sdss in
-                      let cauchyError   = printFloatL $ (combinedErrs initQrs modQrs bs sdss) * noiseScaleCauchy * 100 in
-                      let cauchyNoise = printList $ map (* noiseScaleCauchy) cauchyScaling in
+                      let constOffset   = combinedOffset initQrs modQrs in
+                      let cauchyScaling = combinedScaling bs sdss in
+                      let cauchyNoise   = zipWith (\x y -> x * noiseScaleCauchy + abs y) cauchyScaling constOffset in
+                      let cauchyError   = (combinedRelErrs initQrs cauchyNoise) * 100 in
+
                       let sds = printFloatL $ combinedSdss sdss in
                       let norm = if tableName == B.resultForAllTables then
 
@@ -359,24 +372,24 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
 
                       --trace ("laplace bs1: " ++ show laplaceBs) $
 
-                      let laplaceScaling = combinedEtas initQrs modQrs laplaceBs sdss in
-                      let laplaceError   = printFloatL $ (combinedErrs initQrs modQrs laplaceBs sdss) * noiseScaleLaplace * 100 in
-                      let laplaceNoise  = printList $ map (* noiseScaleLaplace) laplaceScaling in
+                      let laplaceScaling = combinedScaling laplaceBs sdss in
+                      let laplaceNoise   = zipWith (\x y -> x * noiseScaleLaplace + abs y) laplaceScaling constOffset in
+                      let laplaceError   = (combinedRelErrs initQrs laplaceNoise) * 100 in
 
                       let outputList = [((niceOutput_tableName,      id), tableName),
                                         ((niceOutput_y,              id), qr),
-                                        ((niceOutput_err errorUB,    id), cauchyNoise),
-                                        ((niceOutput_relErr errorUB, id), cauchyError),
-                                        ((niceOutput_cauchyDistr,    \x -> "add noise " ++ x ++ "*z, where z ~ " ++ nicePDF_Cauchy), printList cauchyScaling),
+                                        ((niceOutput_err errorUB,    id), printList  cauchyNoise),
+                                        ((niceOutput_relErr errorUB, \x -> x ++ "%"), printFloatL cauchyError),
+                                        ((niceOutput_cauchyDistr,    \x -> "add noise " ++ x ++ ", where z ~ " ++ nicePDF_Cauchy), printScalingList cauchyScaling constOffset),
 
                                         ((niceOutput_norm, \x -> if x == allTablesNorm then "an l_1-norm of all input table norms" else norm), norm),
                                         ((niceOutput_beta, id), finalBeta),
                                         ((niceOutput_sds,  id), sds),
 
                                         ((niceOutput_delta "Laplace",              id), laplaceDelta),
-                                        ((niceOutput_err_alt "Laplace" errorUB,    id), laplaceNoise),
-                                        ((niceOutput_relErr_alt "Laplace" errorUB, id), laplaceError),
-                                        ((niceOutput_laplaceDistr, \x -> "add noise " ++ x ++ "*z, where z ~ " ++ nicePDF_Laplace), printList laplaceScaling)
+                                        ((niceOutput_err_alt "Laplace" errorUB,    id), printList  laplaceNoise),
+                                        ((niceOutput_relErr_alt "Laplace" errorUB, \x -> x ++ "%"), printFloatL laplaceError),
+                                        ((niceOutput_laplaceDistr, \x -> "add noise " ++ x ++ ", where z ~ " ++ nicePDF_Laplace), printScalingList laplaceScaling constOffset)
                                        ] in
 
                       outputList) res)
@@ -518,7 +531,7 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   -- if ga < prior, then the lower bound may be negative, and we take the bound 0 in this case
   --let pr_post = [max 0 (q0 - 1 / (1 + exp(- a0 * epsilon0 * (fromIntegral nq)) * p0 / (q0-p0))) * 100, 1 / (1 + exp(- a1 * epsilon1 * (fromIntegral nq)) * (q1-p1) / p1) * 100]
 
-  (finalBeta,initQmap,modQmap,taskAggrMap,cauchyError) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap [] colTableCounts
+  (finalBeta,initQmap,modQmap,taskAggrMap,_) <- findOptimalBeta args outputTableName epsilon' fixedBeta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData fullAttMap [] colTableCounts
 
   traceIOIfDebug (debug && vb) ("===============================")
   traceIOIfDebug (debug && vb) ("initial qmap: " ++ (show initQmap))
@@ -536,8 +549,15 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
 
   -- additional outputs
   let (initQrs, modQrs, cauchyBs, finalSdss) = unzip4 $ map (\key -> extractFinalResult (if M.member key initQmap then initQmap ! key else 0) (if M.member key modQmap then modQmap ! key else 0) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys taskAggrMap)
-  let cauchyNoise = combinedEtas initQrs modQrs cauchyBs finalSdss
 
+  let errorUB = errorUBprob args
+  let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
+  let noiseScaleLaplace = find_noise_range_window laplace_integral errorUB 1
+
+  let constOffset   = combinedOffset initQrs modQrs
+  let cauchyScaling = combinedScaling cauchyBs finalSdss
+  let cauchyNoise   = zipWith (\x y -> x * noiseScaleCauchy + abs y) cauchyScaling constOffset
+  let cauchyError  = (combinedRelErrs initQrs cauchyNoise) * 100
 
   -- (epsilon,delta)-DP related stuff:
 
@@ -546,16 +566,16 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   let allBetas = map (\b -> epsilon / (4 + 1) - b) cauchyBs
 
   -- this is a too rough estimate, let us do it in another way
-  -- let (laplaceEpsilons',laplaceBs') = unzip $ zipWith (if epsilon < 1/0 then findOptimalLapParams epsilon else const $ const (1/0,1/0)) finalSdss allBetas
-  -- let laplaceNoise' = combinedEtas initQrs modQrs laplaceBs' finalSdss
+  -- let (laplaceEpsilons, laplaceBs) = unzip $ zipWith (if epsilon < 1/0 then findOptimalLapParams epsilon else const $ const (1/0,1/0)) finalSdss allBetas
 
   let laplaceBs       = map (\beta -> epsilon / (exp (beta * a))) allBetas
   let laplaceEpsilons = zipWith (+) laplaceBs allBetas
 
   let laplaceDeltas   = zipWith3 (\beta b eps -> if beta == 0 then 0 else 2*exp(eps-1-(eps-b)/beta)) allBetas laplaceBs laplaceEpsilons
 
-  let laplaceError = combinedErrs initQrs modQrs laplaceBs finalSdss
-  let laplaceNoise = combinedEtas initQrs modQrs laplaceBs finalSdss
+  let laplaceScaling = combinedScaling laplaceBs finalSdss
+  let laplaceNoise   = zipWith (\x y -> x * noiseScaleLaplace + abs y) laplaceScaling constOffset
+  let laplaceError  = (combinedRelErrs initQrs laplaceNoise) * 100
 
   -- if there are different (eps,delta) for several outputs, we show the minimal of them to the user for short representation
   let laplaceDelta   = foldr min (1/0) laplaceDeltas
@@ -571,9 +591,6 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
   traceIOIfDebug (debug && vb) ("Cauchy epsilon: " ++ show epsilon)
   --traceIOIfDebug (debug && vb) ("(1 - delta/chi): " ++ show (zipWith3 (\delta sds b -> 1.0 - 2 * sds * delta / b) laplaceDeltas finalSdss laplaceBs))
 
-  let errorUB = errorUBprob args
-  let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
-  let noiseScaleLaplace = find_noise_range_window laplace_integral errorUB 1
 
   traceIOIfDebug debug ("cauchy scaling: " ++ show noiseScaleCauchy)
   traceIOIfDebug debug ("laplace scaling: " ++ show noiseScaleLaplace)
@@ -583,17 +600,22 @@ performPolicyAnalysis tableNames tableAliases args outputTableName dataPath sepa
 
   -- do not print brackets if the list has exactly one element
   let printList = niceListPrint (length initQrs /= 1)
+  let printScalingList = niceListScalingPrint (length initQrs /= 1)
 
-  let outputList = [(niceOutput_y,               printList initQrs),
-                    (niceOutput_err errorUB,     printList (map (* noiseScaleCauchy) cauchyNoise)),
-                    (niceOutput_relErr errorUB, show (niceRound (cauchyError * noiseScaleCauchy * 100.0)) ++ "%"),
-                    (niceOutput_cauchyDistr,     "add noise " ++ printList cauchyNoise ++ "*z, where z ~ " ++ nicePDF_Cauchy),
+  let outputList = [(niceOutput_y,              printList initQrs),
+
+                    (niceOutput_err errorUB,    printList   cauchyNoise),
+                    (niceOutput_relErr errorUB, printFloatL cauchyError ++ "%"),
+                    (niceOutput_cauchyDistr,    "add noise " ++ printScalingList cauchyScaling constOffset ++ ", where z ~ " ++ nicePDF_Cauchy),
+
+
                     (niceOutput_prior,     show (niceRound pr_pre) ++ "%"),
                     (niceOutput_posterior, show (niceRound pr_post) ++ "%"),
-                    (niceOutput_err_alt "Laplace" errorUB,    printList (map (* noiseScaleLaplace) laplaceNoise)),
-                    (niceOutput_relErr_alt "Laplace" errorUB, show (niceRound (laplaceError * 100.0 * noiseScaleLaplace)) ++ "%"),
 
-                    (niceOutput_laplaceDistr, "add noise " ++ printList laplaceNoise ++ "*z, where z ~ " ++ nicePDF_Laplace),
+                    (niceOutput_err_alt "Laplace" errorUB,    printList   laplaceNoise),
+                    (niceOutput_relErr_alt "Laplace" errorUB, printFloatL laplaceError ++ "%"),
+                    (niceOutput_laplaceDistr,                 "add noise " ++ printScalingList laplaceScaling constOffset ++ ", where z ~ " ++ nicePDF_Laplace),
+
                     (niceOutput_norm,    niceNormPrint norm),
                     (niceOutput_beta,    show (niceRound finalBeta)),
                     (niceOutput_sds,     printList finalSdss),
@@ -677,22 +699,35 @@ extractFinalResult initQr modQr taskAggr taskName tableName =
 combinedSdss :: [Double] -> Double
 combinedSdss sdss = sum sdss
 
-combinedEtas :: [Double] -> [Double] -> [Double] -> [Double] -> [Double]
-combinedEtas initQrs modQrs bs sdss = zipWith4 (\qi qm b sds -> abs(qm - qi) + (sds / b)) initQrs modQrs bs sdss
+-- the noise distribution scalings
+combinedScaling :: [Double] -> [Double] -> [Double]
+combinedScaling bs sdss = zipWith (/) sdss bs
 
-combinedErrs :: [Double] -> [Double] -> [Double] -> [Double] -> Double
-combinedErrs initQrs modQrs bs sdss =
-    let qnorm   = sqrt $ sum $ map (^2) initQrs in
-    let errnorm = sqrt $ sum $ map (^2) (combinedEtas initQrs modQrs bs sdss) in
+-- the constant noise offsets
+combinedOffset :: [Double] -> [Double] -> [Double]
+combinedOffset initQrs modQrs = zipWith (-) modQrs initQrs
+
+-- the relative errors
+combinedRelErrs :: [Double] -> [Double] -> Double
+combinedRelErrs qrs errs =
+    let qnorm   = sqrt $ sum $ map (^2) qrs  in
+    let errnorm = sqrt $ sum $ map (^2) errs in
     errnorm / qnorm
-    --sqrt $ sum $ zipWith3 (\qr b sds -> ((sds / b) / qr) ^ 2) qrs bs sdss
 
 performAnalysisBetaStep :: ProgramOptions -> String -> Double -> String -> String -> String -> [String] -> Int -> [String] -> [(String,[(String, String)])] -> BQ.TaskMap -> [String] -> [BQ.DataWrtTable] -> AttMap -> [(String, Maybe Double)] -> [Int] -> Bool -> Maybe Double -> IO (M.Map [String] Double, M.Map [String] Double, M.Map [String] [(String, [(String, (Double, Double))])], Double)
 performAnalysisBetaStep args outputTableName epsilon dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts silent beta = do
 
   (initQmap, modQmap, taskAggrMap) <- performAnalysis args silent epsilon beta dataPath separator initialQuery initQueries numOfOutputs colNames typeMap taskMap sensitiveVarList tableExprData attMap tableGs colTableCounts
   let (initQrs, modQrs, bs, sdss) = unzip4 $ map (\key -> extractFinalResult (initQmap ! key) (modQmap ! key) (taskAggrMap ! key) B.resultForAllTables outputTableName) (M.keys initQmap)
-  let err = combinedErrs initQrs modQrs bs sdss
+
+  -- TODO it is more efficient to compute this once, but we need to pass it as an argument then
+  let errorUB = errorUBprob args
+  let noiseScaleCauchy  = find_noise_range_window cauchy_integral errorUB 1
+
+  let constOffset = combinedOffset initQrs modQrs
+  let scaling     = combinedScaling bs sdss
+  let noise       = zipWith (\x y -> x * noiseScaleCauchy + abs y) scaling constOffset
+  let err         = combinedRelErrs initQrs noise
 
   return (initQmap, modQmap, taskAggrMap,err)
 

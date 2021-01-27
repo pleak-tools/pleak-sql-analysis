@@ -1,0 +1,5 @@
+ship.latitude rangeUnif 637 643;
+ship.longitude rangeUnif 620 660;
+port.name set 'alma';
+ship.max_speed range 15 60;
+ship.cargo rangeUnif 0 10;

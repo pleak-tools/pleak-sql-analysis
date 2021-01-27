@@ -1,0 +1,5 @@
+rows: all;
+cols: latitude longitude;
+
+z = lp 2.0 latitude longitude;
+return lp 1.0 z;

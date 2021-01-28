@@ -1,7 +1,7 @@
 aggr_count
-slot 11.10 0.00 0.000000 0.00*z -- 0.100000 0.000000 9.08e-5 NaN NaN NaN*z
-ship_parameters 11.10 0.00 0.000000 0.00*z -- 0.100000 0.000000 9.08e-5 NaN NaN NaN*z
-ship 11.10 212.13 1911.866799 212.13*z |0.2* (|"latitude","longitude"|_2),"length"|_1, rows l_inf 0.100000 21.213203 9.08e-5 Infinity Infinity Infinity*z
-port 11.10 0.00 0.000000 0.00*z -- 0.100000 0.000000 9.08e-5 NaN NaN NaN*z
-berth 11.10 0.00 0.000000 0.00*z -- 0.100000 0.000000 9.08e-5 NaN NaN NaN*z
-all input tables together 11.10 212.13 1911.866799 212.13*z |0.2* (|"latitude","longitude"|_2),"length"|_1, rows l_inf 0.100000 21.213203 9.08e-5 Infinity Infinity Infinity*z
+slot 11.10 0.00 0.000000% 0.0 -- 0.100000 0.00 9.08e-5 NaN NaN% NaN*z
+ship_parameters 11.10 0.00 0.000000% 0.0 -- 0.100000 0.00 9.08e-5 NaN NaN% NaN*z
+ship 11.10 212.13 1911.866799% 212.13*z |0.2* (|"latitude","longitude"|_2),"length"|_1, rows l_inf 0.100000 21.21 9.08e-5 Infinity Infinity% Infinity*z
+port 11.10 0.00 0.000000% 0.0 -- 0.100000 0.00 9.08e-5 NaN NaN% NaN*z
+berth 11.10 0.00 0.000000% 0.0 -- 0.100000 0.00 9.08e-5 NaN NaN% NaN*z
+all input tables together 11.10 212.13 1911.866799% 212.13*z |0.2* (|"latitude","longitude"|_2),"length"|_1, rows l_inf 0.100000 21.21 9.08e-5 Infinity Infinity% Infinity*z

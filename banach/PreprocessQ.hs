@@ -314,6 +314,7 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
 
     let debug = not (alternative args) && not (succinct args)
     let policy = policyAnalysis args
+    let fixedOutputTableName = outputTableName args
 
     -- used for generating benchmarks
     --putStrLn $ "\\echo ##" ++ inputQuery
@@ -321,7 +322,11 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let dataPath = reverse $ dropWhile (/= '/') (reverse inputSchema)
 
     queryFileContents <- readInput inputQuery
-    (outputTableName,queryMap) <- parseQueryMap defaultOutputTableName queryFileContents
+    (outputTableName', queryMap) <- parseQueryMap defaultOutputTableName queryFileContents
+
+    let outputTableName = case fixedOutputTableName of
+                               Just tn -> tn
+                               _       -> outputTableName'
     traceIOIfDebug debug $ "----------------"
     traceIOIfDebug debug $ "Query map: " ++ show queryMap
     traceIOIfDebug debug $ "*"

@@ -52,7 +52,10 @@ parseQueryMap defaultOutputName s = do
     queries <- parseNamedQuery defaultOutputName s
     let outputTableName = fst $ last queries
     let subQueryMaps = map (\(name,query) -> constructSubQueries name query) queries
-    let queryMap = foldr M.union M.empty subQueryMaps
+    -- traceIO $ show subQueryMaps
+    -- if there are several anonymous tables, the output table by default is be the last one
+    -- the previous anonymous tables will be discarded
+    let queryMap = foldr M.union M.empty $ reverse subQueryMaps
     return (outputTableName, queryMap)
 
 constructSubQueries :: TableName -> QueryExpr -> (M.Map TableName QueryQ.Query)
@@ -300,7 +303,7 @@ extractScalarExpr expr =
             let z2 = extractScalarExpr x2 in
                 case z2 of
                     AConst c -> AUnary (APower c) (extractScalarExpr x1)
-                    _        -> error $ error_queryExpr expr
+                    _        -> AError $ error_queryExpr expr
         PrefixOp _ (Name _ [Nmc "not"]) x -> AUnary ANot (extractScalarExpr x)
         PrefixOp _ (Name _ [Nmc "-"])   x -> AUnary ANeg (extractScalarExpr x)
 
@@ -311,7 +314,7 @@ extractScalarExpr expr =
                 "log"   -> AUnary ALn (extractScalarExpr x)
                 "floor" -> AUnary AFloor (extractScalarExpr x)
                 "exp"   -> AUnary (AExp 1.0) (extractScalarExpr x)
-                _        -> error $ error_queryExpr expr
+                _       -> AError $ error_queryExpr expr
 
         App _ (Name _ [Nmc opName]) xs ->
             let opName2 = map toLower opName in
@@ -319,6 +322,7 @@ extractScalarExpr expr =
                 "least"    -> AMins (map extractScalarExpr xs)
                 "greatest" -> AMaxs (map extractScalarExpr xs)
                 "point"    -> AVector (map extractScalarExpr xs)
+                _          -> AError opName2
 
         Star _ -> AConst 0.0
         Parens _ x -> extractScalarExpr x
@@ -328,7 +332,7 @@ extractScalarExpr expr =
                                               where (a:as) = map extractScalarExpr xs
                                                     b      = extractScalarExpr x
 
-        _        -> error $ error_queryExpr expr
+        _        -> AError $ error_queryExpr expr
 
 
 extractWhereExpr :: QueryExpr -> [ScalarExpr]

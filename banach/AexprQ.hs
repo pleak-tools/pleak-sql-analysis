@@ -33,6 +33,7 @@ data AExpr a
   | AXors [AExpr a] -- we assume that it is applied only to mutually exclusive conditions
   | AVector [AExpr a]
   | AIfThenElse (AExpr a) (AExpr a) (AExpr a)
+  | AError String
   deriving (Show)
 
 data AUnOp
@@ -583,6 +584,7 @@ aexprToString aexpr =
         ABinary ADistance x1 x2 -> "(" ++ aexprToString x1 ++ " <@> " ++ aexprToString x2 ++ ")"
 
         AIfThenElse b x1 x2 -> "(case when " ++ aexprToString b ++ " then " ++ aexprToString x1 ++ " else " ++ aexprToString x1 ++ " end)"
+        AError e -> "UNDEFINED"
 
 ------------------------------------------------------------------------------------
 updatePreficesAexpr :: (S.Set String) -> VarName -> AExpr VarName -> AExpr VarName
@@ -634,6 +636,7 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
         ABinary AGTint x1 x2 -> ABinary AGTint (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> ABinary ALike (processRec x1) (processRec x2)
         ABinary ADistance x1 x2 -> ABinary ADistance (processRec x1) (processRec x2)
+        AError s -> error $ s
 
    where processRec  x = updatePreficesAexpr fullTablePaths prefix x
          processBase x = updatePrefices      fullTablePaths prefix x
@@ -689,6 +692,7 @@ getAllAExprVars sensOnly aexpr =
         ABinary AGTint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ADistance x1 x2 -> S.union (processRec x1) (processRec x2)
+        AError s -> error $ s
     where processRec x = getAllAExprVars sensOnly x
           processBase x = S.singleton x
 
@@ -743,6 +747,7 @@ getAllSubExprs sensOnly aexpr =
         ABinary AGTint x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> S.union (processRec x1) (processRec x2)
         ABinary ADistance x1 x2 -> S.union (processRec x1) (processRec x2)
+        AError s -> error $ s
     where processRec x = getAllSubExprs sensOnly x
           processBase x = S.singleton x
 
@@ -800,6 +805,7 @@ aexprSubstitute aexprMap aexpr =
         ABinary AGTint x1 x2 -> ABinary AGTint (processRec x1) (processRec x2)
         ABinary ALike x1 x2 -> ABinary ALike (processRec x1) (processRec x2)
         ABinary ADistance x1 x2 -> ABinary ADistance (processRec x1) (processRec x2)
+        AError s -> error $ s
     where processRec x = aexprSubstitute aexprMap x
           processBase x = if M.member x aexprMap then aexprMap ! x else AVar x
 
@@ -879,6 +885,7 @@ applyAexprTypes typeMap aexpr =
         ABinary AEQstr x1 x2 -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary AEQstr y1 y2)
         ABinary ALike x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AString, ABinary ALike y1 y2)
         ABinary ADistance x1 x2  -> let (t,[y1,y2]) = processRec [x1,x2]  in (AFloat, ABinary ADistance y1 y2)
+        AError s -> error $ s
    where processRec xs =
              let (types,aexprs) = unzip (map (applyAexprTypes typeMap) xs) in
              (foldr max AUnit types, aexprs)

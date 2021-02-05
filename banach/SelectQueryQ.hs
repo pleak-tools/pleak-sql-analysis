@@ -313,6 +313,7 @@ extractScalarExpr expr =
                 "abs"   -> AAbs (extractScalarExpr x)
                 "log"   -> AUnary ALn (extractScalarExpr x)
                 "floor" -> AUnary AFloor (extractScalarExpr x)
+                "ceil"  -> AUnary ACeil (extractScalarExpr x)
                 "exp"   -> AUnary (AExp 1.0) (extractScalarExpr x)
                 _       -> AError $ error_queryExpr expr
 

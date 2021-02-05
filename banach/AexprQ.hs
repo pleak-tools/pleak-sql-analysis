@@ -40,6 +40,7 @@ data AUnOp
   = AAbsBegin | AAbsEnd 
   | ALn
   | AFloor
+  | ACeil
   | ANeg | ANot
   | AExp   Double
   | APower Double
@@ -268,6 +269,8 @@ aexprToExpr :: VarName -> AExpr VarName -> (M.Map VarName Expr)
 
 --
 aexprToExpr y (AUnary AFloor x) = aexprToExpr y x
+
+aexprToExpr y (AUnary ACeil x) = aexprToExpr y x
 
 aexprToExpr y (AText s) = M.fromList [(y, Text s)]
 
@@ -552,6 +555,7 @@ aexprToString aexpr =
 
         AUnary ALn x -> "log(" ++ aexprToString x ++ ")"
         AUnary AFloor x -> "floor(" ++ aexprToString x ++ ")"
+        AUnary ACeil x -> "ceil(" ++ aexprToString x ++ ")"
         AUnary ANeg x -> "( - " ++ aexprToString x ++ ")"
         AUnary ANot x -> "not(" ++ aexprToString x ++ ")"
         AUnary (AExp c) x -> "exp(" ++ show c ++ " * " ++ aexprToString x ++ ")"
@@ -609,6 +613,7 @@ updatePreficesAexpr fullTablePaths prefix aexpr =
 
         AUnary ALn x -> AUnary ALn $ processRec x
         AUnary AFloor x -> AUnary AFloor $ processRec x
+        AUnary ACeil x -> AUnary ACeil $ processRec x
         AUnary ANeg x -> AUnary ANeg $ processRec x
         AUnary ANot x -> AUnary ANot $ processRec x
         AUnary (AExp c) x -> AUnary (AExp c) $ processRec x
@@ -665,6 +670,7 @@ getAllAExprVars sensOnly aexpr =
 
         AUnary ALn x -> processRec x
         AUnary AFloor x -> processRec x
+        AUnary ACeil x -> processRec x
         AUnary ANeg x -> processRec x
         AUnary ANot x -> processRec x
         AUnary (AExp c) x -> processRec x
@@ -720,6 +726,7 @@ getAllSubExprs sensOnly aexpr =
 
         AUnary ALn x -> processRec x
         AUnary AFloor x -> processRec x
+        AUnary ACeil x -> processRec x
         AUnary ANeg x -> processRec x
         AUnary ANot x -> processRec x
         AUnary (AExp c) x -> processRec x
@@ -778,6 +785,7 @@ aexprSubstitute aexprMap aexpr =
 
         AUnary ALn x -> AUnary ALn $ processRec x
         AUnary AFloor x -> AUnary AFloor $ processRec x
+        AUnary ACeil x -> AUnary ACeil $ processRec x
         AUnary ANeg x -> AUnary ANeg $ processRec x
         AUnary ANot x -> AUnary ANot $ processRec x
         AUnary (AExp c) x -> AUnary (AExp c) $ processRec x
@@ -835,6 +843,7 @@ applyAexprTypes typeMap aexpr =
 
         AUnary ALn x        -> let (_,[y]) = processRec [x] in (AFloat, AUnary ALn y)
         AUnary AFloor x     -> let (_,[y]) = processRec [x] in (AInt, AUnary AFloor y)
+        AUnary ACeil x      -> let (_,[y]) = processRec [x] in (AInt, AUnary ACeil y)
         AUnary ANeg x       -> let (t,[y]) = processRec [x] in (t, AUnary ANeg y)
         AUnary ANot x       -> let (t,[y]) = processRec [x] in (t, AUnary ANot y)
         AUnary (AExp c) x   -> let (t,[y]) = processRec [x] in (AFloat, AUnary (AExp c) y)
@@ -945,6 +954,7 @@ aexprRange subTableAliasMap typeMap attMap sensVars aexpr =
 
         AUnary ALn x        -> let y = processRec x in rangeMonotonePoly (AUnary ALn) y
         AUnary AFloor x     -> processRec x
+        AUnary ACeil x      -> processRec x
         AUnary ANeg x       -> let y = processRec x in rangeNegPoly fneg y
         AUnary ANot x       -> let y = processRec x in rangeNotPoly fnot y
         AUnary (AExp c) x   -> let y = processRec x in rangeMonotonePoly (AUnary (AExp c)) y

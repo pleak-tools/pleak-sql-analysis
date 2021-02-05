@@ -14,3 +14,7 @@ INSERT INTO ship_count SELECT ac.name AS name, (LEAST(ac.cnt,cp.slots_number)) A
 
 INSERT INTO result SELECT port.name AS name, MAX(sc.num_of_ships) AS num_of_ships FROM ship_count AS sc, port AS port WHERE (sc.name = port.name) GROUP BY port.name;
 
+INSERT INTO ordered_ships SELECT ship.cargo AS cargo, ship.draft AS draft, port.name AS portname, (CEIL(((POINT(ship.longitude,ship.latitude) <@> POINT(port.longitude,port.latitude)) / ship.max_speed))) AS arrival, row_number() AS row_id FROM ship AS ship, port AS port, parameters AS parameters WHERE ((CEIL(((POINT(ship.longitude,ship.latitude) <@> POINT(port.longitude,port.latitude)) / ship.max_speed))) <= parameters.deadline) ORDER BY ship_id;
+
+INSERT INTO selected_ships SELECT os.arrival AS arrival FROM ordered_ships AS os, ship_count AS cap2 WHERE ((os.portname = cap2.name) AND (os.row_id <= cap2.num_of_ships));
+

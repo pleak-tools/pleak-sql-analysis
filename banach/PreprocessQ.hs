@@ -533,13 +533,14 @@ getBanachAnalyserInput args inputSchema inputQuery inputAttacker inputPolicy = d
     let taskMap = BQ.TM $ nub $ map (\t -> if t == outputTableName then (t,True) else (t,False)) tableNameList
 
     -- additional parameters
-    let tableGs = getTableGs inputTableMap
+    let tableGs' = getTableGs inputTableMap
     let colTableCounts = getColTableCounts colNames allInputTableNames allInputTableAliases
 
-    -- if we are using combined sensitivity, then groups are not allowed
-    --let usingCombinedSensitivity = foldr (||) False $ map (\g -> case g of {Just a -> if a == 1/0 then False else True; _ -> True}) (map snd tableGs)
-    --when (usingCombinedSensitivity && length subexprQueryFuns > 1) $ error $ error_noCSGroupSupport
-    when (combinedSens args && length subexprQueryFuns > 1) $ error $ error_noCSGroupSupport
+    -- if we are using combined sensitivity, then groups and subexpressions are not allowed
+    let usingCombinedSensitivity = foldr (||) False $ map (\g -> case g of {Just a -> if isInfinite a then False else True; _ -> True}) (map snd tableGs')
+    when (usingCombinedSensitivity && combinedSens args && length subexprQueryFuns > 1) $ error $ error_noCSGroupSupport
+
+    let tableGs = tableGs' ++ map (\t -> (t, Just (1/0))) subTableNames
 
     -- the last column now always marks sensitive rows
     let extColNames = colNames ++ ["sensitive"]

@@ -67,15 +67,22 @@ constructResult [norm, beta, sds, laplaceDelta]
                norm = norm}
 
 niceListPrint :: Bool -> [Double] -> String
-niceListPrint False xs = printFloatS (head xs)
+niceListPrint False xs = printFloatL (head xs)
 niceListPrint True xs  = "[" ++ intercalate ", " (map printFloatS xs) ++ "]"
 
-printAdditiveTerm x y =
+printAdditiveTermS x y =
     -- if x is 0, then there is no scaling needed, which means that the continuous approximation is also not needed
     if x == 0 then "0.0"
     else if y == 0 then printFloatS x ++ "*z"
     else if y > 0 then  printFloatS x ++ "*z" ++ "+" ++ printFloatS y
     else                printFloatS x ++ "*z" ++ "-" ++ printFloatS (abs y)
+
+printAdditiveTermL x y =
+    -- if x is 0, then there is no scaling needed, which means that the continuous approximation is also not needed
+    if x == 0 then "0.0"
+    else if y == 0 then printFloatL x ++ "*z"
+    else if y > 0 then  printFloatL x ++ "*z" ++ "+" ++ printFloatL y
+    else                printFloatL x ++ "*z" ++ "-" ++ printFloatL (abs y)
 
 computeAdditiveTerm z x y =
     -- if x is 0, then there is no scaling needed, which means that the continuous approximation is also not needed
@@ -84,8 +91,8 @@ computeAdditiveTerm z x y =
     else x * z + abs y
 
 niceListScalingPrint :: Bool -> [Double] -> [Double] -> String
-niceListScalingPrint False xs ys = printAdditiveTerm (head xs) (head ys)
-niceListScalingPrint True  xs ys = let zs = zipWith (\x y -> printAdditiveTerm x y) xs ys in
+niceListScalingPrint False xs ys = printAdditiveTermL (head xs) (head ys)
+niceListScalingPrint True  xs ys = let zs = zipWith (\x y -> printAdditiveTermS x y) xs ys in
                                    "[" ++ intercalate ", " zs ++ "]"
 
 --output labels

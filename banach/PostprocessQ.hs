@@ -335,8 +335,9 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
   let sep3 = if alternative args && not (succinct args) then [B.unitSeparator3] else " "
 
   let (_,normsExprs,normsAggrs) = unzip3 $ map BQ.getExtra tableExprData
-  let inputTableNames = BQ.getTableNames tableExprData
-  let normMap = M.fromList $ zip inputTableNames $ zip normsExprs normsAggrs
+  let allTableNames = BQ.getTableNames tableExprData
+  let normMap' = M.fromList $ zip allTableNames $ zip normsExprs normsAggrs
+  let normMap  = M.fromList $ map (\tn -> (tn, normMap' ! tn)) tableNames
 
   traceIOIfDebug debug ("===============================")
   traceIOIfDebug debug ("Use the numbers in the table below to achieve DP as follows:")
@@ -377,8 +378,10 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
                       let norm = if tableName == B.resultForAllTables then
 
                                       -- if there are two entries in the result, then there is just one table
+                                      -- sorting has put "result for all tables to the 1st position"
+                                      -- so we take the second one
                                       if length res <= 2 then
-                                          let (tableName',_) = head res in
+                                          let (tableName',_) = last res in
                                           let (normExpr,normAggr) = (normMap ! tableName') in
                                           niceNormPrintFull normExpr normAggr
 
@@ -386,6 +389,7 @@ performDPAnalysis tableNames tableAliases args outputTableName dataPath separato
                                       -- we can take the norm of the only sensitive table
                                       else
                                           let allNorms = filter (/= "--") $ map (uncurry niceNormPrintFull) $ M.elems normMap in
+                                          trace (show (normMap)) $
                                           if length allNorms == 1 then
                                               head allNorms
                                           -- if there are several sensitive tables, we do not write out the full norm
